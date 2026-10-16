@@ -38,7 +38,8 @@ import {
   publicMedia,
   rewritePlaylist,
 } from './media.js';
-import { Rooms } from './rooms.js';
+import { Rooms, mediaLabel } from './rooms.js';
+import { RateLimiter, SOCIAL_MESSAGES, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
 import { privacyPage, termsPage } from './legal.js';
 
@@ -69,14 +70,102 @@ function broadcast(room, extra) {
   }
 }
 
-function notice(roomId, text) {
+/** `except`: everyone but that uid (their own action); `to`: only that uid. */
+function notice(roomId, text, { except = null, to = null } = {}) {
   const message = JSON.stringify({ t: 'notice', text });
-  for (const ws of sockets.get(roomId) || []) if (ws.readyState === 1) ws.send(message);
+  for (const ws of sockets.get(roomId) || []) {
+    if (ws.readyState !== 1 || (except && ws.uid === except) || (to && ws.uid !== to)) continue;
+    ws.send(message);
+  }
+}
+
+/** Sends the state, then what the room queued: notices, and stream starts to run. */
+function publish(room) {
+  broadcast(room);
+  for (const effect of room.drain()) {
+    if (effect.type === 'notice') notice(room.id, effect.text, effect);
+    else if (effect.type === 'start') runStart(room, effect);
+  }
 }
 
 setInterval(() => {
-  for (const room of rooms) if (room.tick()) broadcast(room);
+  for (const room of [...rooms]) if (room.tick()) publish(room);
+  // Emptied rooms keep their film for a while (someone may come back), then go.
+  for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
+
+const socialLimit = new RateLimiter({ max: 20, windowMs: 10_000 });
+const proposeLimit = new RateLimiter({ max: 10, windowMs: 60_000 });
+
+/**
+ * Resolves a stream into a media session and loads it for the room, unless a newer
+ * start replaced this one meanwhile. Throws on failure (after telling the room).
+ */
+async function startMedia(room, { token, stream, title, subtitle, poster, meta, startAt = 0, host, starterUid, log }) {
+  let session;
+  try {
+    session = await createSession(stream);
+  } catch (err) {
+    log.warn({ err: err.message }, 'stream resolution failed');
+    if (room.failStart(token)) publish(room);
+    notice(room.id, `Impossible de lancer « ${mediaLabel({ title, subtitle })} » : ${err.message}`);
+    throw err;
+  }
+  if (!room.isCurrentStart(token)) return false;
+  // What everyone's progress is saved against (see the "progress" socket message).
+  session.meta = cleanMeta(meta, { title, subtitle, poster });
+  const hostName = (host && room.members.get(host)?.name) || 'la salle';
+  room.load(
+    {
+      ...publicMedia(session),
+      title: String(title || '').slice(0, 200),
+      subtitle: String(subtitle || '').slice(0, 200),
+      poster: typeof poster === 'string' ? poster : null,
+      startedBy: hostName,
+      startedByUid: starterUid || null,
+      meta: session.meta,
+    },
+    { startAt: Number(startAt) || 0, by: host }
+  );
+  publish(room);
+  findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
+  return true;
+}
+
+/** For an episode: tells the room which one comes next (auto-next at the end). */
+async function findNextEpisode(room, session) {
+  const m = session.meta;
+  if (m?.type !== 'series') return;
+  const meta = await addons.meta('series', m.id);
+  const i = meta.videos.findIndex((v) => v.id === m.videoId);
+  const next = i >= 0 ? meta.videos[i + 1] : null;
+  if (!next) return;
+  const subtitle = `S${next.season}E${String(next.episode).padStart(2, '0')} · ${next.title}`;
+  if (room.setNext(session.sid, { videoId: next.id, subtitle })) publish(room);
+}
+
+/** A start decided by the room (vote, next episode, "Lancer" on a suggestion). */
+async function runStart(room, { token, host, item }) {
+  const log = app.log;
+  try {
+    // The proposer's chosen source if still valid, else the best one with their addons.
+    let stream = item.streamKey ? addons.lookupStream(item.streamKey) : null;
+    if (!stream) {
+      const own = item.uid ? store.addonUrls(item.uid).map(addonBase) : [];
+      stream = await addons.bestStream(item.meta.type, item.meta.videoId, log, own);
+    }
+    if (!room.isCurrentStart(token)) return;
+    if (!stream) {
+      if (room.failStart(token)) publish(room);
+      notice(room.id, `Aucune source trouvée pour « ${mediaLabel(item)} »`);
+      return;
+    }
+    await startMedia(room, { token, stream, ...item, host, starterUid: item.uid, log });
+  } catch (err) {
+    log.warn({ err: err.message }, 'room start failed');
+    if (room.failStart(token)) publish(room);
+  }
+}
 
 // ---------------------------------------------------------------- session / auth
 
@@ -216,32 +305,41 @@ app.register(async (api) => {
     const stream = addons.lookupStream(streamKey);
     if (!stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
 
-    const roomId = request.session.room;
-    notice(roomId, `${request.session.name} lance « ${String(title || '').slice(0, 120)} »…`);
-    let session;
+    const { uid, name } = request.session;
+    const room = rooms.get(request.session.room);
+    if (!room.canStart(uid)) {
+      return reply.code(403).send({ error: 'Seul l’hôte peut changer de vidéo pendant la lecture : propose-la plutôt.' });
+    }
+    const cleanTitle = String(title || '').slice(0, 200);
+    const label = mediaLabel({ title: cleanTitle, subtitle: String(subtitle || '') });
+    const token = room.beginStart({ title: cleanTitle, subtitle: String(subtitle || ''), by: uid, announce: `${name} a lancé « ${label} »` });
+    publish(room);
     try {
-      session = await createSession(stream);
+      const loaded = await startMedia(room, { token, stream, title, subtitle, poster, meta, startAt, host: uid, starterUid: uid, log: request.log });
+      return { ok: true, superseded: !loaded };
     } catch (err) {
-      request.log.warn({ err: err.message }, 'stream resolution failed');
-      notice(roomId, `Impossible de lancer : ${err.message}`);
       return reply.code(502).send({ error: err.message });
     }
-    // What everyone's progress is saved against (see the "progress" socket message).
-    session.meta = cleanMeta(meta, { title, subtitle, poster });
-    const room = rooms.get(roomId);
-    room.load(
-      {
-        ...publicMedia(session),
-        title: String(title || '').slice(0, 200),
-        subtitle: String(subtitle || '').slice(0, 200),
-        poster: typeof poster === 'string' ? poster : null,
-        startedBy: request.session.name,
-        meta: session.meta,
-      },
-      { startAt: Number(startAt) || 0 }
-    );
-    broadcast(room);
-    return { ok: true };
+  });
+
+  /** Suggests a title/episode to the room (optionally with the source the proposer chose). */
+  api.post('/api/room/propose', async (request, reply) => {
+    const { uid } = request.session;
+    if (!proposeLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de propositions, attends un peu' });
+    const item = cleanProposal(request.body);
+    if (!item) return reply.code(400).send({ error: 'Proposition invalide' });
+    const room = rooms.peek(request.session.room);
+    if (!room) return reply.code(409).send({ error: 'Tu n’es pas connecté à la salle' });
+    // Only the opaque key and a short label are kept: the stream stays in the server cache.
+    const stream = item.streamKey ? addons.lookupStream(item.streamKey) : null;
+    const result = room.propose(uid, {
+      ...item,
+      streamKey: stream ? item.streamKey : null,
+      source: stream ? addons.sourceLabel(stream) : null,
+    });
+    if (result.error) return reply.code(400).send({ error: result.error });
+    publish(room);
+    return { ok: true, id: result.item.id, duplicate: !!result.duplicate };
   });
 
   /** External subtitles of what a media session plays (each viewer picks their own). */
@@ -275,9 +373,15 @@ app.register(async (api) => {
     return { cues };
   });
 
-  api.post('/api/room/stop', async (request) => {
+  api.post('/api/room/stop', async (request, reply) => {
     const room = rooms.peek(request.session.room);
-    if (room?.stop()) broadcast(room);
+    if (room?.media && !room.canControl(request.session.uid)) {
+      return reply.code(403).send({ error: 'Seul l’hôte peut arrêter la lecture' });
+    }
+    if (room?.stop()) {
+      notice(room.id, `${request.session.name} a arrêté la lecture`, { except: request.session.uid });
+      publish(room);
+    }
     return { ok: true };
   });
 
@@ -365,10 +469,11 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
     return;
   }
   const room = rooms.get(session.room);
+  ws.uid = session.uid;
   if (!sockets.has(room.id)) sockets.set(room.id, new Set());
   sockets.get(room.id).add(ws);
 
-  if (room.join(session)) broadcast(room);
+  if (room.join(session)) publish(room);
   else ws.send(JSON.stringify({ t: 'state', ...room.snapshot() }));
 
   ws.on('message', (raw) => {
@@ -378,26 +483,10 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
     } catch {
       return;
     }
-    let changed = false;
-    switch (msg.t) {
+    switch (msg?.t) {
       case 'ping':
         ws.send(JSON.stringify({ t: 'pong', c: msg.c, s: Date.now() }));
         return;
-      case 'play':
-        changed = room.play();
-        break;
-      case 'pause':
-        changed = room.pause();
-        break;
-      case 'seek':
-        changed = room.seek(msg.position);
-        break;
-      case 'buffering':
-        changed = room.setBuffering(session.uid, !!msg.value);
-        break;
-      case 'quality':
-        changed = room.setQuality(session.uid, msg.value);
-        break;
       case 'progress': {
         // This viewer's own position in a media session they were handed.
         const media = typeof msg.sid === 'string' ? getSession(msg.sid) : null;
@@ -416,18 +505,23 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
         return;
       }
       default:
-        return;
+        break;
     }
-    if (changed) broadcast(room);
+    if (SOCIAL_MESSAGES.has(msg?.t) && !socialLimit.allow(session.uid)) {
+      ws.send(JSON.stringify({ t: 'notice', text: 'Doucement : trop d’actions d’un coup' }));
+      return;
+    }
+    // Play/pause/seek go through the room's permissions (host mode), with attribution.
+    if (handleRoomMessage(room, session.uid, msg) || room.outbox.length) publish(room);
   });
 
   ws.on('close', () => {
-    sockets.get(room.id)?.delete(ws);
-    if (room.leave(session.uid)) broadcast(room);
-    if (room.empty) {
-      sockets.delete(room.id);
-      rooms.delete(room.id);
-    }
+    const set = sockets.get(room.id);
+    set?.delete(ws);
+    if (set && !set.size) sockets.delete(room.id);
+    // The room itself is kept (paused when empty): the film survives a reconnect or
+    // everybody leaving for a moment. Rooms.sweep forgets it after EMPTY_ROOM_TTL_MS.
+    if (room.leave(session.uid)) publish(room);
   });
 });
 
