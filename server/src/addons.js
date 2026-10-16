@@ -122,8 +122,39 @@ export async function catalog(type, id, { genre, skip } = {}) {
 
 export async function meta(type, id) {
   const { meta: m } = await getJson(`${config.metaAddon}/meta/${type}/${encodeURIComponent(id)}.json`);
-  if (!m) throw new Error('Introuvable');
+  if (!m) throw Object.assign(new Error('Fiche introuvable'), { statusCode: 404 });
+  return normalizeMeta(m);
+}
+
+const YT_ID = /^[\w-]{6,20}$/;
+
+/** "stremio:///detail/movie/tt123" → { type, id } (links of a meta object). */
+function detailLink(url) {
+  const m = /^stremio:\/\/\/detail\/(movie|series)\/([^/?#]+)/.exec(String(url || ''));
+  if (!m) return null;
+  try {
+    return { type: m[1], id: decodeURIComponent(m[2]) };
+  } catch {
+    return null;
+  }
+}
+
+/** What the client needs from an addon meta object (also the extras: trailer, IMDb, similar). */
+export function normalizeMeta(m) {
   const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  const links = Array.isArray(m.links) ? m.links.filter((l) => l && typeof l === 'object') : [];
+  const imdbId = [m.imdb_id, m.id].find((x) => typeof x === 'string' && /^tt\d+$/.test(x)) || null;
+  const trailer =
+    [...(Array.isArray(m.trailerStreams) ? m.trailerStreams.map((t) => t?.ytId) : []), ...(Array.isArray(m.trailers) ? m.trailers.map((t) => t?.source) : [])].find(
+      (x) => typeof x === 'string' && YT_ID.test(x)
+    ) || null;
+  const similar = links
+    .filter((l) => /similar|recommend|related/i.test(String(l.category || '')))
+    .map((l) => ({ ...detailLink(l.url), name: typeof l.name === 'string' ? l.name : '' }))
+    .filter((l) => l.id && l.name)
+    .slice(0, 30);
+  const byCategory = (re) => links.filter((l) => re.test(String(l.category || '')) && typeof l.name === 'string').map((l) => l.name);
+  const writers = strings(m.writer).length ? strings(m.writer) : byCategory(/^writers?$/i);
   return {
     id: m.id,
     type: m.type,
@@ -134,11 +165,19 @@ export async function meta(type, id) {
     description: m.description || '',
     year: year(m),
     releaseInfo: m.releaseInfo ? String(m.releaseInfo) : null,
+    released: typeof m.released === 'string' ? m.released : null,
     runtime: m.runtime || null,
     rating: m.imdbRating ? String(m.imdbRating) : null,
     genres: strings(m.genres || m.genre),
     cast: strings(m.cast).slice(0, 12),
     director: strings(m.director).slice(0, 4),
+    writers: writers.slice(0, 4),
+    country: typeof m.country === 'string' ? m.country : null,
+    awards: typeof m.awards === 'string' ? m.awards : null,
+    status: typeof m.status === 'string' ? m.status : null,
+    imdbId,
+    trailer,
+    similar,
     videos: (m.videos || [])
       .filter((v) => typeof v.season === 'number' && typeof v.episode === 'number')
       .map((v) => ({
@@ -146,7 +185,7 @@ export async function meta(type, id) {
         season: v.season,
         episode: v.episode,
         title: v.name || v.title || `Épisode ${v.episode}`,
-        released: v.released || null,
+        released: v.released || v.firstAired || null,
         thumbnail: v.thumbnail || null,
         overview: typeof v.overview === 'string' ? v.overview.slice(0, 600) : null,
       }))

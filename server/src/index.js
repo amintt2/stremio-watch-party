@@ -291,7 +291,28 @@ app.register(async (api) => {
 
   api.get('/api/continue', async (request) => ({ items: store.continueWatching(request.session.uid) }));
 
+  /** Hides a title from "Continuer à regarder" (it stays in the history). */
+  api.delete('/api/continue/:metaId', async (request) => ({
+    ok: store.dismissContinue(request.session.uid, request.params.metaId),
+  }));
+
+  /** "Marquer comme vu / non vu" for a movie, an episode or a whole season. */
+  api.post('/api/watched', async (request, reply) => {
+    const { metaId, type, name, poster, videos, watched } = request.body || {};
+    if (typeof metaId !== 'string' || !metaId || !['movie', 'series'].includes(type) || !Array.isArray(videos) || !videos.length) {
+      return reply.code(400).send({ error: 'Requête invalide' });
+    }
+    if (videos.length > 2000) return reply.code(400).send({ error: 'Trop de vidéos' });
+    const uid = request.session.uid;
+    const count = watched
+      ? store.markWatched(uid, { metaId, metaType: type, name, poster, videos })
+      : store.markUnwatched(uid, metaId, videos.map((v) => v?.videoId));
+    return { count, items: store.progressFor(uid, metaId) };
+  });
+
   api.get('/api/history', async (request) => ({ items: store.history(request.session.uid) }));
+
+  api.delete('/api/history', async (request) => ({ count: store.clearHistory(request.session.uid) }));
 
   api.delete('/api/history/:metaId', async (request) => ({
     ok: store.removeHistory(request.session.uid, request.params.metaId),
@@ -310,14 +331,24 @@ app.register(async (api) => {
   api.put('/api/library/:type/:metaId', async (request, reply) => {
     const { type, metaId } = request.params;
     if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
-    const { name, poster, year } = request.body || {};
-    store.addToLibrary(request.session.uid, { metaId, metaType: type, name, poster, year });
+    const { name, poster, year, rating } = request.body || {};
+    store.addToLibrary(request.session.uid, { metaId, metaType: type, name, poster, year, rating });
     return { ok: true };
   });
 
   api.delete('/api/library/:type/:metaId', async (request) => ({
     ok: store.removeFromLibrary(request.session.uid, request.params.metaId),
   }));
+
+  /** Everything stored about me, as a JSON file (addon URLs stay masked). */
+  api.get('/api/me/export', async (request, reply) => {
+    reply.header('Content-Disposition', 'attachment; filename="watch-party-mes-donnees.json"');
+    reply.header('Cache-Control', 'no-store');
+    return store.exportData(request.session.uid);
+  });
+
+  /** Erases my history, library and personal addons (the account stays: it is the login). */
+  api.delete('/api/me/data', async (request) => ({ count: store.eraseData(request.session.uid) }));
 
   api.get('/api/addons', async (request) => ({
     shared: config.streamAddons.length,
