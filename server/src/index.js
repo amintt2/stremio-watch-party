@@ -20,6 +20,7 @@ import {
   rewritePlaylist,
 } from './media.js';
 import { Rooms } from './rooms.js';
+import { diagnostics, logDiagnostics } from './diag.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -283,6 +284,9 @@ app.get('/api/img', async (request, reply) => {
 
 app.get('/api/health', async () => ({ ok: true }));
 
+// Sanitized dependency check (Stremio server, meta and stream addons), cached 30 s.
+app.get('/api/health/details', async () => diagnostics());
+
 // ---------------------------------------------------------------- static client
 
 const dist = fileURLToPath(new URL('../../client/dist/', import.meta.url));
@@ -310,4 +314,6 @@ app.setErrorHandler((err, request, reply) => {
 });
 
 watchStremioServer(app.log);
+// Give the Stremio container a moment to start, then log what is reachable.
+setTimeout(() => logDiagnostics(app.log).catch((err) => app.log.warn({ err: err.message }, 'diag failed')), 15_000).unref();
 await app.listen({ port: config.port, host: config.host });
