@@ -53,6 +53,14 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
   ton serveur, c'est 1 transcodage par qualité, pas 1 par personne.
 - Pistes audio et sous-titres texte du fichier : sélectionnables par chacun.
 
+### Combien de personnes ?
+
+Aucune limite dans la salle. Ce qui coûte, ce sont les **transcodages différents**, pas
+les spectateurs : 10 amis sur 2 qualités = 2 transcodages. Sans accélération matérielle, le
+plus léger est une source **H.264 1080p** : elle est copiée sans conversion pour tous ceux
+qui sont en 1080p. Côté connexion, compte environ le débit de la source × le nombre de
+spectateurs en upload (10 × 8 Mb/s ≈ 80 Mb/s en 1080p).
+
 ## Installation
 
 ### 1. Application Discord
@@ -82,10 +90,29 @@ plusieurs, séparées par des virgules.
 
 ### 3. Lancer
 
-**Docker (recommandé, Linux)** : backend et serveur Stremio privé, avec l'accélération AMD :
+**Coolify (le plus simple)** :
+
+1. **+ New Resource → Public/Private Repository** → `amintt2/stremio-watch-party`,
+   branche `main`, *Build Pack* : **Docker Compose**.
+2. Onglet **Environment Variables** : remplis `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`,
+   `SESSION_SECRET` (une longue chaîne aléatoire) et `STREAM_ADDON_URLS`.
+   `STREMIO_CACHE_GB` vaut 100 par défaut.
+3. Sur le service **watch-party**, mets le domaine **avec le port 3001** :
+   `https://watch.mciut.fr:3001`. Coolify gère le HTTPS. Ne donne **aucun** domaine au
+   service `stremio`.
+4. **Deploy**. Dans les logs du service `watch-party`, tu dois voir
+   `Stremio streaming server reachable`, puis `Stremio server settings updated`.
+5. Dans Discord → **Activities → URL Mappings** : `/` → `watch.mciut.fr`.
+
+Le serveur Stremio de cette stack est privé et réglé automatiquement : plusieurs qualités
+en même temps et un grand cache. Ton ancien `stremio.mciut.fr` public n'est plus
+nécessaire.
+
+**Docker Compose à la main** (Linux) :
 
 ```bash
-docker compose up -d --build
+cp .env.example .env   # puis remplis-le
+docker compose --env-file .env up -d --build
 ```
 
 **Sans Docker** (le serveur Stremio tourne déjà ailleurs, ex. ton Stremio desktop ou
@@ -115,20 +142,18 @@ Pour l'ouvrir dans Discord pendant le dev, mappe `/` vers un tunnel HTTPS qui po
 
 ### 4. Régler le serveur de streaming Stremio
 
-Le backend affiche un avertissement au démarrage si quelque chose cloche. Points importants :
+Au démarrage, le backend règle lui-même le serveur Stremio (`STREMIO_AUTO_TUNE=0` pour
+désactiver) :
 
-```bash
-# Plusieurs qualités en même temps (sinon un ami en 720p coupe celui en 1080p)
-curl -X POST -H 'content-type: application/json' \
-  -d '{"transcodeConcurrency":4,"cacheSize":107374182400}' http://<serveur-stremio>:11470/settings
-```
-
-- **`transcodeConcurrency` ≥ 3–4** : par défaut à 1, ce qui détruit le transcodage des
-  autres qualités.
-- **Cache ≥ 100 Go pour la 4K** : un remux 4K fait 50 à 80 Go ; avec 5 Go, revenir en
-  arrière retélécharge.
+- **`transcodeConcurrency` = 6** (`STREMIO_TRANSCODE_CONCURRENCY`) : par défaut à 1, ce qui
+  détruit le transcodage des autres qualités, donc un ami en 720p coupe celui en 1080p. Un
+  film n'utilise jamais plus de 5 conversions (1 copie + 4 tailles de transcodage), quel que
+  soit le nombre de spectateurs : 6 couvre donc 10 personnes et plus.
+- **Cache de `STREMIO_CACHE_GB` Go** (100 dans le compose) : un remux 4K fait 50 à 80 Go ;
+  avec 5 Go, revenir en arrière retélécharge.
 - **Accélération matérielle (RX 6650 XT)** : le serveur Stremio sait utiliser une carte AMD
-  **sous Linux** (profil `vaapi-renderD128`, avec `/dev/dri` passé au conteneur). Sous
+  **sous Linux** (profil `vaapi-renderD128` : décommente `devices` dans
+  `docker-compose.yml`). Sous
   Windows, il ne propose que NVIDIA (NVENC) et Intel (QSV) : avec une carte AMD, le
   transcodage se fera au processeur. Les amis dont le Discord décode le HEVC reçoivent la
   4K sans transcodage dans tous les cas.

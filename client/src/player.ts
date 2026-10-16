@@ -13,7 +13,6 @@ export interface Caps {
   hevc: boolean;
   av1: boolean;
   vp9: boolean;
-  opus: boolean;
 }
 
 /**
@@ -28,13 +27,12 @@ export function detectCaps(): Caps {
     hevc: ok('video/mp4; codecs="hvc1.2.4.L153.B0"') || ok('video/mp4; codecs="hev1.2.4.L153.B0"'),
     av1: ok('video/mp4; codecs="av01.0.12M.10"'),
     vp9: ok('video/mp4; codecs="vp09.02.51.10"'),
-    opus: ok('audio/mp4; codecs="opus"'),
   };
 }
 
 /** Path segment understood by the server: quality id + capability letters. */
 export function profileSegment(quality: string, caps: Caps) {
-  return `${quality}${caps.hevc ? 'h' : ''}${caps.av1 ? 'a' : ''}${caps.vp9 ? 'v' : ''}${caps.opus ? 'o' : ''}`;
+  return `${quality}${caps.hevc ? 'h' : ''}${caps.av1 ? 'a' : ''}${caps.vp9 ? 'v' : ''}`;
 }
 
 export interface Track {

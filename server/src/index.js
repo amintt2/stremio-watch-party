@@ -9,7 +9,7 @@ import { issueSession, requireSession, verifySession } from './auth.js';
 import { exchangeCode, fetchUser } from './discord.js';
 import * as addons from './addons.js';
 import {
-  checkStremioServer,
+  watchStremioServer,
   converterParams,
   createSession,
   fetchHls,
@@ -308,5 +308,5 @@ app.setErrorHandler((err, request, reply) => {
   });
 });
 
-await checkStremioServer(app.log);
+watchStremioServer(app.log);
 await app.listen({ port: config.port, host: config.host });

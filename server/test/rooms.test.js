@@ -120,3 +120,16 @@ test('multiple connections of one user count once', () => {
   assert.equal(room.leave('a'), true);
   assert.equal(room.members.has('a'), false);
 });
+
+test('ten viewers: playback starts once all ten are ready', () => {
+  let t = 0;
+  const room = new Room('big', { now: () => t });
+  const uids = Array.from({ length: 10 }, (_, i) => `u${i}`);
+  for (const uid of uids) room.join({ uid, name: uid });
+  room.load(media);
+  for (const uid of uids.slice(0, 9)) room.setBuffering(uid, false);
+  assert.equal(room.running, false);
+  room.setBuffering('u9', false);
+  assert.equal(room.running, true);
+  assert.equal(room.snapshot().members.length, 10);
+});

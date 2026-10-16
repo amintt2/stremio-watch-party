@@ -5,6 +5,7 @@ import {
   converterParams,
   isAllowedHlsPath,
   parseProfile,
+  wantedSettings,
   rewritePlaylist,
 } from '../src/media.js';
 import { describeStream } from '../src/addons.js';
@@ -128,16 +129,31 @@ test('debrid links are flagged as cached and keep their URL private', () => {
 
 test('profile segment parsing', () => {
   assert.deepEqual(parseProfile('1080'), { quality: '1080', caps: {} });
-  assert.deepEqual(parseProfile('2160hvo'), { quality: '2160', caps: { hevc: true, vp9: true, opus: true } });
+  assert.deepEqual(parseProfile('2160hv'), { quality: '2160', caps: { hevc: true, vp9: true } });
   assert.equal(parseProfile('1080x'), null);
   assert.equal(parseProfile('../1080'), null);
 });
 
-test('VP9/Opus sources are copied for viewers that support them', () => {
+test('VP9 sources are copied for viewers that support them', () => {
   const vp9 = { video: { codec: 'vp9', width: 1920 } };
-  const p = converterParams('s', vp9, '1080', { vp9: true, opus: true });
+  const p = converterParams('s', vp9, '1080', { vp9: true });
   assert.equal(p.mode, 'copy');
-  assert.equal(p.convertId, 'wp-s-c-vp9-o');
-  assert.ok(p.query.getAll('audioCodecs').includes('opus'));
+  assert.equal(p.convertId, 'wp-s-c-vp9');
   assert.equal(converterParams('s', vp9, '1080', {}).mode, 'transcode');
+});
+
+test('Stremio server tuning only asks for what is missing', () => {
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 6 });
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 6, cacheSize: null }), {});
+});
+
+test('ten viewers on every quality need at most 5 converters per media', () => {
+  const hevc4kInfo = { video: { codec: 'hevc', width: 3840 } };
+  const ids = new Set();
+  for (const quality of ['2160', '1080', '720', '480']) {
+    for (const caps of [{}, { hevc: true }, { av1: true, vp9: true }, { hevc: true, vp9: true }]) {
+      ids.add(converterParams('s', hevc4kInfo, quality, caps).convertId);
+    }
+  }
+  assert.equal(ids.size, 5);
 });

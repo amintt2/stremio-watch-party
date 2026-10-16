@@ -36,6 +36,12 @@ export const config = {
   // Base URL the Stremio server uses to read torrents from itself (it fetches its own
   // /{infoHash}/{fileIdx} endpoint when transcoding). Defaults to its loopback address.
   stremioSelfUrl: trimSlash(process.env.STREMIO_SELF_URL || 'http://127.0.0.1:11470'),
+  // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
+  stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
+  stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 6),
+  stremioCacheBytes: process.env.STREMIO_CACHE_GB
+    ? Math.round(Number(process.env.STREMIO_CACHE_GB) * 1024 ** 3)
+    : null,
 
   // Catalog/metadata addon (search + movie/series details).
   metaAddon: addonBase(process.env.META_ADDON_URL || 'https://v3-cinemeta.strem.io/manifest.json'),
