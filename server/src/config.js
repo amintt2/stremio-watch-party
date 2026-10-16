@@ -38,6 +38,18 @@ export const config = {
   // Lets the app run in a normal browser tab (no Discord), for local testing.
   allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
 
+  // Public address of the site, e.g. https://watch.mciut.fr (default: from the request).
+  publicUrl: trimSlash(process.env.PUBLIC_URL || ''),
+
+  // Shown on /conditions and /confidentialite (required by Discord for apps).
+  legal: {
+    appName: process.env.APP_NAME || 'Watch Party',
+    // Who runs this instance, e.g. the community / server name.
+    operator: process.env.LEGAL_OPERATOR || 'l’équipe d’administration de la communauté',
+    // How to reach the operator: an email or a link (Discord server invite, ticket channel…).
+    contact: process.env.LEGAL_CONTACT || '',
+  },
+
   // Where this backend reaches the Stremio streaming server.
   stremioServerUrl: trimSlash(process.env.STREMIO_SERVER_URL || 'http://127.0.0.1:11470'),
   // Base URL the Stremio server uses to read torrents from itself (it fetches its own

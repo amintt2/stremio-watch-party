@@ -73,7 +73,11 @@ spectateurs en upload (10 × 8 Mb/s ≈ 80 Mb/s en 1080p).
    (ex. `watch.mciut.fr`). Toutes les requêtes de l'Activité, WebSocket compris, passent
    par `https://<client_id>.discordsays.com` puis par ce mapping. C'est pour ça que le
    backend relaie la vidéo et les images.
-5. Garde l'app **non publiée** : elle est alors utilisable par toi et par les testeurs que
+5. **General Information** : *Terms of Service URL* = `https://<ton-domaine>/conditions`,
+   *Privacy Policy URL* = `https://<ton-domaine>/confidentialite`. Les deux pages sont servies
+   par l'app ; règle `LEGAL_OPERATOR` (qui exploite le service) et `LEGAL_CONTACT` (e-mail
+   ou lien d'invitation) pour qu'elles affichent les bonnes infos.
+6. Garde l'app **non publiée** : elle est alors utilisable par toi et par les testeurs que
    tu ajoutes dans le portail (App Testers). Lance-la depuis un salon vocal → 🚀
    Activités.
 

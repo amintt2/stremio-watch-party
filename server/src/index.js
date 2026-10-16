@@ -21,6 +21,7 @@ import {
 } from './media.js';
 import { Rooms } from './rooms.js';
 import { diagnostics, logDiagnostics } from './diag.js';
+import { privacyPage, termsPage } from './legal.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -57,9 +58,11 @@ setInterval(() => {
 
 // ---------------------------------------------------------------- session / auth
 
-app.get('/api/config', async () => ({
+app.get('/api/config', async (request) => ({
   clientId: config.discord.clientId || null,
   browserMode: config.allowBrowserMode,
+  // Public address of this site (links opened outside the Discord iframe).
+  publicUrl: config.publicUrl || `${request.protocol}://${request.host}`,
 }));
 
 app.post('/api/token', async (request, reply) => {
@@ -283,6 +286,16 @@ app.get('/api/img', async (request, reply) => {
 });
 
 app.get('/api/health', async () => ({ ok: true }));
+
+// Terms of Service / Privacy Policy (URLs to give Discord in the Developer Portal).
+for (const [paths, render] of [
+  [['/conditions', '/terms'], termsPage],
+  [['/confidentialite', '/privacy'], privacyPage],
+]) {
+  for (const path of paths) {
+    app.get(path, async (request, reply) => reply.type('text/html; charset=utf-8').send(render()));
+  }
+}
 
 // Sanitized dependency check (Stremio server, meta and stream addons), cached 30 s.
 app.get('/api/health/details', async () => diagnostics());

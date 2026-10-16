@@ -17,6 +17,9 @@ services:
       STREMIO_SELF_URL: http://127.0.0.1:11470
       STREMIO_CACHE_GB: ${STREMIO_CACHE_GB:-100}
       ALLOW_BROWSER_MODE: ${ALLOW_BROWSER_MODE:-0}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      LEGAL_OPERATOR: ${LEGAL_OPERATOR:-}
+      LEGAL_CONTACT: ${LEGAL_CONTACT:-}
     expose:
       - "3001"
     depends_on:
