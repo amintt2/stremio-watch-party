@@ -33,6 +33,8 @@ export function clear(el: Element, ...children: (Child | Child[])[]) {
 export function toast(text: string) {
   const host = document.getElementById('toasts');
   if (!host) return;
+  // The same message already on screen (a double click, a repeated notice): don't stack it.
+  if ([...host.children].some((c) => c.textContent === text && !c.classList.contains('out'))) return;
   const el = h('div', { class: 'toast', role: 'status' }, text);
   host.append(el);
   // Three at most on screen: the oldest go first.
