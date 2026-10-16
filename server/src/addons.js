@@ -138,7 +138,7 @@ function isPlayable(stream) {
   return typeof stream.url === 'string' && /^https?:\/\//i.test(stream.url);
 }
 
-export async function streams(type, id) {
+export async function streams(type, id, log) {
   const perAddon = await Promise.allSettled(
     config.streamAddons.map(async (base) => {
       const [name, body] = await Promise.all([
@@ -152,6 +152,16 @@ export async function streams(type, id) {
     })
   );
   const list = perAddon.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
-  const failed = perAddon.filter((r) => r.status === 'rejected').length;
+  let failed = 0;
+  perAddon.forEach((r, i) => {
+    if (r.status !== 'rejected') return;
+    failed++;
+    // Host only: the full addon URL may carry a debrid key.
+    let host = 'invalid addon URL';
+    try {
+      host = new URL(config.streamAddons[i]).hostname;
+    } catch {}
+    log?.warn({ addon: host, err: r.reason?.message }, 'stream addon failed');
+  });
   return { streams: list, failedAddons: failed };
 }

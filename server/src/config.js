@@ -11,9 +11,16 @@ function trimSlash(url) {
   return (url || '').replace(/\/+$/, '');
 }
 
-/** Strip a trailing /manifest.json so we can build resource URLs from it. */
+/**
+ * Base URL of an addon (resource URLs are built from it). Accepts the manifest URL,
+ * a stremio:// link, or a Stremio web share link (…?addon=<encoded manifest URL>).
+ */
 export function addonBase(url) {
-  return trimSlash(trimSlash(url).replace(/\/manifest\.json$/, ''));
+  let u = (url || '').trim();
+  const shared = /[?&]addon=([^&#]+)/.exec(u);
+  if (shared) u = decodeURIComponent(shared[1]);
+  u = u.replace(/^stremio:\/\//i, 'https://');
+  return trimSlash(trimSlash(u).replace(/\/manifest\.json$/, ''));
 }
 
 export const config = {

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 
@@ -23,7 +23,8 @@ import { Rooms } from './rooms.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
-  disableRequestLogging: process.env.LOG_REQUESTS !== '1',
+  // Per-request lines are noisy with HLS segments: off unless LOG_REQUESTS=1.
+  logController: new LogController({ disableRequestLogging: process.env.LOG_REQUESTS !== '1' }),
   trustProxy: true,
 });
 assertConfig(app.log);
@@ -107,7 +108,7 @@ app.register(async (api) => {
   api.get('/api/streams/:type/:id', async (request, reply) => {
     const { type, id } = request.params;
     if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
-    return addons.streams(type, id);
+    return addons.streams(type, id, request.log);
   });
 
   /** Starts a stream for the whole room. */
