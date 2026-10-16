@@ -152,7 +152,7 @@ Le responsable du traitement est ${operator}, joignable via ${contact}.</p>
     bibliothèque, historique, extensions ajoutées (les adresses d’extensions, qui peuvent contenir des clés de services
     tiers, sont conservées côté serveur et ne sont jamais affichées en entier).</li>
   <li><strong>Données techniques</strong> : adresse IP et informations de connexion nécessaires au fonctionnement et à
-    la sécurité (journaux d’erreurs). Ton navigateur conserve localement quelques préférences (qualité, volume) et, sur
+    la sécurité (journaux d’erreurs). Ton navigateur conserve localement quelques préférences (qualité, thème, pseudo en mode test) et, sur
     le site web, un cookie de session nécessaire à la connexion.</li>
 </ul>
 <p>${app} n’utilise <strong>aucun cookie publicitaire ni outil de mesure d’audience</strong>, et ne vend ni ne loue
@@ -168,7 +168,7 @@ tes données.</p>
 <ul>
   <li>État des sessions (participants, position, chat) : en mémoire uniquement, supprimé à la fin de la session ou au
     redémarrage du serveur.</li>
-  <li>Jeton de session : 24 heures.</li>
+  <li>Jeton de session : 24 heures. Cookie de connexion du site web : 30 jours (ou jusqu’à la déconnexion).</li>
   <li>Compte, progression, bibliothèque, historique et extensions : tant que tu utilises le service ; supprimés sur
     simple demande.</li>
   <li>Journaux techniques : quelques semaines au maximum.</li>

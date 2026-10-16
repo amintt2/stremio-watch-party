@@ -8,6 +8,36 @@ Discord, comme l'activité YouTube. Les vidéos viennent de tes **addons Stremio
 Contrairement au partage d'écran (Go Live), personne ne réencode son écran : chaque ami lit
 le fichier depuis ton serveur, et seule la position de lecture est synchronisée.
 
+L'interface ressemble à une app de streaming : barre de navigation à gauche (Accueil,
+Découvrir, Bibliothèque, Historique, Paramètres), affiches partout, fiche détaillée avec
+saisons et épisodes, et **un compte par personne** (son compte Discord) qui garde sa
+progression, son historique et sa bibliothèque. Ça marche dans l'Activité Discord **et**
+directement sur le site, dans un navigateur.
+
+## Ce que tu peux faire
+
+- **Accueil** : « Continuer à regarder » (avec ta progression), puis les catalogues de
+  l'addon de métadonnées (films et séries populaires, à la une…), lus depuis son manifest.
+- **Découvrir** : grille d'affiches filtrable par type, catalogue et genre, qui se charge
+  au fur et à mesure qu'on descend.
+- **Fiche** : fond, logo, année, durée, note, genres, résumé, casting ; pour une série,
+  le choix de la saison et la liste des épisodes (✓ vus, barre de progression). Les
+  sources sont dans le panneau de droite, avec les mêmes infos qu'avant (qualité,
+  👤 sources, taille, HDR/DV/HEVC, ⚡ débrid, filtres et tri).
+  - **Regarder ensemble** lance la meilleure source (débrid d'abord, puis 1080p, puis le
+    plus de sources) **pour tout le salon**. Tu peux aussi cliquer une source précise.
+  - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
+  - **Ajouter à la bibliothèque**.
+- **Bibliothèque** : tes titres, filtrables (films/séries) et triables (récents, A → Z).
+- **Historique** : ce que tu as regardé, du plus récent au plus ancien, avec ta
+  progression ; reprendre ou retirer.
+- **Lecteur** : synchro, qualité auto et pistes comme avant. Le bouton ← (ou Échap) réduit
+  le film en **mini-lecteur** : tu peux continuer à chercher pendant que ça joue, et ce que
+  tu lances démarre toujours pour tout le monde.
+- **Paramètres** : thème (sombre, clair, système), qualité par défaut, code de la salle et
+  lien d'invitation (hors Discord), **tes propres addons de sources** (ex. ton Torrentio
+  avec ta clé débrid : l'URL reste sur le serveur et n'est jamais réaffichée en entier).
+
 ## Comment ça marche
 
 ```
@@ -53,6 +83,26 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
   ton serveur, c'est 1 transcodage par qualité, pas 1 par personne.
 - Pistes audio et sous-titres texte du fichier : sélectionnables par chacun.
 
+### Comptes, progression et bibliothèque
+
+- **Un compte = une identité Discord.** Il est créé à la première connexion (id Discord,
+  pseudo, avatar), puis mis à jour à chaque connexion. Pas de mot de passe, pas d'e-mail.
+- Dans l'Activité, la connexion reste celle du SDK Discord (rien à faire). Sur le site, le
+  bouton **Se connecter avec Discord** utilise OAuth2 (scope `identify`), avec un `state`
+  anti-CSRF et un cookie de session `httpOnly` + `Secure` valable 30 jours.
+- Chaque spectateur envoie **sa propre** position au serveur toutes les 15 s, et quand il
+  met en pause, arrête ou quitte. Au-delà de 90 % de la durée, la vidéo est marquée **vue**.
+- Tout est stocké dans un fichier **SQLite** (`DATA_DIR`, volume Docker
+  `watch-party-data`). Le schéma se met à jour tout seul au démarrage.
+
+### Hors de Discord (navigateur)
+
+Ouvre simplement `https://ton-domaine/` et connecte-toi avec Discord. Comme il n'y a pas
+d'Activité, chacun a **sa salle perso**. Pour regarder ensemble, envoie le lien de ta salle
+(**Paramètres → Salle → Copier le lien**, ou le badge en haut à droite) : tes amis
+l'ouvrent, se connectent, et vous êtes synchronisés. On peut aussi coller un code dans
+**Rejoindre une salle**.
+
 ### Combien de personnes ?
 
 Aucune limite dans la salle. Ce qui coûte, ce sont les **transcodages différents**, pas
@@ -66,8 +116,10 @@ spectateurs en upload (10 × 8 Mb/s ≈ 80 Mb/s en 1080p).
 ### 1. Application Discord
 
 1. <https://discord.com/developers/applications> → **New Application**.
-2. **OAuth2** : note le *Client ID* et le *Client Secret*. Ajoute une redirection
-   (`https://127.0.0.1` suffit, Discord en exige une).
+2. **OAuth2** : note le *Client ID* et le *Client Secret*. Dans **Redirects**, ajoute
+   `https://<ton-domaine>/api/auth/discord/callback` (ex.
+   `https://watch.mciut.fr/api/auth/discord/callback`) : c'est ce qui permet de se
+   connecter sur le site, hors de Discord. L'Activité, elle, n'en a pas besoin.
 3. **Activities → Settings** : active les Activités.
 4. **Activities → URL Mappings** : `/` → ton domaine, sans `https://`
    (ex. `watch.mciut.fr`). Toutes les requêtes de l'Activité, WebSocket compris, passent
@@ -90,7 +142,12 @@ cp .env.example .env
 
 `STREAM_ADDON_URLS` = l'URL de manifest de ton Torrentio configuré, celle que tu colles dans
 Stremio (`https://torrentio.strem.fun/<ta-config>/manifest.json`). Tu peux en mettre
-plusieurs, séparées par des virgules.
+plusieurs, séparées par des virgules. Ces addons sont partagés par tout le monde ; chacun
+peut en plus ajouter les siens dans **Paramètres**.
+
+- `DATA_DIR` : dossier de la base SQLite (`./data` par défaut, `/app/data` dans Docker).
+- `PUBLIC_URL` (facultatif) : `https://watch.mciut.fr`. Sert à construire l'URL de retour
+  de la connexion Discord ; sans elle, elle est déduite de la requête.
 
 ### 3. Lancer
 
@@ -100,13 +157,19 @@ plusieurs, séparées par des virgules.
    branche `main`, *Build Pack* : **Docker Compose**.
 2. Onglet **Environment Variables** : remplis `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`,
    `SESSION_SECRET` (une longue chaîne aléatoire) et `STREAM_ADDON_URLS`.
-   `STREMIO_CACHE_GB` vaut 100 par défaut.
+   `STREMIO_CACHE_GB` vaut 100 par défaut. Mets aussi `PUBLIC_URL`
+   (`https://watch.mciut.fr`) pour la connexion sur le site.
 3. Sur le service **watch-party**, mets le domaine **avec le port 3001** :
    `https://watch.mciut.fr:3001`. Coolify gère le HTTPS. Ne donne **aucun** domaine au
    service `stremio`.
 4. **Deploy**. Dans les logs du service `watch-party`, tu dois voir
    `Stremio streaming server reachable`, puis `Stremio server settings updated`.
-5. Dans Discord → **Activities → URL Mappings** : `/` → `watch.mciut.fr`.
+5. Dans Discord → **Activities → URL Mappings** : `/` → `watch.mciut.fr`, et dans
+   **OAuth2 → Redirects** : `https://watch.mciut.fr/api/auth/discord/callback`.
+
+Les comptes, la progression et les bibliothèques sont dans le volume `watch-party-data` :
+ils survivent aux redéploiements. Garde le même `SESSION_SECRET` (le changer déconnecte
+tout le monde du site, sans perdre les données).
 
 Le serveur Stremio de cette stack est privé et réglé automatiquement : plusieurs qualités
 en même temps et un grand cache. Ton ancien `stremio.mciut.fr` public n'est plus
@@ -136,9 +199,10 @@ watch.mciut.fr {
 }
 ```
 
-**Tester sans Discord** : `ALLOW_BROWSER_MODE=1 npm start`, puis ouvre
-`http://localhost:3001/?room=test&name=Alice` dans un onglet et `?room=test&name=Bob`
-dans un autre.
+**Tester sans Discord** (mode test local uniquement, jamais en production) :
+`ALLOW_BROWSER_MODE=1 npm start`, puis ouvre `http://localhost:3001/?room=test&name=Alice`
+dans un onglet et `?room=test&name=Bob` dans un autre. Ce sont des comptes **invités**
+(marqués comme tels dans la base), identifiés par leur pseudo.
 
 **Développement** : `npm run dev` (Vite sur :5173 avec rechargement, backend sur :3001).
 Pour l'ouvrir dans Discord pendant le dev, mappe `/` vers un tunnel HTTPS qui pointe sur
@@ -194,7 +258,11 @@ démarrage.
   Comme c'est le backend (une seule IP) qui lit le lien et le relaie, ça respecte aussi la
   règle « une IP par compte » de ces services.
 - Le salon (`room`) est l'instance d'activité Discord : tous ceux qui ont rejoint la même
-  activité regardent ensemble. Tout le monde peut piloter la lecture.
+  activité regardent ensemble. Sur le site, c'est la salle perso de quelqu'un (ou celle
+  qu'on a rejointe avec un code). Tout le monde peut piloter la lecture.
+- « Regarder ensemble » choisit une source tout seul ; si elle ne convient pas, choisis-en
+  une autre dans le panneau. Pour reprendre, il faut relancer une source (les liens des
+  addons expirent), la position, elle, est gardée.
 
 ## Structure
 
@@ -202,11 +270,17 @@ démarrage.
 server/src/index.js    routes HTTP + WebSocket, relais HLS, proxy d'images
 server/src/rooms.js    état de lecture autoritaire (testé)
 server/src/media.js    torrent/débrid → session, profils de qualité, réécriture des playlists (testé)
-server/src/addons.js   protocole des addons Stremio (recherche, fiches, sources)
+server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources) (testé)
+server/src/db.js       SQLite : comptes, progression, historique, bibliothèque, addons perso (testé)
+server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
+client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
+client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres
+client/src/streams.ts  panneau des sources (filtres, tri, meilleure source)
 client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
-client/src/browse.ts   recherche → épisode → choix de la source
+client/src/format.ts   routes, progression, choix de la meilleure source (testé)
+client/src/style.css   tous les styles ; couleurs et tailles en variables (thèmes sombre/clair)
 ```
 
 `npm test` lance les tests unitaires, `npm run build` vérifie les types et construit le

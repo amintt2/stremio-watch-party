@@ -35,11 +35,15 @@ export const config = {
   // Signs session tokens. Must be set in production.
   sessionSecret: process.env.SESSION_SECRET || '',
 
+  // Public address of the site, e.g. https://watch.mciut.fr: web login redirect URI and
+  // links opened outside the Discord iframe. Default: the request's scheme + host.
+  publicUrl: trimSlash(process.env.PUBLIC_URL || ''),
+
+  // SQLite database (accounts, progress, library). Mount it as a volume in Docker.
+  dataDir: process.env.DATA_DIR || './data',
+
   // Lets the app run in a normal browser tab (no Discord), for local testing.
   allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
-
-  // Public address of the site, e.g. https://watch.mciut.fr (default: from the request).
-  publicUrl: trimSlash(process.env.PUBLIC_URL || ''),
 
   // Shown on /conditions and /confidentialite (required by Discord for apps).
   legal: {
