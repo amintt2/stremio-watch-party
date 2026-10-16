@@ -144,7 +144,7 @@ addon → infoHash → Huwa (/{infoHash}/create, puis /{infoHash}/{fichier} en R
 - `HUWA_ENGINE_URL` (`http://huwa:8080` dans le compose) : où le backend et le convertisseur
   joignent Huwa (`HUWA_MEDIA_URL` si le convertisseur doit passer par une autre adresse).
 - Le service `huwa` est privé (aucun port, aucun domaine), sans app web, sans relais P2P et sans
-  transcodage : seulement le moteur. Son cache (`HUWA_CACHE_GB`, 100 Go) est dans le volume
+  transcodage : seulement le moteur. Son cache (`HUWA_CACHE_GB`, 20 Go) est dans le volume
   `huwa-cache`. Comme Stremio, il ne partage rien (envoi désactivé à la compilation).
 - `GET /api/media/{sid}/health` (connecté) : pairs, débit, progression et verdict (`ok`,
   `slow` si le débit est sous celui de la vidéo, `searching`, `stalled`, `done`), pour
@@ -204,7 +204,7 @@ peut en plus ajouter les siens dans **Paramètres**.
    branche `main`, *Build Pack* : **Docker Compose**.
 2. Onglet **Environment Variables** : remplis `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`,
    `SESSION_SECRET` (une longue chaîne aléatoire) et `STREAM_ADDON_URLS`.
-   `STREMIO_CACHE_GB` vaut 100 par défaut. Mets aussi `PUBLIC_URL`
+   Stockage : voir « Peu de place sur le disque » plus bas. Mets aussi `PUBLIC_URL`
    (`https://watch.mciut.fr`) pour la connexion sur le site.
 3. Sur le service **watch-party**, mets le domaine **avec le port 3001** :
    `https://watch.mciut.fr:3001`. Coolify gère le HTTPS. Ne donne **aucun** domaine au
@@ -265,8 +265,16 @@ désactiver) :
   film utilise au plus 1 copie + 4 tailles de transcodage + 1 conversion par piste audio
   écoutée (souvent 2 : VF et VO), quel que soit le nombre de spectateurs : 8 couvre donc
   10 personnes et plus.
-- **Cache de `STREMIO_CACHE_GB` Go** (100 dans le compose) : un remux 4K fait 50 à 80 Go ;
-  avec 5 Go, revenir en arrière retélécharge.
+- **Peu de place sur le disque** : seuls les **torrents** prennent de la place (le fichier
+  téléchargé reste en cache). Le HLS n'est pas stocké, les liens **débrid** n'utilisent pas de
+  disque. Trois réglages :
+  - `MAX_TORRENT_GB` (15) : taille max d'un fichier torrent. Les sources plus grosses (un remux
+    4K fait 50 à 80 Go) sont grisées « Trop gros » et refusées, même quand l'addon n'annonce
+    pas la taille (vérifiée une fois le torrent ouvert). 0 = pas de limite.
+  - `HUWA_CACHE_GB` (20) : cache du moteur Huwa ; les torrents inactifs les plus anciens sont
+    effacés au-delà.
+  - `STREMIO_CACHE_GB` (5) : cache du serveur Stremio, qui ne télécharge plus qu'en secours.
+  Prévois au moins `HUWA_CACHE_GB` + `STREMIO_CACHE_GB` + quelques Go de libre.
 - **Accélération matérielle (RX 6650 XT)** : le serveur Stremio sait utiliser une carte AMD
   **sous Linux** (profil `vaapi-renderD128` : décommente `devices` dans
   `docker-compose.yml`). Sous

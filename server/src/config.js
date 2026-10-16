@@ -71,6 +71,9 @@ export const config = {
   // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
   stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
   stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 8),
+  // Largest torrent file the server will download (its disk is limited; a 4K remux is
+  // 50–80 GB). Unset or 0 = no limit. Debrid/HTTP sources use no disk and are not limited.
+  maxTorrentBytes: Number(process.env.MAX_TORRENT_GB) > 0 ? Math.round(Number(process.env.MAX_TORRENT_GB) * 1024 ** 3) : null,
   stremioCacheBytes: process.env.STREMIO_CACHE_GB
     ? Math.round(Number(process.env.STREMIO_CACHE_GB) * 1024 ** 3)
     : null,

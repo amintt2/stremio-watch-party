@@ -130,6 +130,8 @@ export interface StreamOption {
   cached: boolean;
   /** MULTI (VF + VO), VF, VOSTFR, from the release name. */
   languages?: string[];
+  /** Torrent bigger than the server's storage allows: shown, but can't be started. */
+  tooBig?: boolean;
   kind: 'torrent' | 'http';
 }
 

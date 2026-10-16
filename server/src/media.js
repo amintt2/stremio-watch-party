@@ -92,6 +92,22 @@ export function createBody(stream) {
   };
 }
 
+/** 16106127360 → "15", 64424509440.5 → "60", 10737418 → "0,01" (French decimals). */
+export function formatGb(bytes) {
+  return (bytes / 1024 ** 3).toLocaleString('fr-FR', { maximumFractionDigits: bytes < 1024 ** 3 ? 2 : 1 });
+}
+
+/** The engine knows the real size once the metadata is in: refuse what the disk can't hold. */
+export function checkFileSize(info, fileIdx, max = config.maxTorrentBytes) {
+  const length = Array.isArray(info?.files) ? info.files[fileIdx]?.length : null;
+  if (max && length > max) {
+    throw Object.assign(
+      new Error(`Fichier de ${formatGb(length)} Go, trop gros pour le stockage du serveur (max ${formatGb(max)} Go) : choisis une source plus légère`),
+      { final: true }
+    );
+  }
+}
+
 /** File to play: the addon's fileIdx, else the engine's guess, else the largest file. */
 export function chooseFile(stream, info) {
   if (typeof stream.fileIdx === 'number') return stream.fileIdx;
@@ -115,8 +131,10 @@ async function resolveTorrentHuwa(stream) {
     signal: AbortSignal.timeout(45000),
   });
   if (!res.ok) throw new Error(`Le moteur Huwa n'a pas pu ouvrir le torrent (${res.status})`);
-  const fileIdx = chooseFile(stream, await res.json());
+  const info = await res.json();
+  const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
+  checkFileSize(info, fileIdx);
   return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx };
 }
 
@@ -126,7 +144,9 @@ async function resolveTorrent(stream, log) {
       return await resolveTorrentHuwa(stream);
     } catch (err) {
       // Huwa down, restarting or without its Stremio routes: the Stremio server's own engine
-      // still plays the torrent (slower to resume/seek, but it plays).
+      // still plays the torrent (slower to resume/seek, but it plays). Not for a refusal that
+      // would be the same there (file too big).
+      if (err.final) throw err;
       log?.warn({ err: err.message }, 'Huwa engine failed, using the Stremio torrent engine');
     }
   }
@@ -142,8 +162,10 @@ async function resolveTorrentStremio(stream) {
     signal: AbortSignal.timeout(45000),
   });
   if (!res.ok) throw new Error(`Le serveur Stremio n'a pas pu ouvrir le torrent (${res.status})`);
-  const fileIdx = chooseFile(stream, await res.json());
+  const info = await res.json();
+  const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
+  checkFileSize(info, fileIdx);
   return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx };
 }
 

@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   availableQualities,
+  checkFileSize,
   chooseFile,
+  formatGb,
   converterParams,
   createBody,
   hlsParams,
@@ -13,7 +15,7 @@ import {
   peerSources,
   rewritePlaylist,
 } from '../src/media.js';
-import { describeStream, streamLanguages } from '../src/addons.js';
+import { describeStream, parseSize, streamLanguages, tooBigForServer } from '../src/addons.js';
 
 const hevc4k = { video: { codec: 'hevc', width: 3840, height: 2160, hdr: true } };
 const h264p1080 = { video: { codec: 'h264', width: 1920, height: 1080 } };
@@ -226,4 +228,26 @@ test('torrent health from stats.json: peers and speed vs the stream bitrate', ()
   assert.equal(torrentHealth({ peers: 5, downloadSpeed: 1 }, null).level, 'ok', 'unknown bitrate: no slow verdict');
   assert.equal(torrentHealth(null, bitrate), null);
   assert.equal(torrentHealth({ peers: 3, downloadSpeed: 2e6 }, bitrate).neededSpeed, 1e6);
+});
+
+test('server storage: sizes parsed, oversized torrents flagged and refused', () => {
+  const GB = 1024 ** 3;
+  assert.equal(parseSize('💾 1.5 GB'), 1.5 * GB);
+  assert.equal(parseSize('700 MiB'), 700 * 1024 ** 2);
+  assert.equal(parseSize('58,3 GB'), Math.round(58.3 * GB));
+  assert.equal(parseSize('?'), null);
+
+  const max = 15 * GB;
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 60 * GB, max), true);
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 2 * GB, max), false);
+  assert.equal(tooBigForServer({ url: 'https://debrid/x' }, 60 * GB, max), false, 'debrid uses no disk');
+  assert.equal(tooBigForServer({ infoHash: 'x' }, null, max), false, 'unknown size: checked after create');
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 60 * GB, null), false, 'no limit configured');
+
+  const info = { files: [{ length: 2 * GB }, { length: 60 * GB }] };
+  assert.doesNotThrow(() => checkFileSize(info, 0, max));
+  assert.throws(() => checkFileSize(info, 1, max), (e) => e.final && /de 60 Go.*max 15 Go/.test(e.message));
+  assert.equal(formatGb(10737418), '0,01');
+  assert.equal(formatGb(1.5 * GB), '1,5');
+  assert.doesNotThrow(() => checkFileSize(info, 1, null));
 });

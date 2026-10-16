@@ -1779,6 +1779,19 @@ input[type='range'] {
   color: var(--text-muted);
 }
 
+.badge-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.source.source-too-big,
+.source.source-too-big:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
+  background: var(--bg);
+}
+
 /* ---------------------------------------------------------------- subtitles */
 
 .subs {

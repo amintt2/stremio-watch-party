@@ -241,6 +241,19 @@ export function streamLanguages(text) {
   return out;
 }
 
+const UNITS = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+
+/** "1.4 GB" / "700 MiB" → bytes (binary units, like the engines report), or null. */
+export function parseSize(text) {
+  const m = /([\d.]+)\s*([KMGT])i?B/i.exec(String(text || '').replace(',', '.'));
+  return m ? Math.round(Number(m[1]) * UNITS[m[2].toUpperCase()]) : null;
+}
+
+/** A torrent bigger than the server's storage allows (debrid/HTTP links use no disk). */
+export function tooBigForServer(stream, sizeBytes, max = config.maxTorrentBytes) {
+  return !!(max && stream.infoHash && sizeBytes && sizeBytes > max);
+}
+
 /** Turns an addon stream into what the browser may see (no URLs, no keys). */
 export function describeStream(stream, addon) {
   const name = String(stream.name || '');
@@ -267,6 +280,7 @@ export function describeStream(stream, addon) {
     // Debrid-cached links (e.g. "[RD+]") start instantly and don't touch P2P.
     cached: /\[[A-Z]{2,3}\+\]/.test(name),
     languages: streamLanguages(text),
+    tooBig: tooBigForServer(stream, parseSize(size?.[1])),
     kind: stream.infoHash ? 'torrent' : 'http',
   };
 }

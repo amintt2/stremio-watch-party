@@ -34,6 +34,7 @@ import {
   fetchHls,
   getSession,
   fetchTorrentHealth,
+  formatGb,
   isAllowedHlsPath,
   parseProfile,
   publicMedia,
@@ -216,6 +217,9 @@ app.register(async (api) => {
     const { streamKey, title, subtitle, poster, startAt, meta } = request.body || {};
     const stream = addons.lookupStream(streamKey);
     if (!stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
+    if (addons.describeStream(stream, '').tooBig) {
+      return reply.code(413).send({ error: `Trop gros pour le stockage du serveur (max ${formatGb(config.maxTorrentBytes)} Go) : choisis une source plus légère` });
+    }
 
     const roomId = request.session.room;
     notice(roomId, `${request.session.name} lance « ${String(title || '').slice(0, 120)} »…`);
