@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanCueText, decodeSubtitle, parseSubtitles, rankSubtitles } from '../src/subtitles.js';
+import { cleanCueText, decodeSubtitle, matchOf, parseSubtitles, rankSubtitles, sameRelease, videoExtra } from '../src/subtitles.js';
 
 test('SRT with CRLF, BOM and markup becomes clean cues', () => {
   const srt = '﻿1\r\n00:00:13,910 --> 00:00:16,504\r\n<b><i>Si je ne t\'aimais pas</i></b>\r\n\r\n2\r\n00:01:02,5 --> 00:01:04,000\r\n{\\an8}<font color="#ff0000">Deux</font>\r\nlignes\r\n\r\n';
@@ -40,7 +40,32 @@ test('subtitles: French first, a few per language, only http(s)', () => {
   const list = [s('spa'), s('eng'), s('fre'), ...Array.from({ length: 9 }, () => s('eng')), s('fre', 'file:///etc/passwd'), { lang: 'ger' }];
   const ranked = rankSubtitles(list);
   assert.equal(ranked[0].lang, 'fre');
-  assert.equal(ranked.filter((x) => x.lang === 'eng').length, 6);
+  assert.equal(ranked.filter((x) => x.lang === 'eng').length, 8);
   assert.equal(ranked.at(-1).lang, 'spa');
   assert.ok(ranked.every((x) => x.url.startsWith('https://')));
+});
+
+test('subtitles made for the playing file come first in their language', () => {
+  const video = { name: 'Dune.Part.Two.2024.1080p.WEB-DL.H264.AAC-EVO.mkv', hash: 'abcdef0123456789' };
+  const list = [
+    { lang: 'fre', url: 'https://x/1', movieReleaseName: 'Dune.Part.Two.2024.2160p.BluRay.REMUX-FGT' },
+    { lang: 'fre', url: 'https://x/2', movieReleaseName: 'Dune.Part.Two.2024.1080p.WEB-DL.H264.AAC-EVO' },
+    { lang: 'eng', url: 'https://x/3', m: 'h' },
+    { lang: 'fre', url: 'https://x/4', m: 'h' },
+  ];
+  const ranked = rankSubtitles(list, video);
+  assert.deepEqual(ranked.map((x) => [x.url.slice(-1), x.match]), [['4', 'hash'], ['2', 'release'], ['1', null], ['3', 'hash']]);
+  assert.equal(matchOf({ subtitleFileName: 'Other.Movie.1999.DVDRip.srt' }, video), null);
+});
+
+test('same release: enough shared tokens, not just the title', () => {
+  assert.ok(sameRelease('Breaking.Bad.S01E01.DSR.XviD-0TV', 'Breaking.Bad.S01E01.DSR.XviD-0TV.avi'));
+  assert.ok(!sameRelease('Breaking.Bad.S01.DVDRip.XviD-ORPHEUS', 'Breaking.Bad.S01E01.1080p.BluRay.x264-ROVERS.mkv'));
+  assert.ok(!sameRelease(undefined, 'x.mkv'));
+});
+
+test('video extras for the addon URL', () => {
+  assert.equal(videoExtra({ hash: '8e245d9679d31e12', size: 12909756, name: 'Film 2024.mkv' }), 'videoHash=8e245d9679d31e12&videoSize=12909756&filename=Film+2024.mkv');
+  assert.equal(videoExtra({ hash: null, size: null, name: null }), '');
+  assert.equal(videoExtra(null), '');
 });

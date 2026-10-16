@@ -12,17 +12,13 @@ import {
   formatPercent,
   isDoubleTap,
   nextOption,
-  parseSubSize,
   seekRatio,
   seekTarget,
   shortcutAction,
   SHORTCUTS,
-  SUB_SCALE,
-  SUB_SIZES,
   tapZone,
   VOLUME_STEP,
   volumeIcon,
-  type SubSize,
   type Tap,
   type TapZone,
 } from './controls.ts';
@@ -30,7 +26,10 @@ import { clear, h, toast } from './dom.ts';
 import { HEALTH_LABEL, lowerQuality, sourceDetail, sourceProblem, type Health, type SourceHealth } from './health.ts';
 import { roomPlayback, type Playback } from './playback.ts';
 import type { Player } from './player.ts';
-import { ExternalSubtitles } from './subtitles.ts';
+import { SpeechMeter } from './speech.ts';
+import { subtitleStyleControls } from './subcontrols.ts';
+import { applyStyleVars, onSubtitleStyle, pictureHeight, styleVars, subtitleStyle } from './substyle.ts';
+import { cleanVttText, ExternalSubtitles, formatOffset, lineTime } from './subtitles.ts';
 import { formatTime } from './sync.ts';
 import { avatar, icon } from './ui.ts';
 
@@ -59,7 +58,6 @@ export interface StageHost {
 }
 
 const REMAINING_KEY = 'wp-remaining';
-const SUBS_SIZE_KEY = 'wp-subs-size';
 const IDLE_MS = 3000;
 /** Room seeks from ±10 s taps/keys are grouped: one seek for the whole burst. */
 const SEEK_BURST_MS = 450;
@@ -361,9 +359,36 @@ export function createStage(host: StageHost) {
   document.addEventListener('keydown', gesture, true);
 
   // ------------------------------------------------------------ subtitles
-  let subSize: SubSize = parseSubSize(localStorageGet(SUBS_SIZE_KEY));
-  const applySubSize = () => el.style.setProperty('--subs-scale', String(SUB_SCALE[subSize]));
-  applySubSize();
+  // Style: sizes follow the picture's height (letterbox included), like on a TV.
+  const applySubStyle = () => {
+    const box = el.getBoundingClientRect();
+    const height = pictureHeight(box.width, box.height, video.videoWidth, video.videoHeight);
+    applyStyleVars(el, styleVars(subtitleStyle(), height || 360, box.height || height || 360));
+  };
+  new ResizeObserver(applySubStyle).observe(el);
+  video.addEventListener('loadedmetadata', applySubStyle);
+  video.addEventListener('resize', applySubStyle);
+  onSubtitleStyle(applySubStyle);
+  applySubStyle();
+
+  // Auto-sync listens to the film's voices (this viewer's own playback, nothing sent).
+  const speech = new SpeechMeter(video, () => volume.analyser());
+  const wantsAudioSync = () => !!subs.selected && subs.auto && !['file', 'manual', 'reference'].includes(subs.method);
+  setInterval(() => {
+    if (wantsAudioSync()) {
+      speech.start();
+      subs.listen(speech.samples);
+    } else speech.stop();
+  }, 3000);
+  subs.onAutoSync = (message) => toast(message);
+
+  /** The file's own subtitle track: cues in a hidden text track, drawn by the overlay. */
+  function fileTrackLines(): string[] {
+    const tracks = [...video.textTracks].filter((t) => (t.kind === 'subtitles' || t.kind === 'captions') && t.mode === 'hidden');
+    const track = tracks[tracks.length - 1];
+    if (!track?.activeCues) return [];
+    return [...track.activeCues].map((c) => cleanVttText((c as VTTCue).text || '')).filter(Boolean);
+  }
 
   /** "off", "f:<file track>" or "x:<OpenSubtitles key>": one subtitle at a time. */
   const subtitleValue = () => (subs.selected ? `x:${subs.selected}` : player.subtitleTrack >= 0 ? `f:${player.subtitleTrack}` : 'off');
@@ -402,7 +427,7 @@ export function createStage(host: StageHost) {
   };
 
   // ------------------------------------------------------------ settings menu
-  type Page = 'main' | 'quality' | 'audio' | 'subs';
+  type Page = 'main' | 'quality' | 'audio' | 'subs' | 'sync' | 'heard' | 'style';
   let page: Page = 'main';
   const menuOpen = () => !menu.hidden || !help.hidden;
 
@@ -483,8 +508,10 @@ export function createStage(host: StageHost) {
       subs.options.length,
       subs.selected,
       subs.loading,
-      subs.offset,
-      subSize,
+      subs.timing,
+      subs.method,
+      subs.syncing,
+      subs.auto,
     ]);
     if (!force && (key === menuKey || adjusting)) return;
     menuKey = key;
@@ -514,7 +541,101 @@ export function createStage(host: StageHost) {
           player.subtitleTracks.length ? h('div', { class: 'menu-group' }, 'Dans le fichier') : null,
           ...player.subtitleTracks.map((t) => choice(t.label, current === `f:${t.id}`, () => setSubtitle(`f:${t.id}`))),
           subs.options.length ? h('div', { class: 'menu-group' }, 'OpenSubtitles') : null,
-          ...subs.options.map((o) => choice(subs.label(o), current === `x:${o.key}`, () => setSubtitle(`x:${o.key}`)))
+          ...subs.options.map((o) => {
+            const c = choice(subs.label(o), current === `x:${o.key}`, () => setSubtitle(`x:${o.key}`));
+            if (o.match) c.append(h('span', { class: `menu-badge${o.match === 'hash' ? ' menu-badge-good' : ''}`, title: o.release || '' }, o.match === 'hash' ? 'Fait pour ce fichier' : 'Même version'));
+            if (o.release) c.title = o.release;
+            return c;
+          })
+        )
+      );
+      return;
+    }
+    if (page === 'style') {
+      clear(
+        menu,
+        subPage(
+          'Style des sous-titres',
+          subtitleStyleControls({ media: true, compact: true }),
+          h('a', { class: 'menu-row menu-link', href: '#/settings', onclick: () => host.close() }, h('span', { class: 'menu-row-title' }, 'Plus de réglages (contour, ombre, fond…)'), icon('chevron', 'icon icon-sm'))
+        )
+      );
+      return;
+    }
+    if (page === 'heard') {
+      const now = video.currentTime;
+      const lines = subs.nearbyLines(now, 5);
+      clear(
+        menu,
+        subPage(
+          'Quelle réplique viens-tu d’entendre ?',
+          h('p', { class: 'menu-help' }, 'Clique dessus juste après l’avoir entendue : les sous-titres se calent dessus.'),
+          ...(lines.length
+            ? lines.map((cue) =>
+                h(
+                  'button',
+                  {
+                    class: 'menu-choice menu-line',
+                    type: 'button',
+                    onclick: () => {
+                      subs.heardNow(cue, video.currentTime);
+                      page = 'main';
+                      renderMenu(true);
+                      toast(`Sous-titres calés (${formatOffset(subs.timing.offset)})`);
+                    },
+                  },
+                  h('span', { class: 'menu-line-time' }, lineTime(cue, subs.timing)),
+                  h('span', { class: 'menu-line-text' }, cue.text.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\n/g, ' '))
+                )
+              )
+            : [h('div', { class: 'menu-item menu-muted' }, 'Aucune réplique autour de ce moment')])
+        )
+      );
+      return;
+    }
+    if (page === 'sync') {
+      const nudge = (delta: number, text: string, title: string) =>
+        h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title, onclick: () => subs.shift(delta) }, text);
+      clear(
+        menu,
+        subPage(
+          'Synchronisation',
+          h('div', { class: 'menu-item menu-sync-status' }, h('span', { class: `sync-dot sync-${subs.method}${subs.syncing ? ' sync-busy' : ''}` }), subs.syncLabel()),
+          h(
+            'div',
+            { class: 'menu-item' },
+            h('span', { class: 'menu-row-title' }, 'Décalage'),
+            h(
+              'div',
+              { class: 'menu-inline menu-nudges', role: 'group', 'aria-label': 'Décalage des sous-titres' },
+              nudge(-1, '−1 s', 'Sous-titres 1 s plus tôt'),
+              nudge(-0.1, '−0,1', 'Sous-titres 0,1 s plus tôt (G)'),
+              h('span', { class: 'menu-value' }, formatOffset(subs.timing.offset)),
+              nudge(0.1, '+0,1', 'Sous-titres 0,1 s plus tard (H)'),
+              nudge(1, '+1 s', 'Sous-titres 1 s plus tard')
+            )
+          ),
+          h(
+            'button',
+            { class: 'menu-row', type: 'button', onclick: () => ((page = 'heard'), renderMenu(true)) },
+            h('span', { class: 'menu-row-title' }, 'Caler sur une réplique entendue'),
+            icon('chevron', 'icon icon-sm')
+          ),
+          h(
+            'div',
+            { class: 'menu-item' },
+            h('span', { class: 'menu-row-title' }, 'Synchro automatique'),
+            h(
+              'div',
+              { class: 'segmented segmented-media', role: 'radiogroup', 'aria-label': 'Synchro automatique' },
+              [true, false].map((on) =>
+                h('button', { type: 'button', role: 'radio', 'aria-checked': String(subs.auto === on), class: subs.auto === on ? 'active' : '', onclick: () => (subs.auto = on) }, on ? 'Oui' : 'Non')
+              )
+            )
+          ),
+          subs.method !== 'none' && subs.method !== 'file'
+            ? h('button', { class: 'menu-row', type: 'button', onclick: () => subs.resetTiming() }, h('span', { class: 'menu-row-title' }, 'Revenir au calage d’origine'))
+            : null
         )
       );
       return;
@@ -537,49 +658,8 @@ export function createStage(host: StageHost) {
       row('Qualité', qualityText, 'quality'),
       player.audioTracks.length > 1 ? row('Audio', player.audioTracks.find((t) => t.id === player.audioTrack)?.label || '', 'audio') : null,
       hasSubs || subs.loading ? row('Sous-titres', subs.loading ? 'Chargement…' : subtitleLabel(subtitleValue()), 'subs') : h('div', { class: 'menu-item menu-muted' }, 'Pas de sous-titres pour cette vidéo'),
-      subs.selected
-        ? h(
-            'div',
-            { class: 'menu-item' },
-            h('span', { class: 'menu-row-title' }, 'Décalage des sous-titres'),
-            h(
-              'div',
-              { class: 'menu-inline', role: 'group', 'aria-label': 'Décalage des sous-titres' },
-              h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Sous-titres plus tôt', onclick: () => subs.shift(-0.5) }, '−0,5 s'),
-              h('span', { class: 'menu-value' }, subs.loading ? '…' : `${subs.offset > 0 ? '+' : ''}${String(subs.offset).replace('.', ',')} s`),
-              h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Sous-titres plus tard', onclick: () => subs.shift(0.5) }, '+0,5 s')
-            )
-          )
-        : null,
-      hasSubs
-        ? h(
-            'div',
-            { class: 'menu-item' },
-            h('span', { class: 'menu-row-title' }, 'Taille des sous-titres'),
-            h(
-              'div',
-              { class: 'segmented segmented-media', role: 'radiogroup', 'aria-label': 'Taille des sous-titres' },
-              SUB_SIZES.map((size) =>
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    role: 'radio',
-                    'aria-checked': String(size === subSize),
-                    class: size === subSize ? 'active' : '',
-                    onclick: () => {
-                      subSize = size;
-                      localStorageSet(SUBS_SIZE_KEY, size);
-                      applySubSize();
-                      renderMenu(true);
-                    },
-                  },
-                  size.toUpperCase()
-                )
-              )
-            )
-          )
-        : null,
+      subs.selected ? row('Synchronisation', subs.syncing ? 'Recherche…' : formatOffset(subs.timing.offset), 'sync') : null,
+      hasSubs ? row('Style des sous-titres', '', 'style') : null,
       h('button', { class: 'menu-row menu-keys', type: 'button', onclick: openHelp }, icon('keyboard', 'icon icon-sm'), h('span', { class: 'menu-row-title' }, 'Raccourcis clavier'), h('kbd', {}, '?'))
     );
     renderVolume();
@@ -760,6 +840,15 @@ export function createStage(host: StageHost) {
         break;
       case 'subtitles':
         cycleSubtitles();
+        break;
+      case 'subs-earlier':
+      case 'subs-later':
+        if (!subs.selected) {
+          showFlash(h('span', { class: 'flash-text' }, player.subtitleTrack >= 0 ? 'Décalage : sous-titres OpenSubtitles seulement' : 'Aucun sous-titre'));
+          break;
+        }
+        subs.shift(action === 'subs-earlier' ? -0.1 : 0.1);
+        showFlash(h('span', { class: 'flash-text' }, `Sous-titres : ${formatOffset(subs.timing.offset)}`));
         break;
       case 'help':
         if (help.hidden) openHelp();
@@ -945,7 +1034,11 @@ export function createStage(host: StageHost) {
   }
   setInterval(tick, 250);
   // External subtitles follow this viewer's own video time.
-  setInterval(() => state()?.media && subs.render(video.currentTime), 100);
+  setInterval(() => {
+    if (!state()?.media) return;
+    if (player.subtitleTrack >= 0 && !subs.selected) subs.show(fileTrackLines());
+    else subs.render(video.currentTime);
+  }, 100);
 
   player.onChange = () => {
     renderMenu();
@@ -963,7 +1056,8 @@ export function createStage(host: StageHost) {
     const sid = media?.sid || null;
     if (sid !== lastSid) {
       lastSid = sid;
-      subs.load(sid);
+      speech.reset();
+      subs.load(sid, { videoId: media?.meta?.videoId, fps: media?.source?.fps });
       quietUntil = Date.now() + 10_000;
       dismissed = '';
       disarmStop();

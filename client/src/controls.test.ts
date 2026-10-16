@@ -8,7 +8,6 @@ import {
   formatPercent,
   isDoubleTap,
   nextOption,
-  parseSubSize,
   parseVolume,
   seekRatio,
   seekTarget,
@@ -106,9 +105,6 @@ test('keyboard shortcuts follow the layout, ignore modifiers', () => {
 });
 
 test('subtitle size and menu cycling', () => {
-  assert.equal(parseSubSize('xl'), 'xl');
-  assert.equal(parseSubSize('huge'), 'm');
-  assert.equal(parseSubSize(null), 'm');
   assert.equal(nextOption(['off', 'f:0', 'x:a'], 'off'), 'f:0');
   assert.equal(nextOption(['off', 'f:0', 'x:a'], 'x:a'), 'off');
   assert.equal(nextOption(['off', 'x:a'], 'gone'), 'off');

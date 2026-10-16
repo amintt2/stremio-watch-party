@@ -175,26 +175,6 @@ export function loginScreen(cfg: ServerConfig, onGuest: (id: Identity) => void) 
   );
 }
 
-export function localStorageGet(key: string) {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
+import { localStorageGet, localStorageSet } from './storage.ts';
 
-export function localStorageRemove(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-export function localStorageSet(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage unavailable (private mode, iframe policy) */
-  }
-}
+export { localStorageGet, localStorageRemove, localStorageSet } from './storage.ts';

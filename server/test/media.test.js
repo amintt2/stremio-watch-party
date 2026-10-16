@@ -7,6 +7,10 @@ import {
   formatGb,
   converterParams,
   createBody,
+  ensureFileHash,
+  fileFromInfo,
+  fileFromStream,
+  opensubtitlesHash,
   hlsParams,
   torrentHealth,
   isAllowedHlsPath,
@@ -15,6 +19,7 @@ import {
   peerSources,
   rewritePlaylist,
 } from '../src/media.js';
+import http from 'node:http';
 import { describeStream, parseSize, streamLanguages, tooBigForServer } from '../src/addons.js';
 
 const hevc4k = { video: { codec: 'hevc', width: 3840, height: 2160, hdr: true } };
@@ -250,4 +255,37 @@ test('server storage: sizes parsed, oversized torrents flagged and refused', () 
   assert.equal(formatGb(10737418), '0,01');
   assert.equal(formatGb(1.5 * GB), '1,5');
   assert.doesNotThrow(() => checkFileSize(info, 1, null));
+});
+
+test('OpenSubtitles hash: size + first and last 64 KiB as little-endian words', async () => {
+  const size = 200000;
+  const data = Uint8Array.from({ length: size }, (_, i) => (i * 7 + 3) % 256);
+  // Reference value computed independently (Python struct '<Q').
+  assert.equal(opensubtitlesHash(data.subarray(0, 65536), data.subarray(size - 65536), size), '60a0df1f5fa2cd40');
+
+  // Same value read over HTTP with two Range requests.
+  const server = http.createServer((req, res) => {
+    const [, a, b] = /bytes=(\d+)-(\d+)/.exec(req.headers.range);
+    res.writeHead(206, { 'content-range': `bytes ${a}-${b}/${size}` });
+    res.end(data.subarray(+a, +b + 1));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const session = { mediaURL: `http://127.0.0.1:${server.address().port}/f`, file: { name: 'x.mkv', size: null, hash: null } };
+    const file = await ensureFileHash(session);
+    assert.deepEqual(file, { name: 'x.mkv', size, hash: '60a0df1f5fa2cd40' });
+  } finally {
+    server.close();
+  }
+});
+
+test('played file name and size, from the torrent or the addon hints', () => {
+  assert.deepEqual(fileFromInfo({ files: [{ name: 'a.nfo', length: 10 }, { path: 'Dir/Film.2024.1080p.mkv', length: 5e9 }] }, 1), { name: 'Film.2024.1080p.mkv', size: 5e9 });
+  assert.deepEqual(fileFromInfo(null, 0), { name: null, size: null });
+  assert.deepEqual(
+    fileFromStream({ behaviorHints: { filename: 'Show.S01E01.mkv', videoSize: 123, videoHash: 'ABCDEF0123456789' } }, 'https://cdn/x'),
+    { name: 'Show.S01E01.mkv', size: 123, hash: 'abcdef0123456789' }
+  );
+  assert.deepEqual(fileFromStream({}, 'https://cdn/dl/Film%202024.mp4?token=1'), { name: 'Film 2024.mp4', size: null, hash: null });
+  assert.deepEqual(fileFromStream({ behaviorHints: { videoHash: 'nope' } }, 'https://cdn/resolve/abc'), { name: null, size: null, hash: null });
 });

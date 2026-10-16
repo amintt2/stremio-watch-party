@@ -1,4 +1,11 @@
 import './style.css';
+// Subtitle fonts (SIL OFL), bundled: only downloaded when a viewer picks them.
+import '@fontsource/nunito/600.css';
+import '@fontsource/nunito/800.css';
+import '@fontsource/atkinson-hyperlegible/400.css';
+import '@fontsource/atkinson-hyperlegible/700.css';
+import '@fontsource/comic-neue/400.css';
+import '@fontsource/comic-neue/700.css';
 import { api, type RoomState } from './api.ts';
 import type { App, PlayRequest, View } from './app.ts';
 import { LoginRequired, loginScreen, signIn, type Identity } from './auth.ts';

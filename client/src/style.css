@@ -2365,10 +2365,6 @@ body.player-open .toasts {
   color: var(--on-media-muted);
 }
 
-/* File subtitle tracks (hls.js) follow the same size setting. */
-.stage .video::cue {
-  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
-}
 
 /* Touch screens: volume lives in the menu (phones also have volume buttons);
    no keyboard shortcuts entry. */
@@ -2449,21 +2445,35 @@ body.player-open .toasts {
   justify-self: center;
   z-index: 1;
   display: grid;
-  gap: 4px;
+  gap: 0.15em;
   justify-items: center;
   text-align: center;
-  max-width: min(90%, 1100px);
-  margin-bottom: 6%;
+  max-width: min(92%, 1200px);
+  margin-bottom: var(--subs-bottom, 6%);
   pointer-events: none;
   transition: margin-bottom 0.25s;
+  /* The viewer's style (substyle.ts), as custom properties set on the stage. */
+  font-family: var(--subs-family, var(--font));
+  font-size: var(--subs-size, 24px);
+  font-weight: var(--subs-weight, 600);
+  color: var(--subs-color, var(--on-media));
+  line-height: 1.25;
+}
+
+/* "Bande": one band behind the whole block. */
+.subs:not(:empty) {
+  background: var(--subs-band, transparent);
+  padding: 0.15em 0.6em;
+  border-radius: var(--radius-sm);
 }
 
 .stage.mode-full > .subs {
   grid-area: 1 / 1;
 }
 
+/* Controls showing: the lines move up above them, never under. */
 .stage:not(.idle) > .subs {
-  margin-bottom: 120px;
+  margin-bottom: max(var(--subs-bottom, 0px), 120px);
 }
 
 .stage.mode-mini > .subs,
@@ -2472,14 +2482,216 @@ body.player-open .toasts {
 }
 
 .subs-cue {
-  padding: 2px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--media-scrim-top);
-  color: var(--on-media);
-  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
-  line-height: 1.3;
-  font-weight: 500;
+  padding: 0.05em 0.35em;
+  border-radius: 0.2em;
+  background: var(--subs-box, transparent);
+  text-shadow: var(--subs-shadow, 0 0 4px #000);
   white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* ---- style controls (settings page and player menu) */
+
+.substyle {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.substyle-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.substyle-label {
+  padding-top: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.substyle-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.segmented-wrap {
+  flex-wrap: wrap;
+  border-radius: var(--radius);
+  justify-self: start;
+  max-width: 100%;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 3px var(--bg-2);
+}
+
+.swatch.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--bg-2), 0 0 0 2px var(--accent-ring);
+}
+
+.stage-menu .swatch {
+  box-shadow: inset 0 0 0 3px var(--media-panel);
+  border-color: var(--media-panel-border);
+}
+
+.stage-menu .swatch.active {
+  border-color: var(--on-media);
+}
+
+.stage-menu .substyle {
+  padding: 4px 14px 10px;
+}
+
+.stage-menu .substyle-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.stage-menu .substyle-label {
+  padding-top: 0;
+  color: var(--on-media-muted);
+}
+
+.subs-preview {
+  position: relative;
+  display: grid;
+  /* A screen's shape: the preview shows the real size on a 16:9 picture this wide. */
+  aspect-ratio: 16 / 9;
+  max-height: 380px;
+  margin: 12px 0 18px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* A dusky still: sky, hills, a bright patch where outlines matter most. */
+  background:
+    radial-gradient(circle at 72% 82%, rgba(255, 236, 190, 0.85) 0 9%, transparent 26%),
+    linear-gradient(180deg, #2b3d66 0%, #8c6d8f 48%, #d99a6c 70%, #3a2c32 71%, #1d1a20 100%);
+  container-type: size;
+}
+
+.subs-preview > .subs {
+  align-self: end;
+}
+
+@media (max-width: 640px) {
+  .substyle-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .substyle-label {
+    padding-top: 0;
+  }
+
+}
+
+/* ---- sync page of the player menu */
+
+.menu-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--media-panel-border);
+  color: var(--on-media-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.menu-badge-good {
+  border-color: var(--media-good);
+  color: var(--media-good);
+}
+
+.menu-help {
+  margin: 0;
+  padding: 2px 14px 8px;
+  color: var(--on-media-muted);
+  font-size: 13px;
+}
+
+.menu-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--on-media);
+  font-size: 13px;
+}
+
+.sync-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--media-idle);
+}
+
+.sync-file,
+.sync-reference,
+.sync-audio {
+  background: var(--media-good);
+}
+
+.sync-manual,
+.sync-saved,
+.sync-fps {
+  background: var(--accent);
+}
+
+.sync-busy {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.menu-nudges {
+  display: grid;
+  grid-template-columns: repeat(5, auto);
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-nudges .btn {
+  padding-inline: 8px;
+}
+
+.menu-line {
+  align-items: baseline;
+  gap: 10px;
+  text-align: left;
+}
+
+.menu-line-time {
+  flex: none;
+  color: var(--on-media-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.menu-line-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-link {
+  text-decoration: none;
+  color: inherit;
 }
 
 

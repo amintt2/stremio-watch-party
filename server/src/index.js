@@ -31,6 +31,7 @@ import {
   watchStremioServer,
   hlsParams,
   createSession,
+  ensureFileHash,
   fetchHls,
   getSession,
   fetchTorrentHealth,
@@ -388,11 +389,17 @@ app.register(async (api) => {
     if (!media) return reply.code(404).send({ error: 'Session inconnue' });
     const meta = media.meta;
     if (!meta?.videoId || !config.subtitleAddons.length) return { items: [] };
-    const cacheKey = `${meta.type}:${meta.videoId}`;
+    // The file's OpenSubtitles hash finds subtitles timed for this exact release. Not
+    // fatal: without it the addon still answers by name and by title.
+    const file = await ensureFileHash(media, 10000).catch((err) => {
+      request.log.debug({ err: err.message }, 'video hash unavailable');
+      return media.file;
+    });
+    const cacheKey = `${meta.type}:${meta.videoId}:${file?.hash || ''}:${file?.name || ''}`;
     let entry = subtitleLists.get(cacheKey);
     if (!entry || entry.expires < Date.now()) {
-      // One query per video for the whole room, shared for 30 min.
-      entry = { items: listSubtitles(meta.type, meta.videoId, request.log), expires: Date.now() + 30 * 60 * 1000 };
+      // One query per video file for the whole room, shared for 30 min.
+      entry = { items: listSubtitles(meta.type, meta.videoId, request.log, file), expires: Date.now() + 30 * 60 * 1000 };
       subtitleLists.set(cacheKey, entry);
       entry.items.catch(() => subtitleLists.delete(cacheKey));
       if (subtitleLists.size > 200) subtitleLists.delete(subtitleLists.keys().next().value);

@@ -333,7 +333,8 @@ export class Player {
     this.subtitleTrack = id;
     if (this.hls) {
       this.hls.subtitleTrack = id;
-      this.hls.subtitleDisplay = id >= 0;
+      // Cues still load into a hidden text track: the stage draws them in the viewer's style.
+      this.hls.subtitleDisplay = false;
     }
     this.onChange();
   }

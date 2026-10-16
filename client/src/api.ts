@@ -13,7 +13,7 @@ export interface RoomMedia {
   duration: number | null;
   startedBy: string;
   meta: { id: string; type: 'movie' | 'series'; videoId: string } | null;
-  source: { codec: string; width: number; height: number; hdr: boolean; dolbyVision: boolean };
+  source: { codec: string; width: number; height: number; hdr: boolean; dolbyVision: boolean; fps?: number | null };
   qualities: Quality[];
   /** Next episode (series), for the auto-next countdown. */
   next?: { videoId: string; subtitle: string } | null;
