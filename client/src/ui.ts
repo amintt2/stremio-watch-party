@@ -1,6 +1,6 @@
 import { img, type Member, type SearchResult } from './api.ts';
 import { openExternal } from './auth.ts';
-import { h } from './dom.ts';
+import { h, toast } from './dom.ts';
 import { progressRatio, routeHref } from './format.ts';
 
 // Line icons (24×24, stroke = currentColor), drawn for this app.
@@ -23,9 +23,23 @@ const ICONS: Record<string, string> = {
   trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>',
   volume: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  mute: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="m16 9.5 5 5M21 9.5l-5 5"/>',
+  'volume-low': '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/>',
+  'fullscreen-exit': '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  pip: '<rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11.5" width="7" height="5.5" rx="1" fill="currentColor"/>',
+  chevron: '<path d="m9 5 7 7-7 7"/>',
+  keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   users: '<circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M18 14.2A6.5 6.5 0 0 1 21.5 20"/>',
   star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z" fill="currentColor"/>',
   logout: '<path d="M14 4.5h4.5v15H14M10 8l-4 4 4 4M6 12h10"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  'eye-off': '<path d="M4 4l16 16"/><path d="M9.9 5.8A9 9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.8 3.6M6.5 7.6A15.6 15.6 0 0 0 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.3-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  next: '<path d="M5 5.5v13l9.5-6.5z" fill="currentColor"/><path d="M18 5.5v13"/>',
+  share: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4M8.2 13.2l7.6 4"/>',
+  external: '<path d="M14 4.5h5.5V10M19.5 4.5 11 13M18 14v5.5H4.5V6H10"/>',
+  trailer: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9v6l5-3z" fill="currentColor"/>',
+  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+  reset: '<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4.5v4h4"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
 };
 
@@ -47,6 +61,10 @@ export interface CardOptions {
   sub?: string | null;
   progress?: { position: number; duration: number | null } | null;
   action?: HTMLElement | null;
+  /** Several small round buttons over the poster (see cardButton). */
+  actions?: HTMLElement[];
+  /** Small badge over the poster, e.g. "Vu". */
+  badge?: string | null;
 }
 
 /** Poster tile, the building block of every list. */
@@ -61,14 +79,41 @@ export function posterCard(item: SearchResult, opts: CardOptions = {}) {
       : null,
     h('span', { class: 'poster-ph' }, item.name),
     item.rating ? h('span', { class: 'poster-rating' }, icon('star', 'icon icon-xs'), item.rating) : null,
+    opts.badge ? h('span', { class: 'poster-badge' }, icon('check', 'icon icon-xs'), opts.badge) : null,
     opts.progress ? progressBar(progressRatio(opts.progress.position, opts.progress.duration), 'progress progress-poster') : null
   );
   return h(
     'div',
     { class: 'card' },
     h('a', { class: 'card-link', href, title: item.name }, poster, h('span', { class: 'card-title' }, item.name), sub ? h('span', { class: 'card-sub' }, sub) : null),
-    opts.action || null
+    opts.action || null,
+    opts.actions?.length ? h('div', { class: 'card-actions' }, opts.actions) : null
   );
+}
+
+/** Round button over a poster (inside CardOptions.actions). */
+export function cardButton(iconName: string, label: string, onclick: (button: HTMLButtonElement) => void | Promise<void>) {
+  const button: HTMLButtonElement = h(
+    'button',
+    {
+      class: 'card-btn',
+      type: 'button',
+      title: label,
+      'aria-label': label,
+      onclick: async (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        button.disabled = true;
+        try {
+          await onclick(button);
+        } finally {
+          button.disabled = false;
+        }
+      },
+    },
+    icon(iconName, 'icon icon-sm')
+  );
+  return button;
 }
 
 /** Horizontal, scrollable row with a title and an optional "see all" link. */
@@ -81,8 +126,128 @@ export function row(title: string, items: HTMLElement[] | HTMLElement, more?: st
   );
 }
 
+const skeletonCard = () =>
+  h('div', { class: 'card skeleton', 'aria-hidden': 'true' }, h('span', { class: 'poster' }), h('span', { class: 'skeleton-line' }), h('span', { class: 'skeleton-line short' }));
+
 export function skeletonRow(title: string, n = 8) {
-  return row(title, Array.from({ length: n }, () => h('div', { class: 'card skeleton' }, h('span', { class: 'poster' }))));
+  const r = row(title, Array.from({ length: n }, skeletonCard));
+  r.setAttribute('aria-busy', 'true');
+  return r;
+}
+
+/** Placeholder grid while a list loads. */
+export function skeletonGrid(n = 12) {
+  return Array.from({ length: n }, skeletonCard);
+}
+
+/** Placeholder lines (history). */
+export function skeletonLines(n = 5) {
+  return Array.from({ length: n }, () =>
+    h('div', { class: 'history-item skeleton', 'aria-hidden': 'true' }, h('span', { class: 'history-poster' }), h('span', { class: 'skeleton-text' }, h('span', { class: 'skeleton-line' }), h('span', { class: 'skeleton-line short' })))
+  );
+}
+
+/** Placeholder of a title page. */
+export function skeletonDetail() {
+  return h(
+    'div',
+    { class: 'detail-layout skeleton', 'aria-busy': 'true', 'aria-label': 'Chargement' },
+    h(
+      'div',
+      { class: 'detail-hero' },
+      h('span', { class: 'detail-poster skeleton-block' }),
+      h('div', { class: 'skeleton-text' }, h('span', { class: 'skeleton-line big' }), h('span', { class: 'skeleton-line' }), h('span', { class: 'skeleton-line' }), h('span', { class: 'skeleton-line short' }))
+    ),
+    h('span', { class: 'streams skeleton-block' })
+  );
+}
+
+/** Segmented buttons ("Tout · Films · Séries"); a count is shown after each label when given. */
+export function segmented<T extends string>(label: string, options: [T, string, number?][], value: T, onPick: (v: T) => void) {
+  return h(
+    'div',
+    { class: 'segmented', role: 'group', 'aria-label': label },
+    options.map(([v, text, count]) =>
+      h(
+        'button',
+        { type: 'button', class: v === value ? 'active' : '', 'aria-pressed': v === value ? 'true' : 'false', onclick: () => onPick(v) },
+        text,
+        count !== undefined ? h('span', { class: 'count' }, String(count)) : null
+      )
+    )
+  );
+}
+
+/**
+ * Button that asks to click again to confirm (the Discord iframe blocks confirm()).
+ * The label turns into `confirmLabel` for 4 s.
+ */
+export function confirmButton(attrs: { class: string; label: string; confirmLabel: string; icon?: string; title?: string }, action: () => Promise<void> | void) {
+  let armed = 0;
+  let timer = 0;
+  const text = h('span', { class: 'btn-label' }, attrs.label);
+  const reset = () => {
+    armed = 0;
+    text.textContent = attrs.label;
+    button.classList.remove('armed');
+  };
+  const button: HTMLButtonElement = h(
+    'button',
+    {
+      class: attrs.class,
+      type: 'button',
+      title: attrs.title || null,
+      onclick: async () => {
+        clearTimeout(timer);
+        if (!armed) {
+          armed = Date.now();
+          text.textContent = attrs.confirmLabel;
+          button.classList.add('armed');
+          timer = window.setTimeout(reset, 4000);
+          return;
+        }
+        reset();
+        button.disabled = true;
+        try {
+          await action();
+        } catch (err) {
+          toast((err as Error).message);
+        } finally {
+          button.disabled = false;
+        }
+      },
+      onblur: () => armed && window.setTimeout(reset, 200),
+    },
+    attrs.icon ? icon(attrs.icon, 'icon icon-sm') : null,
+    text
+  );
+  return button;
+}
+
+/**
+ * Copies to the clipboard; the Discord iframe may refuse it, so falls back to
+ * execCommand, then shows the text so it can be copied by hand.
+ */
+export async function copyText(text: string, okMessage = 'Copié') {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(okMessage);
+    return;
+  } catch {
+    /* blocked: try the old way */
+  }
+  const area = h('textarea', { class: 'visually-hidden', readonly: true, 'aria-hidden': 'true' });
+  area.value = text;
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  toast(ok ? okMessage : `Copie impossible ici, voici le lien : ${text}`);
 }
 
 export function emptyState(title: string, text?: string, action?: HTMLElement) {

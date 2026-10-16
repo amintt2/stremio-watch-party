@@ -27,7 +27,7 @@ test('migrations are idempotent across restarts', () => {
     const b = openStore(dir);
     b.migrate();
     assert.equal(b.history('u').length, 1);
-    assert.equal(b.db.prepare('PRAGMA user_version').get().user_version, 1);
+    assert.equal(b.db.prepare('PRAGMA user_version').get().user_version, 2);
     b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -150,4 +150,101 @@ test('maskUrl hides path and query secrets', () => {
   assert.equal(maskUrl('https://a.example/manifest.json'), 'https://a.example/manifest.json');
   assert.equal(maskUrl('https://a.example/manifest.json?token=x'), 'https://a.example/••••/manifest.json');
   assert.equal(maskUrl('nope'), '••••');
+});
+
+test('migration 2 upgrades a version-1 database in place', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wp-db-'));
+  try {
+    const a = openStore(dir);
+    // Simulate a database created before migration 2.
+    a.db.exec(`DROP TABLE progress; DROP TABLE library;
+      CREATE TABLE progress (user_id TEXT NOT NULL, video_id TEXT NOT NULL, meta_id TEXT NOT NULL, meta_type TEXT NOT NULL,
+        name TEXT NOT NULL, poster TEXT, episode TEXT, position REAL NOT NULL, duration REAL, watched INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, video_id));
+      CREATE TABLE library (user_id TEXT NOT NULL, meta_id TEXT NOT NULL, meta_type TEXT NOT NULL, name TEXT NOT NULL,
+        poster TEXT, year TEXT, added_at INTEGER NOT NULL, PRIMARY KEY (user_id, meta_id));
+      PRAGMA user_version = 1;`);
+    a.close();
+    const b = openStore(dir);
+    b.upsertUser({ uid: 'u', name: 'U' });
+    b.addToLibrary('u', { metaId: 'tt1', metaType: 'movie', name: 'A', rating: '7.5' });
+    assert.equal(b.library('u')[0].rating, '7.5');
+    b.saveProgress('u', { ...movie, position: 100, duration: 1000 });
+    assert.equal(b.history('u')[0].dismissed, false);
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mark watched / unwatched by hand, per user', () => {
+  const { store, clock } = setup();
+  store.saveProgress('alice', { ...ep(1, 1), position: 600, duration: 1300 });
+  clock.advance(1000);
+  const n = store.markWatched('alice', {
+    metaId: 'tt2',
+    metaType: 'series',
+    name: 'Série',
+    videos: [
+      { videoId: 'tt2:1:1', episode: 'S1E1' },
+      { videoId: 'tt2:1:2', episode: 'S1E2' },
+    ],
+  });
+  assert.equal(n, 2);
+  const marks = store.progressFor('alice', 'tt2');
+  assert.ok(marks.every((p) => p.watched));
+  assert.equal(marks.find((p) => p.videoId === 'tt2:1:1').position, 1300, 'moved to the end');
+  assert.equal(store.history('alice')[0].videoId, 'tt2:1:2', 'last one is the latest');
+  assert.equal(store.continueWatching('alice').length, 0);
+  assert.equal(store.progressFor('bob', 'tt2').length, 0);
+
+  assert.equal(store.markUnwatched('bob', 'tt2', ['tt2:1:1']), 0);
+  assert.equal(store.markUnwatched('alice', 'tt2', ['tt2:1:2', 42]), 1);
+  assert.deepEqual(store.progressFor('alice', 'tt2').map((p) => p.videoId), ['tt2:1:1']);
+  assert.equal(store.markWatched('alice', { metaId: '', videos: [] }), 0);
+});
+
+test('dismiss from "continue watching" until played again', () => {
+  const { store, clock } = setup();
+  store.saveProgress('alice', { ...movie, position: 2500, duration: 6000 });
+  store.saveProgress('bob', { ...movie, position: 2500, duration: 6000 });
+  assert.equal(store.dismissContinue('alice', 'tt1'), true);
+  assert.equal(store.continueWatching('alice').length, 0);
+  assert.equal(store.history('alice').length, 1, 'still in the history');
+  assert.equal(store.continueWatching('bob').length, 1, 'other users untouched');
+  clock.advance(1000);
+  store.saveProgress('alice', { ...movie, position: 2600, duration: 6000 });
+  assert.equal(store.continueWatching('alice').length, 1);
+  assert.equal(store.dismissContinue('alice', 'nope'), false);
+});
+
+test('clear history, library with last watched, export and erase', () => {
+  const { store, clock } = setup();
+  store.addToLibrary('alice', { metaId: 'tt1', metaType: 'movie', name: 'Film', rating: 8.1 });
+  store.addToLibrary('alice', { metaId: 'tt9', metaType: 'movie', name: 'Autre' });
+  clock.advance(500);
+  store.saveProgress('alice', { ...movie, position: 100, duration: 1000 });
+  store.saveProgress('bob', { ...movie, position: 100, duration: 1000 });
+  store.addAddon('alice', 'https://a.example/SECRET/manifest.json', 'A');
+
+  const lib = store.library('alice');
+  assert.equal(lib.find((e) => e.id === 'tt1').lastWatchedAt, 1_000_500);
+  assert.equal(lib.find((e) => e.id === 'tt1').rating, '8.1');
+  assert.equal(lib.find((e) => e.id === 'tt9').lastWatchedAt, null);
+
+  const dump = store.exportData('alice');
+  assert.equal(dump.user.uid, 'alice');
+  assert.equal(dump.history.length, 1);
+  assert.equal(dump.library.length, 2);
+  assert.ok(!JSON.stringify(dump).includes('SECRET'));
+
+  assert.equal(store.clearHistory('alice'), 1);
+  assert.equal(store.history('alice').length, 0);
+  assert.equal(store.history('bob').length, 1);
+
+  assert.equal(store.eraseData('alice'), 3);
+  assert.equal(store.library('alice').length, 0);
+  assert.equal(store.listAddons('alice').length, 0);
+  assert.ok(store.getUser('alice'), 'account kept');
+  assert.equal(store.history('bob').length, 1);
 });

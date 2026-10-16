@@ -5,6 +5,11 @@ import { loadingState } from './ui.ts';
 
 type SortMode = 'addon' | 'seeders' | 'size';
 const QUALITY_FILTERS = ['Tous', '4K', '1080p', '720p'];
+const LANGUAGE_HINTS: Record<string, string> = {
+  MULTI: 'VF et VO dans le même fichier : chacun choisit sa langue',
+  VF: 'Audio français',
+  VOSTFR: 'Version originale, sous-titres français',
+};
 
 export function sizeInGb(size: string | null) {
   if (!size) return 0;
@@ -111,7 +116,7 @@ export class StreamPanel {
   }
 
   async best() {
-    return pickBest(await this.ready);
+    return pickBest((await this.ready).filter((s) => !s.tooBig));
   }
 
   private render() {
@@ -130,6 +135,10 @@ export class StreamPanel {
       s.hdr && h('span', { class: 'badge' }, s.dolbyVision ? 'DV' : 'HDR'),
       s.hevc && h('span', { class: 'badge' }, 'HEVC'),
       s.cached && h('span', { class: 'badge badge-success' }, '⚡ Débrid'),
+      s.tooBig && h('span', { class: 'badge badge-danger' }, 'Trop gros'),
+      ...(s.languages || []).map((l) =>
+        h('span', { class: `badge${l === 'MULTI' ? ' badge-accent' : ''}`, title: LANGUAGE_HINTS[l] }, l)
+      ),
     ];
     const facts = [
       s.seeders !== null && h('span', { title: 'Personnes qui partagent' }, `👤 ${s.seeders}`),
@@ -140,9 +149,10 @@ export class StreamPanel {
     return h(
       'button',
       {
-        class: 'source',
+        class: `source${s.tooBig ? ' source-too-big' : ''}`,
         type: 'button',
-        title: s.release,
+        disabled: !!s.tooBig,
+        title: s.tooBig ? `${s.release}\nTrop gros pour le stockage du serveur : choisis une source plus légère` : s.release,
         onclick: (e: Event) => this.onPick(s, e.currentTarget as HTMLButtonElement),
       },
       h('span', { class: 'source-badges' }, badges),

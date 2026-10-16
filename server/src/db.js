@@ -59,6 +59,10 @@ const MIGRATIONS = [
      added_at INTEGER NOT NULL
    );
    CREATE INDEX addons_user ON addons (user_id);`,
+  // Site polish: hide a title from "Continuer à regarder" without losing its history,
+  // and keep the IMDb rating of library entries (sort by rating).
+  `ALTER TABLE progress ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE library ADD COLUMN rating TEXT;`,
 ];
 
 const str = (v, max) => (typeof v === 'string' && v ? v.slice(0, max) : null);
@@ -136,7 +140,7 @@ export class Store {
          ON CONFLICT(user_id, video_id) DO UPDATE SET
            name = excluded.name, poster = excluded.poster, episode = excluded.episode,
            position = excluded.position, duration = COALESCE(excluded.duration, duration),
-           watched = MAX(watched, excluded.watched), updated_at = excluded.updated_at`
+           watched = MAX(watched, excluded.watched), updated_at = excluded.updated_at, dismissed = 0`
       )
       .run(
         String(uid),
@@ -151,7 +155,64 @@ export class Store {
         watched,
         this.now()
       );
+    this.db.prepare('UPDATE progress SET dismissed = 0 WHERE user_id = ? AND meta_id = ?').run(String(uid), metaId.slice(0, 200));
     return true;
+  }
+
+  /**
+   * "Marquer comme vu" by hand: each video gets the watched mark, at its end (so it
+   * leaves "Continuer à regarder"). `videos` = [{ videoId, episode }], in watching
+   * order: the last one becomes the latest line of the history.
+   */
+  markWatched(uid, { metaId, metaType, name, poster, videos }) {
+    if (!str(metaId, 200) || !Array.isArray(videos)) return 0;
+    const list = videos.filter((v) => str(v?.videoId, 200)).slice(0, 2000);
+    const t = this.now();
+    const stmt = this.db.prepare(
+      `INSERT INTO progress (user_id, video_id, meta_id, meta_type, name, poster, episode, position, duration, watched, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
+       ON CONFLICT(user_id, video_id) DO UPDATE SET
+         watched = 1, position = COALESCE(duration, 0), updated_at = excluded.updated_at, dismissed = 0`
+    );
+    this.db.exec('BEGIN');
+    try {
+      list.forEach((v, i) =>
+        stmt.run(
+          String(uid),
+          v.videoId.slice(0, 200),
+          metaId.slice(0, 200),
+          metaType === 'series' ? 'series' : 'movie',
+          str(name, 200) || '?',
+          str(poster, 500),
+          str(v.episode, 200),
+          // Strictly increasing, so the history keeps the last one as the latest.
+          t - (list.length - 1 - i)
+        )
+      );
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return list.length;
+  }
+
+  /** "Marquer comme non vu": forgets these videos (mark and position). */
+  markUnwatched(uid, metaId, videoIds) {
+    if (!Array.isArray(videoIds)) return 0;
+    const stmt = this.db.prepare('DELETE FROM progress WHERE user_id = ? AND meta_id = ? AND video_id = ?');
+    let n = 0;
+    for (const id of videoIds.slice(0, 2000)) if (typeof id === 'string') n += stmt.run(String(uid), String(metaId), id).changes;
+    return n;
+  }
+
+  /** Hides a title from "Continuer à regarder" until it is played again. */
+  dismissContinue(uid, metaId) {
+    return this.db.prepare('UPDATE progress SET dismissed = 1 WHERE user_id = ? AND meta_id = ?').run(String(uid), String(metaId)).changes > 0;
+  }
+
+  clearHistory(uid) {
+    return this.db.prepare('DELETE FROM progress WHERE user_id = ?').run(String(uid)).changes;
   }
 
   /** Per-video progress of one title (episode marks on the detail page). */
@@ -177,6 +238,7 @@ export class Store {
   /** Titles whose latest video was started but not finished. */
   continueWatching(uid, limit = 20) {
     return this.history(uid, 200)
+      .filter((p) => !p.dismissed)
       .filter((p) => p.position >= MIN_RESUME_S && !(p.duration && p.position >= p.duration * WATCHED_RATIO))
       .slice(0, limit);
   }
@@ -187,14 +249,24 @@ export class Store {
 
   // ---------------------------------------------------------------- library
 
-  addToLibrary(uid, { metaId, metaType, name, poster, year }) {
+  addToLibrary(uid, { metaId, metaType, name, poster, year, rating }) {
     if (!str(metaId, 200)) return false;
     this.db
       .prepare(
-        `INSERT INTO library (user_id, meta_id, meta_type, name, poster, year, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, meta_id) DO UPDATE SET name = excluded.name, poster = excluded.poster, year = excluded.year`
+        `INSERT INTO library (user_id, meta_id, meta_type, name, poster, year, rating, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, meta_id) DO UPDATE SET name = excluded.name, poster = excluded.poster, year = excluded.year,
+           rating = COALESCE(excluded.rating, rating)`
       )
-      .run(String(uid), metaId.slice(0, 200), metaType === 'series' ? 'series' : 'movie', str(name, 200) || '?', str(poster, 500), str(year, 16), this.now());
+      .run(
+        String(uid),
+        metaId.slice(0, 200),
+        metaType === 'series' ? 'series' : 'movie',
+        str(name, 200) || '?',
+        str(poster, 500),
+        str(year, 16),
+        str(rating == null ? null : String(rating), 8),
+        this.now()
+      );
     return true;
   }
 
@@ -206,14 +278,65 @@ export class Store {
     return !!this.db.prepare('SELECT 1 FROM library WHERE user_id = ? AND meta_id = ?').get(String(uid), String(metaId));
   }
 
-  /** @param {{ type?: 'movie'|'series', sort?: 'recent'|'name' }} opts */
+  /**
+   * With when the user last watched each title (`lastWatchedAt`, null if never), so
+   * the client can sort by it.
+   * @param {{ type?: 'movie'|'series', sort?: 'recent'|'name' }} opts
+   */
   library(uid, { type, sort = 'recent' } = {}) {
-    const order = sort === 'name' ? 'name COLLATE NOCASE ASC' : 'added_at DESC';
-    const rows =
-      type === 'movie' || type === 'series'
-        ? this.db.prepare(`SELECT * FROM library WHERE user_id = ? AND meta_type = ? ORDER BY ${order}`).all(String(uid), type)
-        : this.db.prepare(`SELECT * FROM library WHERE user_id = ? ORDER BY ${order}`).all(String(uid));
-    return rows.map((r) => ({ id: r.meta_id, type: r.meta_type, name: r.name, poster: r.poster, year: r.year, addedAt: r.added_at }));
+    const order = sort === 'name' ? 'l.name COLLATE NOCASE ASC' : 'l.added_at DESC';
+    const byType = type === 'movie' || type === 'series';
+    const rows = this.db
+      .prepare(
+        `SELECT l.*, (SELECT MAX(p.updated_at) FROM progress p WHERE p.user_id = l.user_id AND p.meta_id = l.meta_id) AS last_watched
+         FROM library l WHERE l.user_id = ?${byType ? ' AND l.meta_type = ?' : ''} ORDER BY ${order}`
+      )
+      .all(...(byType ? [String(uid), type] : [String(uid)]));
+    return rows.map((r) => ({
+      id: r.meta_id,
+      type: r.meta_type,
+      name: r.name,
+      poster: r.poster,
+      year: r.year,
+      rating: r.rating,
+      addedAt: r.added_at,
+      lastWatchedAt: r.last_watched ?? null,
+    }));
+  }
+
+  clearLibrary(uid) {
+    return this.db.prepare('DELETE FROM library WHERE user_id = ?').run(String(uid)).changes;
+  }
+
+  // ---------------------------------------------------------------- export / erase
+
+  /** Everything stored about this user (addon URLs masked: they may hold keys). */
+  exportData(uid) {
+    return {
+      exportedAt: new Date(this.now()).toISOString(),
+      user: this.getUser(uid),
+      history: this.db
+        .prepare('SELECT * FROM progress WHERE user_id = ? ORDER BY updated_at DESC')
+        .all(String(uid))
+        .map(toProgress),
+      library: this.library(uid),
+      addons: this.listAddons(uid),
+    };
+  }
+
+  /** History, library and personal addons; the account itself stays (it is the login). */
+  eraseData(uid) {
+    const u = String(uid);
+    let n = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const table of ['progress', 'library', 'addons']) n += this.db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(u).changes;
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return n;
   }
 
   // ---------------------------------------------------------------- personal stream addons
@@ -255,6 +378,7 @@ function toProgress(r) {
     position: r.position,
     duration: r.duration,
     watched: !!r.watched,
+    dismissed: !!r.dismissed,
     updatedAt: r.updated_at,
   };
 }

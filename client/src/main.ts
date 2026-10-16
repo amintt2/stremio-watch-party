@@ -1,17 +1,19 @@
 import './style.css';
-import { api, img, type RoomState } from './api.ts';
+import { api, type RoomState } from './api.ts';
 import type { App, PlayRequest, View } from './app.ts';
 import { LoginRequired, loginScreen, signIn, type Identity } from './auth.ts';
 import { Connection } from './connection.ts';
 import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
-import { formatTime } from './sync.ts';
+import { createStage, memberChips } from './stage.ts';
+import { RoomSocial } from './room.ts';
 import { avatar, icon } from './ui.ts';
 import { detailView } from './views/detail.ts';
 import { discoverView } from './views/discover.ts';
 import { homeView } from './views/home.ts';
 import { historyView, libraryView } from './views/library.ts';
+import { notFoundView } from './views/notfound.ts';
 import { searchView } from './views/search.ts';
 import { applyTheme, savedTheme, settingsView } from './views/settings.ts';
 
@@ -50,13 +52,28 @@ function start({ user: me, mode, room }: Identity) {
   let route: Route = parseRoute(location.hash);
   let view: View | null = null;
   let viewRoute = '';
-  let scrubbing = false;
   /** Whether #/player was pushed on top of an app page (so "back" can pop it). */
   let playerPushed = false;
 
   // ------------------------------------------------------------ shell
   const navLinks = NAV.map((n) =>
-    h('a', { class: 'nav-item', href: routeHref(n.name), 'data-route': n.name }, icon(n.icon), h('span', { class: 'nav-label' }, n.label))
+    h(
+      'a',
+      {
+        class: 'nav-item',
+        href: routeHref(n.name),
+        'data-route': n.name,
+        // Already there (no hashchange): back to the top, like a streaming app's tab bar.
+        onclick: (e: Event) => {
+          if ((location.hash || '#/') === routeHref(n.name) && !(e as MouseEvent).ctrlKey && !(e as MouseEvent).metaKey) {
+            e.preventDefault();
+            content.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        },
+      },
+      icon(n.icon),
+      h('span', { class: 'nav-label' }, n.label)
+    )
   );
   const rail = h(
     'nav',
@@ -78,6 +95,21 @@ function start({ user: me, mode, room }: Identity) {
     clearTimeout(searchTimer);
     if (searchInput.value.trim().length < 2) return;
     searchTimer = window.setTimeout(() => goSearch(route.name === 'search'), 400);
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    clearTimeout(searchTimer);
+    if (searchInput.value) searchInput.value = '';
+    else searchInput.blur();
+  });
+  // "/" puts the cursor in the search bar from anywhere (not while typing, nor in the player).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || route.name === 'player') return;
+    if ((e.target as HTMLElement).closest('input, select, textarea, [contenteditable]')) return;
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
   });
   const searchForm = h(
     'form',
@@ -101,52 +133,32 @@ function start({ user: me, mode, room }: Identity) {
       ? null
       : h('a', { class: 'room-badge', href: routeHref('settings'), title: 'Salle : inviter ou rejoindre' }, icon('users', 'icon icon-sm'), room?.code || '');
   const me_ = h('a', { class: 'me', href: routeHref('settings'), title: me.name }, avatar(me));
-  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, roomBadge, topMembers, status, me_));
+  // Social layer (queue, votes, host, presence): room.ts.
+  const social = new RoomSocial(me, conn);
+  player.uid = me.uid;
+  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, social.topButton, roomBadge, topMembers, status, me_));
   const content = h('main', { class: 'content', tabindex: -1 });
 
-  // ------------------------------------------------------------ player stage
-  const backBtn = h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Retour' }, icon('back'));
-  const stageTitle = h('div', { class: 'stage-title' });
-  const stageMembers = h('div', { class: 'members', 'aria-label': 'Spectateurs' });
-  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, stageMembers);
+  // ------------------------------------------------------------ player stage (stage.ts)
+  const stage = createStage({
+    me,
+    conn,
+    player,
+    video,
+    state: () => state,
+    isOpen: () => route.name === 'player',
+    open: () => openPlayer(),
+    close: () => closePlayer(),
+    topExtra: [social.stageButton],
+    memberClass: (m) => social.memberInfo(m).cls,
+    canStop: () => social.canStart(),
+    stop: () => {
+      reportProgress();
+      api('/api/room/stop', { method: 'POST' }).catch((err) => toast(err.message));
+    },
+  });
 
-  const playBtn = h('button', { class: 'btn-round', type: 'button', 'aria-label': 'Lecture / pause' }, icon('play'));
-  const seek = h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, step: 1, 'aria-label': 'Position' });
-  const timeCur = h('span', { class: 'time' }, '0:00');
-  const timeDur = h('span', { class: 'time' }, '0:00');
-  const qualitySel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Qualité' });
-  const audioSel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Audio' });
-  const subsSel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Sous-titres' });
-  const volume = h('input', { class: 'volume', type: 'range', min: 0, max: 1, step: 0.05, value: 1, 'aria-label': 'Volume' });
-  const stopBtn = h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Arrêter pour tout le monde' }, icon('stop', 'icon icon-sm'), h('span', { class: 'btn-label' }, 'Arrêter'));
-  const fsBtn = h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Plein écran' }, icon('fullscreen'));
-  const controls = h(
-    'div',
-    { class: 'controls' },
-    h('div', { class: 'seek-row' }, timeCur, seek, timeDur),
-    h(
-      'div',
-      { class: 'controls-row' },
-      playBtn,
-      h('span', { class: 'volume-group' }, icon('volume', 'icon icon-sm'), volume),
-      h('div', { class: 'controls-right' }, qualitySel, audioSel, subsSel, stopBtn, fsBtn)
-    )
-  );
-  const overlay = h('div', { class: 'overlay' });
-
-  // Mini-player chrome (when browsing while something plays).
-  const miniPlay = h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Lecture / pause' }, icon('play'));
-  const miniTitle = h('span', { class: 'mini-title' });
-  const miniBar = h(
-    'div',
-    { class: 'mini-bar' },
-    miniTitle,
-    miniPlay,
-    h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Agrandir', onclick: () => openPlayer() }, icon('expand'))
-  );
-  const stage = h('section', { class: 'stage mode-hidden', 'aria-label': 'Lecteur' }, video, overlay, stageTop, controls, miniBar);
-
-  clear(root, rail, topbar, content, stage, h('div', { id: 'toasts', class: 'toasts' }));
+  clear(root, rail, topbar, content, stage.el, social.el, h('div', { id: 'toasts', class: 'toasts' }));
 
   // ------------------------------------------------------------ app api for views
   const app: App = {
@@ -156,7 +168,14 @@ function start({ user: me, mode, room }: Identity) {
     player,
     state: () => state,
     navigate,
+    replaceRoute: (href: string) => replaceRoute(href),
     async play(req: PlayRequest) {
+      if (!social.canStart()) {
+        // Host mode while something plays: suggest it to the room instead.
+        const res = await social.propose(req);
+        toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'L’hôte et les co-pilotes lancent : proposé à la salle');
+        return;
+      }
       await api('/api/room/play', {
         method: 'POST',
         body: JSON.stringify({
@@ -169,6 +188,10 @@ function start({ user: me, mode, room }: Identity) {
         }),
       });
       openPlayer();
+    },
+    async propose(req) {
+      const res = await social.propose(req);
+      toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'Proposé à la salle');
     },
   };
 
@@ -195,40 +218,107 @@ function start({ user: me, mode, room }: Identity) {
     } else navigate(routeHref('home'), true);
   }
 
+  // Infinite lists (Discover, Search) are kept for "back" so they come back as they
+  // were (pages loaded, scroll position) instead of reloading from the top.
+  const KEEP_ALIVE: Route['name'][] = ['discover', 'search'];
+  const kept = new Map<string, View>();
+  const keepView = (key: string, v: View) => {
+    kept.delete(key);
+    kept.set(key, v);
+    while (kept.size > 4) {
+      const [oldKey, old] = kept.entries().next().value!;
+      kept.delete(oldKey);
+      if (old !== view) old.dispose?.();
+    }
+  };
+
+  function createView(r: Route): View {
+    switch (r.name) {
+      case 'discover':
+        return discoverView(app, r.params);
+      case 'library':
+        return libraryView(app, r.params);
+      case 'history':
+        return historyView(app);
+      case 'settings':
+        return settingsView(app);
+      case 'search':
+        return searchView(app, r.params);
+      case 'detail':
+        return detailView(app, r.params);
+      case 'notfound':
+        return notFoundView();
+      default:
+        return homeView(app);
+    }
+  }
+
+  // Each history entry gets an id (history.state.wpEntry); its scroll position is kept
+  // here. Coming back to an entry (browser back, closing the player) restores it; a new
+  // page starts at the top.
+  const scrollByEntry = new Map<string, number>();
+  let entryId = '';
+  const ensureEntry = () => {
+    const id = history.state?.wpEntry;
+    if (typeof id === 'string') return (entryId = id);
+    entryId = Math.random().toString(36).slice(2);
+    try {
+      history.replaceState({ ...(history.state || {}), wpEntry: entryId }, '');
+    } catch {
+      /* some embeds refuse history writes: scroll memory is a nicety */
+    }
+    return entryId;
+  };
+  content.addEventListener(
+    'scroll',
+    () => {
+      if (route.name !== 'player' && entryId) scrollByEntry.set(entryId, content.scrollTop);
+    },
+    { passive: true }
+  );
+  let restoreToken = 0;
+  function restoreScroll(target: number) {
+    const token = ++restoreToken;
+    content.scrollTop = target;
+    if (!target) return;
+    // Content loads asynchronously: retry while the page grows, until the user scrolls.
+    const started = Date.now();
+    const stop = () => (restoreToken = token + 1);
+    content.addEventListener('wheel', stop, { once: true, passive: true });
+    content.addEventListener('touchstart', stop, { once: true, passive: true });
+    const tick = () => {
+      if (token !== restoreToken || Date.now() - started > 4000) return;
+      if (Math.abs(content.scrollTop - target) > 2) content.scrollTop = target;
+      if (Math.abs(content.scrollTop - target) > 2) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   function render() {
     const leavingPlayer = route.name === 'player';
     route = parseRoute(location.hash);
     // Coming back from the player: progress/history shown underneath may be stale.
-    if (leavingPlayer && route.name !== 'player' && !['discover', 'search'].includes(route.name)) viewRoute = '';
+    if (leavingPlayer && route.name !== 'player' && !KEEP_ALIVE.includes(route.name)) viewRoute = '';
     if (route.name === 'player' && !state?.media) {
       // Nothing playing (yet): show home behind the loading state.
       if (state) return navigate(routeHref('home'), true);
     }
     const key = location.hash || '#/';
+    const known = typeof history.state?.wpEntry === 'string' && scrollByEntry.has(history.state.wpEntry);
+    const saved = known ? scrollByEntry.get(ensureEntry())! : null;
+    if (!known) ensureEntry();
     if (route.name !== 'player' && key !== viewRoute) {
-      view?.dispose?.();
-      const r = route;
-      view = (() => {
-        switch (r.name) {
-          case 'discover':
-            return discoverView(app, r.params);
-          case 'library':
-            return libraryView(app, r.params);
-          case 'history':
-            return historyView(app);
-          case 'settings':
-            return settingsView(app);
-          case 'search':
-            return searchView(app, r.params);
-          case 'detail':
-            return detailView(app, r.params);
-          default:
-            return homeView(app);
-        }
-      })();
+      if (view && !kept.has(viewRoute)) view.dispose?.();
+      const reuse = saved !== null ? kept.get(key) : undefined;
+      if (!reuse && kept.has(key)) {
+        kept.get(key)!.dispose?.();
+        kept.delete(key);
+      }
+      view = reuse || createView(route);
+      if (KEEP_ALIVE.includes(route.name)) keepView(key, view);
       viewRoute = key;
       clear(content, view.el);
-      content.scrollTop = 0;
+      restoreScroll(saved || 0);
     } else if (!view) {
       view = homeView(app);
       viewRoute = '#/';
@@ -236,16 +326,34 @@ function start({ user: me, mode, room }: Identity) {
     }
     if (route.name !== 'search' && document.activeElement !== searchInput) searchInput.value = '';
     else if (route.name === 'search' && document.activeElement !== searchInput) searchInput.value = route.params.q || '';
-    const active = route.name === 'detail' || route.name === 'search' || route.name === 'player' ? '' : route.name;
-    for (const a of navLinks) a.classList.toggle('active', a.dataset.route === active);
+    const active = route.name === 'detail' || route.name === 'search' || route.name === 'player' || route.name === 'notfound' ? '' : route.name;
+    for (const a of navLinks) {
+      a.classList.toggle('active', a.dataset.route === active);
+      if (a.dataset.route === active) a.setAttribute('aria-current', 'page');
+      else a.removeAttribute('aria-current');
+    }
     updateStageMode();
   }
 
+  /** Changes the URL params of the current page without rebuilding it (filters typed in a page). */
+  function replaceRoute(href: string) {
+    const oldKey = viewRoute;
+    try {
+      history.replaceState(history.state, '', href);
+    } catch {
+      return;
+    }
+    viewRoute = location.hash || '#/';
+    route = parseRoute(location.hash);
+    const v = kept.get(oldKey);
+    if (v) {
+      kept.delete(oldKey);
+      keepView(viewRoute, v);
+    }
+  }
+
   function updateStageMode() {
-    const mode = route.name === 'player' ? 'full' : state?.media ? 'mini' : 'hidden';
-    stage.className = `stage mode-${mode}${state?.media ? ' has-media' : ''}`;
-    document.body.classList.toggle('player-open', mode === 'full');
-    if (mode === 'full') wake();
+    stage.setMode(route.name === 'player' ? 'full' : state?.media ? 'mini' : 'hidden');
   }
 
   window.addEventListener('hashchange', () => {
@@ -253,157 +361,13 @@ function start({ user: me, mode, room }: Identity) {
     render();
   });
 
-  // ------------------------------------------------------------ player behaviour
-  backBtn.addEventListener('click', closePlayer);
-  const togglePlay = () => {
-    if (!state?.media) return;
-    conn.send({ t: state.paused ? 'play' : 'pause' });
-  };
-  playBtn.addEventListener('click', togglePlay);
-  miniPlay.addEventListener('click', togglePlay);
-  seek.addEventListener('input', () => (scrubbing = true));
-  seek.addEventListener('change', () => {
-    scrubbing = false;
-    const d = state?.media?.duration;
-    if (d) conn.send({ t: 'seek', position: (Number(seek.value) / 1000) * d });
-  });
-  qualitySel.addEventListener('change', () => player.setPreference(qualitySel.value));
-  audioSel.addEventListener('change', () => player.setAudioTrack(Number(audioSel.value)));
-  subsSel.addEventListener('change', () => player.setSubtitleTrack(Number(subsSel.value)));
-  volume.addEventListener('input', () => (video.volume = Number(volume.value)));
-  fsBtn.addEventListener('click', () => {
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    else stage.requestFullscreen?.().catch(() => toast('Plein écran indisponible ici'));
-  });
-  // Two-step confirm: the Discord iframe doesn't allow confirm() dialogs.
-  let stopArmed = 0;
-  const stopLabel = stopBtn.querySelector('.btn-label')!;
-  stopBtn.addEventListener('click', () => {
-    if (Date.now() - stopArmed < 3000) {
-      stopArmed = 0;
-      stopLabel.textContent = 'Arrêter';
-      reportProgress();
-      api('/api/room/stop', { method: 'POST' }).catch((err) => toast(err.message));
-      return;
-    }
-    stopArmed = Date.now();
-    stopLabel.textContent = 'Confirmer ?';
-    setTimeout(() => (stopLabel.textContent = 'Arrêter'), 3000);
-  });
-  document.addEventListener('keydown', (e) => {
-    if ((e.target as HTMLElement).closest('input, select, textarea') || !state?.media || route.name !== 'player') return;
-    if (e.code === 'Space' || e.code === 'KeyK') {
-      e.preventDefault();
-      togglePlay();
-    } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
-      conn.send({ t: 'seek', position: player.expected() + (e.code === 'ArrowRight' ? 10 : -10) });
-    } else if (e.code === 'Escape' && !document.fullscreenElement) {
-      closePlayer();
-    }
-    wake();
-  });
-
-  // Controls fade out while playing, come back on any movement/tap.
-  let idleTimer = 0;
-  function wake() {
-    stage.classList.remove('idle');
-    clearTimeout(idleTimer);
-    idleTimer = window.setTimeout(() => {
-      if (state?.media && !state.paused && route.name === 'player' && !stage.matches(':focus-within select')) stage.classList.add('idle');
-    }, 3000);
-  }
-  stage.addEventListener('pointermove', wake);
-  stage.addEventListener('pointerdown', wake);
-  stage.addEventListener('click', (e) => {
-    if (stage.classList.contains('mode-mini') && !(e.target as HTMLElement).closest('button')) openPlayer();
-  });
-
-  const label = (id: string) => state?.media?.qualities.find((q) => q.id === id)?.label || id;
-
-  const renderSelects = () => {
-    const media = state?.media;
-    const qOptions = [
-      h('option', { value: 'auto' }, `Auto${player.preference === 'auto' && player.quality ? ` (${label(player.quality)})` : ''}`),
-      ...(media?.qualities || []).map((q) => h('option', { value: q.id }, q.label)),
-    ];
-    clear(qualitySel, qOptions);
-    qualitySel.value = player.preference === 'auto' || !media?.qualities.some((q) => q.id === player.preference) ? 'auto' : player.preference;
-
-    clear(audioSel, player.audioTracks.map((t) => h('option', { value: t.id }, t.label)));
-    audioSel.value = String(player.audioTrack);
-    audioSel.hidden = player.audioTracks.length < 2;
-
-    clear(subsSel, h('option', { value: -1 }, 'Sans sous-titres'), player.subtitleTracks.map((t) => h('option', { value: t.id }, t.label)));
-    subsSel.value = String(player.subtitleTrack);
-    subsSel.hidden = player.subtitleTracks.length === 0;
-  };
-
-  const renderOverlay = () => {
-    const media = state?.media;
-    if (!media) {
-      clear(overlay, state ? null : h('div', { class: 'overlay-msg' }, h('span', { class: 'spinner' }), 'Connexion à la salle…'));
-      return;
-    }
-    if (player.error) {
-      clear(overlay, h('div', { class: 'overlay-msg' }, h('p', { class: 'auth-error' }, player.error)));
-      return;
-    }
-    if (player.needsGesture) {
-      clear(overlay, h('button', { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => player.unlock() }, icon('play'), 'Rejoindre la lecture'));
-      return;
-    }
-    const waitingFor = state!.waiting.map((uid) => state!.members.find((m) => m.uid === uid)?.name).filter(Boolean);
-    if (waitingFor.length) {
-      clear(overlay, h('div', { class: 'overlay-msg' }, h('span', { class: 'spinner' }), `On attend ${waitingFor.join(', ')}…`));
-      return;
-    }
-    clear(overlay);
-  };
-
-  const memberChips = (s: RoomState | null) =>
-    (s?.members || []).map((m) =>
-      h(
-        'span',
-        {
-          class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === me.uid ? ' me' : ''}`,
-          title: `${m.name}${m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
-        },
-        avatar(m),
-        m.quality && s?.media ? h('span', { class: 'member-q' }, label(m.quality).replace('p', '')) : null
-      )
-    );
-
   const renderRoom = () => {
     const s = state;
     status.classList.toggle('on', !!s);
     // Others only: my own avatar is already in the top bar.
-    clear(topMembers, memberChips(s && { ...s, members: s.members.filter((m) => m.uid !== me.uid) }));
-    clear(stageMembers, memberChips(s));
-    const media = s?.media;
-    clear(
-      stageTitle,
-      media?.poster ? h('img', { class: 'stage-poster', src: img(media.poster), alt: '' }) : null,
-      media
-        ? h(
-            'div',
-            { class: 'stage-title-text' },
-            h('strong', {}, media.title),
-            h('span', { class: 'muted-on-media' }, [media.subtitle, `lancé par ${media.startedBy}`].filter(Boolean).join(' · '))
-          )
-        : null
-    );
-    miniTitle.textContent = media ? `${media.title}${media.subtitle ? ` · ${media.subtitle.split(' · ')[0]}` : ''}` : '';
-    const playing = !!s && !s.paused;
-    clear(playBtn, icon(playing ? 'pause' : 'play'));
-    clear(miniPlay, icon(playing ? 'pause' : 'play'));
-    renderSelects();
-    renderOverlay();
+    clear(topMembers, memberChips(s && { ...s, members: s.members.filter((m) => m.uid !== me.uid) }, me.uid, stage.label, (m) => social.memberInfo(m).cls));
+    stage.update();
     updateStageMode();
-  };
-
-  player.onChange = () => {
-    renderSelects();
-    renderOverlay();
   };
 
   // ------------------------------------------------------------ own progress → account
@@ -435,6 +399,7 @@ function start({ user: me, mode, room }: Identity) {
     state = s;
     player.applyState(s);
     renderRoom();
+    social.update(s);
     if (sid && sid !== lastMediaSid) {
       openPlayer();
       const src = s.media!.source;
@@ -450,17 +415,8 @@ function start({ user: me, mode, room }: Identity) {
   conn.onStatus = (on) => status.classList.toggle('on', on);
   conn.connect();
 
-  // Progress bar / clock, from the room position so everyone sees the same thing.
+  // This viewer's own position (what gets saved to their account).
   setInterval(() => {
-    const d = state?.media?.duration || 0;
-    const pos = state?.media ? player.expected() : 0;
-    timeCur.textContent = formatTime(pos);
-    timeDur.textContent = formatTime(d);
-    if (!scrubbing && d) {
-      seek.value = String(Math.round((pos / d) * 1000));
-      seek.style.setProperty('--fill', `${((pos / d) * 100).toFixed(2)}%`);
-    }
-    // This viewer's own position (what gets saved to their account).
     if (state?.media && state.media.sid === lastSid && video.readyState >= 1 && video.currentTime > 0) lastPos = video.currentTime;
   }, 250);
 

@@ -2,14 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   availableQualities,
+  checkFileSize,
+  chooseFile,
+  formatGb,
   converterParams,
+  createBody,
+  hlsParams,
+  torrentHealth,
   isAllowedHlsPath,
   parseProfile,
   wantedSettings,
   peerSources,
   rewritePlaylist,
 } from '../src/media.js';
-import { describeStream } from '../src/addons.js';
+import { describeStream, parseSize, streamLanguages, tooBigForServer } from '../src/addons.js';
 
 const hevc4k = { video: { codec: 'hevc', width: 3840, height: 2160, hdr: true } };
 const h264p1080 = { video: { codec: 'h264', width: 1920, height: 1080 } };
@@ -144,8 +150,8 @@ test('VP9 sources are copied for viewers that support them', () => {
 });
 
 test('Stremio server tuning only asks for what is missing', () => {
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 6 });
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 6, cacheSize: null }), {});
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 8 });
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 8, cacheSize: null }), {});
 });
 
 test('ten viewers on every quality need at most 5 converters per media', () => {
@@ -165,4 +171,83 @@ test('torrents without trackers get DHT plus public trackers', () => {
   const fallback = peerSources({ infoHash: 'A'.repeat(40) });
   assert.equal(fallback[0], `dht:${'a'.repeat(40)}`);
   assert.ok(fallback.length > 3 && fallback.slice(1).every((s) => s.startsWith('tracker:udp://')));
+});
+
+test('each audio track has its own converter, shared by every viewer of that track', () => {
+  const vf = hlsParams('s', hevc4k, '1080', { hevc: false }, 'audio0/segment3.m4s');
+  const vo = hlsParams('s', hevc4k, '2160', { hevc: true }, 'audio1.m3u8');
+  const vfOther = hlsParams('s', hevc4k, '720', {}, 'audio0/init.mp4');
+  assert.equal(vf.convertId, 'wp-s-a0');
+  assert.equal(vo.convertId, 'wp-s-a1');
+  assert.equal(vfOther.convertId, vf.convertId, 'same track, any quality: one converter');
+  assert.equal(vf.query.toString(), vfOther.query.toString());
+  assert.equal(vf.query.get('forceTranscoding'), null, 'never touches the video');
+  assert.deepEqual(vf.query.getAll('audioCodecs'), ['aac', 'mp3']);
+  // Video and master playlists still come from the quality converter.
+  assert.equal(hlsParams('s', hevc4k, '1080', {}, 'master.m3u8').convertId, 'wp-s-t-1920');
+  assert.equal(hlsParams('s', hevc4k, '1080', {}, 'video0/segment1.m4s').convertId, 'wp-s-t-1920');
+  assert.equal(hlsParams('s', hevc4k, '999', {}, 'audio0.m3u8'), null);
+});
+
+test('source languages come from the release name', () => {
+  assert.deepEqual(streamLanguages('Dune.2021.MULTi.VFF.2160p.WEB'), ['MULTI', 'VF']);
+  assert.deepEqual(streamLanguages('Dune.2021.FRENCH.1080p'), ['VF']);
+  assert.deepEqual(streamLanguages('Dune 2021 VOSTFR 1080p'), ['VOSTFR']);
+  assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay\n🇬🇧 / 🇫🇷'), ['VF']);
+  assert.deepEqual(streamLanguages('Dune.2021.Dual.Audio.1080p'), ['MULTI']);
+  assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay.x264'), []);
+  assert.deepEqual(streamLanguages('Frenchie.2021.1080p'), [], 'word boundaries');
+  assert.deepEqual(describeStream({ name: 'X\n1080p', title: 'Film.MULTi.1080p' }, 'a').languages, ['MULTI']);
+});
+
+test('torrent create body follows the Stremio protocol (Stremio and Huwa engines)', () => {
+  const ih = 'A'.repeat(40);
+  const b = createBody({ infoHash: ih });
+  assert.equal(b.torrent.infoHash, 'a'.repeat(40));
+  assert.deepEqual(b.guessFileIdx, {});
+  assert.ok(b.peerSearch.sources.some((s) => s.startsWith('tracker:')), 'public trackers when the addon gives none');
+  assert.equal(createBody({ infoHash: ih, fileIdx: 3 }).guessFileIdx, undefined);
+  assert.deepEqual(createBody({ infoHash: ih, sources: ['tracker:udp://x:1'] }).peerSearch.sources, ['tracker:udp://x:1']);
+});
+
+test('file choice: addon fileIdx, then engine guess, then largest file', () => {
+  const files = [{ length: 10 }, { length: 900 }, { length: 50 }];
+  assert.equal(chooseFile({ fileIdx: 2 }, { guessedFileIdx: 1, files }), 2);
+  assert.equal(chooseFile({}, { guessedFileIdx: 0, files }), 0);
+  assert.equal(chooseFile({}, { guessedFileIdx: null, files }), 1);
+  assert.equal(chooseFile({}, {}), null);
+});
+
+test('torrent health from stats.json: peers and speed vs the stream bitrate', () => {
+  const bitrate = 8_000_000; // 1 MB/s needed
+  assert.equal(torrentHealth({ peers: 12, downloadSpeed: 3e6, streamProgress: 0.2 }, bitrate).level, 'ok');
+  assert.equal(torrentHealth({ peers: 2, downloadSpeed: 4e5, streamProgress: 0.2 }, bitrate).level, 'slow');
+  assert.equal(torrentHealth({ peers: 0, peerSearchRunning: true }, bitrate).level, 'searching');
+  assert.equal(torrentHealth({ peers: 0, peerSearchRunning: false }, bitrate).level, 'stalled');
+  assert.equal(torrentHealth({ peers: 0, streamProgress: 1 }, bitrate).level, 'done');
+  assert.equal(torrentHealth({ peers: 5, downloadSpeed: 1 }, null).level, 'ok', 'unknown bitrate: no slow verdict');
+  assert.equal(torrentHealth(null, bitrate), null);
+  assert.equal(torrentHealth({ peers: 3, downloadSpeed: 2e6 }, bitrate).neededSpeed, 1e6);
+});
+
+test('server storage: sizes parsed, oversized torrents flagged and refused', () => {
+  const GB = 1024 ** 3;
+  assert.equal(parseSize('💾 1.5 GB'), 1.5 * GB);
+  assert.equal(parseSize('700 MiB'), 700 * 1024 ** 2);
+  assert.equal(parseSize('58,3 GB'), Math.round(58.3 * GB));
+  assert.equal(parseSize('?'), null);
+
+  const max = 15 * GB;
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 60 * GB, max), true);
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 2 * GB, max), false);
+  assert.equal(tooBigForServer({ url: 'https://debrid/x' }, 60 * GB, max), false, 'debrid uses no disk');
+  assert.equal(tooBigForServer({ infoHash: 'x' }, null, max), false, 'unknown size: checked after create');
+  assert.equal(tooBigForServer({ infoHash: 'x' }, 60 * GB, null), false, 'no limit configured');
+
+  const info = { files: [{ length: 2 * GB }, { length: 60 * GB }] };
+  assert.doesNotThrow(() => checkFileSize(info, 0, max));
+  assert.throws(() => checkFileSize(info, 1, max), (e) => e.final && /de 60 Go.*max 15 Go/.test(e.message));
+  assert.equal(formatGb(10737418), '0,01');
+  assert.equal(formatGb(1.5 * GB), '1,5');
+  assert.doesNotThrow(() => checkFileSize(info, 1, null));
 });

@@ -20,8 +20,12 @@ export interface App {
   player: Player;
   state(): RoomState | null;
   navigate(href: string, replace?: boolean): void;
-  /** Starts a source for the whole room. */
+  /** New URL params for the page shown, without rebuilding it (text filters). */
+  replaceRoute(href: string): void;
+  /** Starts a source for the whole room (proposes it instead when only the host may). */
   play(req: PlayRequest): Promise<void>;
+  /** Adds a title/episode to the room queue, with an optional chosen source. */
+  propose(req: Omit<PlayRequest, 'streamKey' | 'startAt'> & { streamKey?: string }): Promise<void>;
 }
 
 export interface View {

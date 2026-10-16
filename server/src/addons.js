@@ -122,8 +122,39 @@ export async function catalog(type, id, { genre, skip } = {}) {
 
 export async function meta(type, id) {
   const { meta: m } = await getJson(`${config.metaAddon}/meta/${type}/${encodeURIComponent(id)}.json`);
-  if (!m) throw new Error('Introuvable');
+  if (!m) throw Object.assign(new Error('Fiche introuvable'), { statusCode: 404 });
+  return normalizeMeta(m);
+}
+
+const YT_ID = /^[\w-]{6,20}$/;
+
+/** "stremio:///detail/movie/tt123" → { type, id } (links of a meta object). */
+function detailLink(url) {
+  const m = /^stremio:\/\/\/detail\/(movie|series)\/([^/?#]+)/.exec(String(url || ''));
+  if (!m) return null;
+  try {
+    return { type: m[1], id: decodeURIComponent(m[2]) };
+  } catch {
+    return null;
+  }
+}
+
+/** What the client needs from an addon meta object (also the extras: trailer, IMDb, similar). */
+export function normalizeMeta(m) {
   const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  const links = Array.isArray(m.links) ? m.links.filter((l) => l && typeof l === 'object') : [];
+  const imdbId = [m.imdb_id, m.id].find((x) => typeof x === 'string' && /^tt\d+$/.test(x)) || null;
+  const trailer =
+    [...(Array.isArray(m.trailerStreams) ? m.trailerStreams.map((t) => t?.ytId) : []), ...(Array.isArray(m.trailers) ? m.trailers.map((t) => t?.source) : [])].find(
+      (x) => typeof x === 'string' && YT_ID.test(x)
+    ) || null;
+  const similar = links
+    .filter((l) => /similar|recommend|related/i.test(String(l.category || '')))
+    .map((l) => ({ ...detailLink(l.url), name: typeof l.name === 'string' ? l.name : '' }))
+    .filter((l) => l.id && l.name)
+    .slice(0, 30);
+  const byCategory = (re) => links.filter((l) => re.test(String(l.category || '')) && typeof l.name === 'string').map((l) => l.name);
+  const writers = strings(m.writer).length ? strings(m.writer) : byCategory(/^writers?$/i);
   return {
     id: m.id,
     type: m.type,
@@ -134,11 +165,19 @@ export async function meta(type, id) {
     description: m.description || '',
     year: year(m),
     releaseInfo: m.releaseInfo ? String(m.releaseInfo) : null,
+    released: typeof m.released === 'string' ? m.released : null,
     runtime: m.runtime || null,
     rating: m.imdbRating ? String(m.imdbRating) : null,
     genres: strings(m.genres || m.genre),
     cast: strings(m.cast).slice(0, 12),
     director: strings(m.director).slice(0, 4),
+    writers: writers.slice(0, 4),
+    country: typeof m.country === 'string' ? m.country : null,
+    awards: typeof m.awards === 'string' ? m.awards : null,
+    status: typeof m.status === 'string' ? m.status : null,
+    imdbId,
+    trailer,
+    similar,
     videos: (m.videos || [])
       .filter((v) => typeof v.season === 'number' && typeof v.episode === 'number')
       .map((v) => ({
@@ -146,7 +185,7 @@ export async function meta(type, id) {
         season: v.season,
         episode: v.episode,
         title: v.name || v.title || `Épisode ${v.episode}`,
-        released: v.released || null,
+        released: v.released || v.firstAired || null,
         thumbnail: v.thumbnail || null,
         overview: typeof v.overview === 'string' ? v.overview.slice(0, 600) : null,
       }))
@@ -225,6 +264,35 @@ function normalizeQuality(raw) {
   return q;
 }
 
+/**
+ * Audio languages announced by the release name / addon text:
+ * MULTI (VF + VO), VF (French audio), VOSTFR (original + French subs).
+ */
+export function streamLanguages(text) {
+  const t = ` ${text} `;
+  const out = [];
+  const multi = /[\s._\-[(](multi|dual[\s._-]?audio|multi[\s._-]?audio)[\s._\-\])]/i.test(t);
+  const vostfr = /[\s._\-[(](vostfr|subfrench|stfr)[\s._\-\])]/i.test(t);
+  const vf = /[\s._\-[(](vff|vfq|vfi|vf2|vf|truefrench|french)[\s._\-\])]/i.test(t) || t.includes('🇫🇷');
+  if (multi) out.push('MULTI');
+  if (vf && !vostfr) out.push('VF');
+  if (vostfr) out.push('VOSTFR');
+  return out;
+}
+
+const UNITS = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+
+/** "1.4 GB" / "700 MiB" → bytes (binary units, like the engines report), or null. */
+export function parseSize(text) {
+  const m = /([\d.]+)\s*([KMGT])i?B/i.exec(String(text || '').replace(',', '.'));
+  return m ? Math.round(Number(m[1]) * UNITS[m[2].toUpperCase()]) : null;
+}
+
+/** A torrent bigger than the server's storage allows (debrid/HTTP links use no disk). */
+export function tooBigForServer(stream, sizeBytes, max = config.maxTorrentBytes) {
+  return !!(max && stream.infoHash && sizeBytes && sizeBytes > max);
+}
+
 /** Turns an addon stream into what the browser may see (no URLs, no keys). */
 export function describeStream(stream, addon) {
   const name = String(stream.name || '');
@@ -250,6 +318,8 @@ export function describeStream(stream, addon) {
     hevc: /\b(hevc|x265|h\.?265)\b/i.test(text),
     // Debrid-cached links (e.g. "[RD+]") start instantly and don't touch P2P.
     cached: /\[[A-Z]{2,3}\+\]/.test(name),
+    languages: streamLanguages(text),
+    tooBig: tooBigForServer(stream, parseSize(size?.[1])),
     kind: stream.infoHash ? 'torrent' : 'http',
   };
 }
@@ -287,4 +357,48 @@ export async function streams(type, id, log, extraBases = []) {
     log?.warn({ addon: host, err: r.reason?.message }, 'stream addon failed');
   });
   return { streams: list, failedAddons: failed };
+}
+
+// ---------------------------------------------------------------- best source (server side)
+
+const QUALITY_RANK = { '4K': 1, '1080p': 3, '720p': 2 };
+
+/**
+ * Same ranking as the client's pickBest (client/src/format.ts): MULTI first (VF and VO
+ * in one file), then débrid-cached, then 1080p over 4K/720p, then most seeders. Used
+ * when the room starts something on its own (vote, next episode).
+ */
+export function pickBestStream(list) {
+  let best = null;
+  // Never a torrent the server's storage can't hold (MAX_TORRENT_GB).
+  list = list.filter((s) => !s.tooBig);
+  const score = (s) => [s.languages?.includes('MULTI') ? 1 : 0, s.cached ? 1 : 0, QUALITY_RANK[s.quality || ''] || 0, s.seeders ?? -1];
+  for (const s of list) {
+    if (!best) {
+      best = s;
+      continue;
+    }
+    const a = score(s);
+    const b = score(best);
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) {
+        if (a[i] > b[i]) best = s;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+/** Full stream object of the best source for a video (shared + these addons), or null. */
+export async function bestStream(type, id, log, extraBases = []) {
+  const { streams: list } = await streams(type, id, log, extraBases);
+  const best = pickBestStream(list);
+  return best ? lookupStream(best.key) : null;
+}
+
+/** Short public label of a source ("1080p · MULTI · ⚡ Débrid"), shown in the queue. */
+export function sourceLabel(stream) {
+  const d = describeStream(stream, '');
+  return [d.quality, ...d.languages, d.cached ? '⚡ Débrid' : null].filter(Boolean).join(' · ') || 'Source choisie';
 }

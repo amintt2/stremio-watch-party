@@ -1,11 +1,18 @@
 import { api, type UserAddon } from '../api.ts';
 import type { App, View } from '../app.ts';
-import { localStorageGet, localStorageSet } from '../auth.ts';
+import { localStorageGet, localStorageRemove, localStorageSet } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
-import { avatar, icon, legalFooter } from '../ui.ts';
+import { languageName } from '../format.ts';
+import { avatar, confirmButton, copyText, icon, legalFooter } from '../ui.ts';
 
 export type Theme = 'dark' | 'light' | 'auto';
 const THEME_KEY = 'wp-theme';
+// Same keys as player.ts (quality, audio language) and subtitles.ts (subtitle language).
+const QUALITY_KEY = 'wp-quality';
+const AUDIO_KEY = 'wp-audio';
+const SUBS_KEY = 'wp-subs';
+/** Subtitle languages offered by default (others can be picked in the player). */
+const SUB_LANGS = ['fr', 'en', 'es', 'de', 'it', 'pt', 'nl', 'ar', 'tr', 'pl', 'ru', 'ja', 'ko', 'zh'];
 
 export function savedTheme(): Theme {
   const t = localStorageGet(THEME_KEY);
@@ -92,11 +99,7 @@ export function settingsView(app: App): View {
           {
             class: 'btn btn-secondary btn-sm',
             type: 'button',
-            onclick: () =>
-              navigator.clipboard
-                .writeText(link)
-                .then(() => toast('Lien copié'))
-                .catch(() => toast(link)),
+            onclick: () => copyText(link, 'Lien copié'),
           },
           icon('link', 'icon icon-sm'),
           'Copier le lien'
@@ -137,6 +140,104 @@ export function settingsView(app: App): View {
   );
   qualitySel.value = player.preference;
 
+  // Audio language: the player picks the French track ("fr") or the original one ("vo")
+  // when a file has several; empty = the file's default track.
+  const audioSel = h(
+    'select',
+    {
+      class: 'input',
+      onchange: (e: Event) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v) localStorageSet(AUDIO_KEY, v);
+        else localStorageRemove(AUDIO_KEY);
+        player.audioPref = v || null;
+        toast('Langue audio enregistrée');
+      },
+    },
+    h('option', { value: '' }, 'Piste par défaut du fichier'),
+    h('option', { value: 'fr' }, 'Français (VF) si disponible'),
+    h('option', { value: 'vo' }, 'Version originale (VO)')
+  );
+  audioSel.value = localStorageGet(AUDIO_KEY) === 'fr' || localStorageGet(AUDIO_KEY) === 'vo' ? localStorageGet(AUDIO_KEY)! : '';
+
+  const savedSubs = localStorageGet(SUBS_KEY) || '';
+  const subsSel = h(
+    'select',
+    {
+      class: 'input',
+      onchange: (e: Event) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v) localStorageSet(SUBS_KEY, v);
+        else localStorageRemove(SUBS_KEY);
+        toast(v ? `Sous-titres en ${languageName(v).toLowerCase()} par défaut` : 'Pas de sous-titres par défaut');
+      },
+    },
+    h('option', { value: '' }, 'Aucun'),
+    [...new Set([...SUB_LANGS, ...(savedSubs ? [savedSubs] : [])])].map((code) => h('option', { value: code }, languageName(code)))
+  );
+  subsSel.value = savedSubs;
+
+  const resetPrefs = confirmButton(
+    { class: 'btn btn-ghost btn-sm', label: 'Réinitialiser les préférences', confirmLabel: 'Réinitialiser ? Clique encore', icon: 'reset' },
+    () => {
+      for (const key of [THEME_KEY, QUALITY_KEY, AUDIO_KEY, SUBS_KEY]) localStorageRemove(key);
+      applyTheme(savedTheme());
+      player.setPreference('auto');
+      localStorageRemove(QUALITY_KEY);
+      player.audioPref = null;
+      themeSel.value = savedTheme();
+      qualitySel.value = 'auto';
+      audioSel.value = '';
+      subsSel.value = '';
+      toast('Préférences réinitialisées');
+    }
+  );
+
+  // ---- my data
+  const exportBtn = h(
+    'button',
+    {
+      class: 'btn btn-secondary btn-sm',
+      type: 'button',
+      onclick: async (e: Event) => {
+        const b = e.currentTarget as HTMLButtonElement;
+        b.disabled = true;
+        try {
+          const data = await api<unknown>('/api/me/export');
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = h('a', { href: url, download: `watch-party-${new Date().toISOString().slice(0, 10)}.json` });
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10_000);
+          toast(mode === 'discord' ? 'Export prêt (si rien ne se télécharge, ouvre le site dans un navigateur)' : 'Export téléchargé');
+        } catch (err) {
+          toast((err as Error).message);
+        } finally {
+          b.disabled = false;
+        }
+      },
+    },
+    icon('download', 'icon icon-sm'),
+    'Exporter mes données'
+  );
+  const clearHistoryBtn = confirmButton(
+    { class: 'btn btn-ghost btn-sm btn-danger', label: 'Effacer l’historique', confirmLabel: 'Effacer tout l’historique ? Clique encore', icon: 'history' },
+    async () => {
+      const r = await api<{ count: number }>('/api/history', { method: 'DELETE' });
+      toast(r.count ? 'Historique effacé' : 'Historique déjà vide');
+    }
+  );
+  const eraseBtn = confirmButton(
+    { class: 'btn btn-ghost btn-sm btn-danger', label: 'Supprimer toutes mes données', confirmLabel: 'Tout supprimer ? Clique encore', icon: 'trash' },
+    async () => {
+      await api('/api/me/data', { method: 'DELETE' });
+      toast('Historique, bibliothèque et addons perso supprimés');
+      loadAddons();
+    }
+  );
+
   // ---- personal stream addons
   const addonList = h('div', { class: 'addon-list' });
   const renderAddons = (items: UserAddon[], shared: number | null) => {
@@ -149,18 +250,13 @@ export function settingsView(app: App): View {
               'div',
               { class: 'addon' },
               h('div', {}, h('strong', {}, a.name), h('code', { class: 'faint small' }, a.url)),
-              h(
-                'button',
-                {
-                  class: 'btn btn-ghost btn-icon',
-                  type: 'button',
-                  'aria-label': `Supprimer ${a.name}`,
-                  onclick: async () => {
-                    await api(`/api/addons/${encodeURIComponent(a.id)}`, { method: 'DELETE' }).catch((err: Error) => toast(err.message));
-                    loadAddons();
-                  },
-                },
-                icon('trash')
+              confirmButton(
+                { class: 'btn btn-ghost btn-sm', label: 'Supprimer', confirmLabel: 'Confirmer ?', icon: 'trash', title: `Supprimer ${a.name}` },
+                async () => {
+                  await api(`/api/addons/${encodeURIComponent(a.id)}`, { method: 'DELETE' });
+                  toast(`${a.name} supprimé`);
+                  loadAddons();
+                }
               )
             )
           )
@@ -211,7 +307,14 @@ export function settingsView(app: App): View {
     account,
     roomSection,
     section('Apparence', field('Thème', themeSel)),
-    section('Lecture', field('Qualité par défaut', qualitySel, 'Auto choisit selon la vitesse de ta connexion, pendant la lecture.')),
+    section(
+      'Lecture',
+      h('p', { class: 'muted small' }, 'Ces choix sont propres à cet appareil, et chacun a les siens dans la salle.'),
+      field('Qualité par défaut', qualitySel, 'Auto choisit selon la vitesse de ta connexion, pendant la lecture.'),
+      field('Langue audio', audioSel, 'Quand un fichier a plusieurs pistes (MULTI). Changer de piste dans le lecteur met aussi à jour ce choix.'),
+      field('Sous-titres par défaut', subsSel, 'Chargés automatiquement quand ils existent dans cette langue.'),
+      h('div', { class: 'settings-actions' }, resetPrefs)
+    ),
     section(
       'Mes addons de sources',
       h(
@@ -221,6 +324,29 @@ export function settingsView(app: App): View {
       ),
       addonList,
       addonForm
+    ),
+    section(
+      'Mes données',
+      h(
+        'p',
+        { class: 'muted' },
+        'Ta progression, ton historique, ta bibliothèque et tes addons perso sont liés à ton compte. Tu peux les récupérer ou les effacer.'
+      ),
+      h('div', { class: 'settings-actions' }, exportBtn, clearHistoryBtn, eraseBtn),
+      h('p', { class: 'field-hint' }, 'La suppression est définitive. Ton compte reste (il sert à te connecter).')
+    ),
+    section(
+      'Raccourcis clavier',
+      h(
+        'dl',
+        { class: 'shortcuts' },
+        [
+          ['/', 'Rechercher'],
+          ['Échap', 'Vider la recherche · réduire le lecteur'],
+          ['Espace ou K', 'Lecture / pause (lecteur)'],
+          ['← →', 'Reculer / avancer de 10 s (lecteur)'],
+        ].flatMap(([k, v]) => [h('dt', {}, h('kbd', {}, k)), h('dd', {}, v)])
+      )
     ),
     legalFooter()
   );

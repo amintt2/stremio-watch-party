@@ -152,7 +152,7 @@ Le responsable du traitement est ${operator}, joignable via ${contact}.</p>
     bibliothèque, historique, extensions ajoutées (les adresses d’extensions, qui peuvent contenir des clés de services
     tiers, sont conservées côté serveur et ne sont jamais affichées en entier).</li>
   <li><strong>Données techniques</strong> : adresse IP et informations de connexion nécessaires au fonctionnement et à
-    la sécurité (journaux d’erreurs). Ton navigateur conserve localement quelques préférences (qualité, thème, pseudo en mode test) et, sur
+    la sécurité (journaux d’erreurs). Ton navigateur conserve localement quelques préférences (qualité, thème, langue audio et sous-titres, pseudo en mode test) et, sur
     le site web, un cookie de session nécessaire à la connexion.</li>
 </ul>
 <p>${app} n’utilise <strong>aucun cookie publicitaire ni outil de mesure d’audience</strong>, et ne vend ni ne loue
