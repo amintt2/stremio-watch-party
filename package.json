@@ -1,0 +1,21 @@
+{
+  "name": "stremio-watch-party",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discord Activity to watch Stremio addon streams together, in sync, with per-viewer quality.",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace server & npm run dev --workspace client",
+    "build": "npm run build --workspace client",
+    "start": "npm run start --workspace server",
+    "test": "npm test --workspace server && npm test --workspace client",
+    "check": "npm run check --workspace client"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

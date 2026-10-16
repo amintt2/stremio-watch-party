@@ -1,0 +1,30 @@
+# Backend + serveur de streaming Stremio, sur la même machine (ton PC sous Linux,
+# ou un serveur). Seul le backend est exposé : le serveur Stremio reste privé.
+services:
+  watch-party:
+    build: .
+    env_file: .env
+    environment:
+      STREMIO_SERVER_URL: http://stremio:11470
+      STREMIO_SELF_URL: http://127.0.0.1:11470
+    ports:
+      - "3001:3001" # derrière ton reverse proxy HTTPS (Caddy, Traefik…)
+    depends_on:
+      - stremio
+    restart: unless-stopped
+
+  stremio:
+    image: stremio/server:latest
+    environment:
+      NO_CORS: "1"
+    volumes:
+      - stremio-data:/root/.stremio-server
+    # Transcodage matériel AMD (RX 6650 XT) via VAAPI — Linux uniquement.
+    # Vérifie ensuite que /settings liste "vaapi-renderD128" dans allTranscodeProfiles.
+    devices:
+      - /dev/dri:/dev/dri
+    # Pas de "ports:" : il n'est joignable que par le backend.
+    restart: unless-stopped
+
+volumes:
+  stremio-data:

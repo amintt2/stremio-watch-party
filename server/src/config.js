@@ -1,0 +1,68 @@
+// All configuration comes from the environment (see .env.example).
+
+function list(value) {
+  return (value || '')
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function trimSlash(url) {
+  return (url || '').replace(/\/+$/, '');
+}
+
+/** Strip a trailing /manifest.json so we can build resource URLs from it. */
+export function addonBase(url) {
+  return trimSlash(trimSlash(url).replace(/\/manifest\.json$/, ''));
+}
+
+export const config = {
+  port: Number(process.env.PORT || 3001),
+  host: process.env.HOST || '0.0.0.0',
+
+  discord: {
+    clientId: process.env.DISCORD_CLIENT_ID || '',
+    clientSecret: process.env.DISCORD_CLIENT_SECRET || '',
+  },
+
+  // Signs session tokens. Must be set in production.
+  sessionSecret: process.env.SESSION_SECRET || '',
+
+  // Lets the app run in a normal browser tab (no Discord), for local testing.
+  allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
+
+  // Where this backend reaches the Stremio streaming server.
+  stremioServerUrl: trimSlash(process.env.STREMIO_SERVER_URL || 'http://127.0.0.1:11470'),
+  // Base URL the Stremio server uses to read torrents from itself (it fetches its own
+  // /{infoHash}/{fileIdx} endpoint when transcoding). Defaults to its loopback address.
+  stremioSelfUrl: trimSlash(process.env.STREMIO_SELF_URL || 'http://127.0.0.1:11470'),
+
+  // Catalog/metadata addon (search + movie/series details).
+  metaAddon: addonBase(process.env.META_ADDON_URL || 'https://v3-cinemeta.strem.io/manifest.json'),
+  // Stream addons (e.g. your Torrentio configuration URL). These URLs can contain
+  // debrid API keys: they never leave the server.
+  streamAddons: list(process.env.STREAM_ADDON_URLS).map(addonBase),
+
+  // Hosts the image proxy may fetch posters/avatars from (the Discord iframe can't
+  // load third-party images directly).
+  imageHosts: list(
+    process.env.IMAGE_HOSTS ||
+      'images.metahub.space,live.metahub.space,episodes.metahub.space,image.tmdb.org,m.media-amazon.com,cdn.discordapp.com'
+  ),
+};
+
+export function assertConfig(log) {
+  if (!config.sessionSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('SESSION_SECRET is required in production');
+    }
+    config.sessionSecret = 'dev-only-insecure-secret';
+    log.warn('SESSION_SECRET not set: using an insecure development secret');
+  }
+  if (!config.discord.clientId || !config.discord.clientSecret) {
+    log.warn('DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET not set: Discord login is disabled');
+  }
+  if (config.streamAddons.length === 0) {
+    log.warn('STREAM_ADDON_URLS is empty: no stream sources configured');
+  }
+}
