@@ -207,7 +207,7 @@ l'ouvrent, se connectent, et vous êtes synchronisés. On peut aussi coller un c
 ### Moteur torrent Huwa
 
 Par défaut (docker-compose), les torrents sont téléchargés par le **moteur Huwa**
-(`ghcr.io/amintt2/huwa`, librqbit avec des priorités de streaming, une lecture anticipée, la
+(`ghcr.io/amintt2/huwa`, version épinglée par `HUWA_IMAGE_TAG`, `sha-0968fdf` par défaut, librqbit avec des priorités de streaming, une lecture anticipée, la
 surveillance de la santé du swarm et la reprise automatique quand il cale). Le serveur Stremio
 ne fait plus que **convertir** : il lit le fichier chez Huwa en HTTP, comme un lien débrid.
 Les qualités par spectateur, VF/VO et sous-titres restent identiques.

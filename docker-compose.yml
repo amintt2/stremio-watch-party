@@ -63,7 +63,9 @@ services:
   # automatique). Il télécharge les torrents ; le serveur Stremio convertit en HLS en lisant
   # le fichier chez lui. Privé, comme stremio : aucun domaine, aucun port publié.
   huwa:
-    image: ghcr.io/amintt2/huwa:latest
+    # Pas de :latest tant que amintt2/huwa n'a pas d'étiquette de version v* : on épingle
+    # une image sha-… publiée (celle-ci est testée avec Watch Party). HUWA_IMAGE_TAG pour changer.
+    image: ghcr.io/amintt2/huwa:${HUWA_IMAGE_TAG:-sha-0968fdf}
     environment:
       HUWA_STREMIO_COMPAT: "1"
       # Watch Party : une source par salle en même temps, avec de la marge.
