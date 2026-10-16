@@ -6,10 +6,34 @@ import { addonBase, config } from './config.js';
 
 const STREAM_CACHE_TTL_MS = 60 * 60 * 1000;
 
-async function getJson(url, timeoutMs = 15000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+/** Readable reason for a failed fetch ("timeout after 15 s", "ENOTFOUND", "HTTP 403"…). */
+export function describeFetchError(err, timeoutMs) {
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return `timeout after ${timeoutMs / 1000} s`;
+  const cause = err?.cause;
+  if (cause?.code) return `${cause.code}${cause.message ? `: ${cause.message}` : ''}`;
+  return err?.message || String(err);
+}
+
+export async function getJson(url, timeoutMs = 15000) {
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'WatchParty/0.1 (Stremio addon client)' },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw new Error(describeFetchError(err, timeoutMs));
+  }
+  if (!res.ok) {
+    res.body?.cancel().catch(() => {});
+    const server = res.headers.get('server');
+    throw new Error(`HTTP ${res.status}${server ? ` (${server})` : ''}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    throw new Error('réponse invalide (pas du JSON)');
+  }
 }
 
 // ---------------------------------------------------------------- catalog / meta
