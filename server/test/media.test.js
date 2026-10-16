@@ -6,6 +6,7 @@ import {
   isAllowedHlsPath,
   parseProfile,
   wantedSettings,
+  peerSources,
   rewritePlaylist,
 } from '../src/media.js';
 import { describeStream } from '../src/addons.js';
@@ -156,4 +157,12 @@ test('ten viewers on every quality need at most 5 converters per media', () => {
     }
   }
   assert.equal(ids.size, 5);
+});
+
+test('torrents without trackers get DHT plus public trackers', () => {
+  const own = peerSources({ infoHash: 'A'.repeat(40), sources: ['tracker:udp://x:1/announce'] });
+  assert.deepEqual(own, ['tracker:udp://x:1/announce']);
+  const fallback = peerSources({ infoHash: 'A'.repeat(40) });
+  assert.equal(fallback[0], `dht:${'a'.repeat(40)}`);
+  assert.ok(fallback.length > 3 && fallback.slice(1).every((s) => s.startsWith('tracker:udp://')));
 });

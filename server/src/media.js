@@ -66,11 +66,26 @@ async function resolveRedirects(url) {
   return current;
 }
 
+// Used when an addon gives an infoHash without trackers (e.g. TorrentsDB), so peers
+// are found quickly instead of relying on DHT alone.
+const DEFAULT_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+];
+
+export function peerSources(stream) {
+  const infoHash = stream.infoHash.toLowerCase();
+  if (Array.isArray(stream.sources) && stream.sources.length) return stream.sources;
+  return [`dht:${infoHash}`, ...DEFAULT_TRACKERS.map((t) => `tracker:${t}`)];
+}
+
 async function resolveTorrent(stream) {
   const infoHash = stream.infoHash.toLowerCase();
-  const sources = Array.isArray(stream.sources) && stream.sources.length
-    ? stream.sources
-    : [`dht:${infoHash}`];
+  const sources = peerSources(stream);
   const res = await stremio(`/${infoHash}/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
