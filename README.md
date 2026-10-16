@@ -51,6 +51,14 @@ directement sur le site, dans un navigateur.
 - **Lecteur** : synchro, qualité auto et pistes comme avant. Le bouton ← (ou Échap) réduit
   le film en **mini-lecteur** : tu peux continuer à chercher pendant que ça joue, et ce que
   tu lances démarre toujours pour tout le monde.
+  - Clic sur l'image = pause / lecture pour la salle, double-clic = plein écran. Sur
+    téléphone : un tap affiche les commandes, double-tap à gauche / à droite = −10 s / +10 s.
+  - Volume jusqu'à **130 %** (le tien seulement), réglages ⚙ (qualité, audio, sous-titres,
+    décalage et taille des sous-titres), image dans l'image, temps restant (clic sur la durée).
+  - Clavier : Espace/K, ←/→ ou J/L (±10 s), ↑/↓ (volume), M, F, C (sous-titres), ? (aide).
+  - Le point de couleur indique ta connexion (vert, orange, rouge). Si ta vidéo prend du
+    retard, la barre montre **ta** position (le trait blanc = la salle) et « Rattrapage de la
+    salle… » s'affiche ; si ça risque de couper, le lecteur propose une qualité plus basse.
 - **Paramètres** : thème (sombre, clair, système), qualité par défaut, **langue audio**
   (VF / VO) et **sous-titres par défaut**, réinitialiser ces préférences, code de la salle
   et lien d'invitation (hors Discord), **tes propres addons de sources** (ex. ton

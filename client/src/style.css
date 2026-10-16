@@ -33,6 +33,14 @@
   --on-media-track: rgba(255, 255, 255, 0.25);
   --media-scrim-top: rgba(0, 0, 0, 0.75);
   --media-scrim-clear: rgba(0, 0, 0, 0);
+  --media-panel: rgba(16, 14, 26, 0.94);
+  --media-panel-border: rgba(255, 255, 255, 0.1);
+  --on-media-buffered: rgba(255, 255, 255, 0.45);
+  --on-media-ripple: rgba(255, 255, 255, 0.14);
+  --media-good: #3ecf8e;
+  --media-fair: #f5a524;
+  --media-poor: #ff5d5d;
+  --media-idle: rgba(255, 255, 255, 0.35);
 
   --radius: 12px;
   --radius-sm: 8px;
@@ -1721,13 +1729,23 @@ input[type='range'] {
 .seek::-webkit-slider-runnable-track {
   height: 5px;
   border-radius: var(--radius-pill);
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--on-media-track) var(--fill));
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill),
+    var(--on-media-buffered) var(--fill),
+    var(--on-media-buffered) var(--buffered, var(--fill)),
+    var(--on-media-track) var(--buffered, var(--fill))
+  );
 }
 
 .seek::-moz-range-track {
   height: 5px;
   border-radius: var(--radius-pill);
-  background: var(--on-media-track);
+  background: linear-gradient(
+    to right,
+    var(--on-media-buffered) var(--buffered, 0%),
+    var(--on-media-track) var(--buffered, 0%)
+  );
 }
 
 .seek::-moz-range-progress {
@@ -1765,16 +1783,6 @@ input[type='range'] {
   text-align: right;
 }
 
-.volume-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--on-media-muted);
-}
-
-.volume {
-  width: 90px;
-}
 
 .stage.idle {
   cursor: none;
@@ -1811,6 +1819,601 @@ input[type='range'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- player controls */
+/* stage.ts: seek bar (buffered range, preview, room marker), volume 0–130 %, health
+   dot, settings menu, shortcuts help, tap ripples and notices. */
+
+.stage.mode-full {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stage:not(.mode-full) > .ripple,
+.stage:not(.mode-full) > .stage-flash,
+.stage:not(.mode-full) > .stage-notice,
+.stage:not(.mode-full) > .stage-menu {
+  display: none;
+}
+
+.seek-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+  display: flex;
+  align-items: center;
+}
+
+.seek-ghost {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 13px;
+  border-radius: var(--radius-pill);
+  background: var(--on-media);
+  opacity: 0.85;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.seek-ghost[hidden],
+.seek-tip[hidden] {
+  display: none;
+}
+
+.seek-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--media-panel);
+  color: var(--on-media);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.seek.drifting::-webkit-slider-thumb {
+  background: var(--media-fair);
+}
+
+.seek.drifting::-moz-range-thumb {
+  background: var(--media-fair);
+}
+
+.time-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.time-btn:hover {
+  color: var(--on-media);
+}
+
+.controls-row {
+  gap: 8px;
+}
+
+.controls-right {
+  gap: 2px;
+}
+
+.volume-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--on-media);
+}
+
+.volume {
+  appearance: none;
+  width: 104px;
+  height: 18px;
+  background: none;
+  cursor: pointer;
+  --fill: 100%;
+  --mark: 100%;
+}
+
+.volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(to right, var(--on-media) var(--fill), var(--on-media-track) var(--fill));
+}
+
+/* Tick at 100 % when the slider goes up to 130 %. */
+.volume.boost::-webkit-slider-runnable-track {
+  background: linear-gradient(var(--on-media-buffered), var(--on-media-buffered)) var(--mark) 0 / 2px 100% no-repeat,
+    linear-gradient(to right, var(--on-media) var(--fill), var(--on-media-track) var(--fill));
+}
+
+.volume::-moz-range-track {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--on-media-track);
+}
+
+.volume::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--on-media);
+}
+
+.volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--on-media);
+  border: 0;
+}
+
+.volume::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--on-media);
+  border: 0;
+}
+
+.volume-pct {
+  min-width: 48px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-media-muted);
+}
+
+/* iOS: video.volume is read-only, mute only. */
+.no-volume-slider .volume,
+.no-volume-slider .volume-pct {
+  display: none;
+}
+
+/* Status messages over the picture don't swallow clicks/taps on it. */
+.overlay > .overlay-msg {
+  pointer-events: none;
+}
+
+/* Toasts above the controls while the player is open. */
+body.player-open .toasts {
+  bottom: 128px;
+}
+
+/* Easier to grab with a finger. */
+@media (pointer: coarse) {
+  .seek {
+    height: 30px;
+  }
+}
+
+.health {
+  appearance: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.health[hidden] {
+  display: none;
+}
+
+.health:hover {
+  background: var(--on-media-soft);
+}
+
+.health-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--media-idle);
+  transition: background 0.3s;
+}
+
+.health[data-level='good'] .health-dot {
+  background: var(--media-good);
+}
+
+.health[data-level='fair'] .health-dot {
+  background: var(--media-fair);
+}
+
+.health[data-level='poor'] .health-dot {
+  background: var(--media-poor);
+}
+
+.stop-btn.armed,
+.stop-btn.armed:hover {
+  background: var(--media-poor);
+  color: var(--on-media);
+}
+
+.btn-icon-sm {
+  width: 30px;
+  height: 30px;
+}
+
+.icon-xl,
+.icon-xl svg {
+  width: 40px;
+  height: 40px;
+}
+
+.spinner-lg {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  border-width: 3px;
+  border-color: var(--on-media-track);
+  border-top-color: var(--on-media);
+}
+
+.overlay > .overlay-spinner {
+  pointer-events: none;
+}
+
+/* Double-tap / ←→ feedback, and the centre flash (play, pause, volume…). */
+.ripple {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: var(--on-media-ripple);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ripple-left {
+  left: 0;
+  border-radius: 0 50% 50% 0 / 0 50% 50% 0;
+}
+
+.ripple-right {
+  right: 0;
+  border-radius: 50% 0 0 50% / 50% 0 0 50%;
+}
+
+.ripple.show {
+  animation: stage-fade 0.8s ease-out;
+}
+
+.ripple-text {
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--media-scrim-top);
+  font-weight: 700;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-flash {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  transform: translate(-50%, -50%);
+  min-width: 72px;
+  min-height: 72px;
+  padding: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--media-scrim-top);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.stage-flash.show {
+  animation: stage-fade 0.7s ease-out;
+}
+
+.flash-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  font-weight: 700;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes stage-fade {
+  0% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* "Rattrapage de la salle…" / "Connexion lente : risque de coupure." */
+.stage-notice {
+  position: absolute;
+  top: 78px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-pill);
+  background: var(--media-panel);
+  color: var(--on-media);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stage-notice[hidden] {
+  display: none;
+}
+
+.stage-notice .spinner {
+  margin-right: 0;
+}
+
+.stage-notice:not(.notice-warn) {
+  padding-right: 14px;
+}
+
+.notice-warn {
+  border-color: var(--media-fair);
+}
+
+.notice-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--media-fair);
+}
+
+/* Settings menu (gear) and shortcuts help. */
+.stage-menu {
+  position: absolute;
+  right: 16px;
+  bottom: 100px;
+  z-index: 4;
+  width: 320px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 160px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius);
+  background: var(--media-panel);
+  color: var(--on-media);
+  box-shadow: var(--shadow);
+}
+
+.stage-menu[hidden] {
+  display: none;
+}
+
+.menu-row,
+.menu-choice {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-row:hover,
+.menu-choice:hover,
+.menu-row:focus-visible,
+.menu-choice:focus-visible {
+  background: var(--on-media-soft);
+  outline: none;
+}
+
+.menu-row-title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.menu-row-value {
+  color: var(--on-media-muted);
+  font-size: 13px;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-back {
+  border-bottom: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  margin-bottom: 4px;
+}
+
+.menu-choice.selected {
+  font-weight: 700;
+}
+
+.menu-check {
+  width: 18px;
+  flex: none;
+  color: var(--accent);
+}
+
+.menu-group {
+  padding: 10px 12px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--on-media-muted);
+}
+
+.menu-item {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.menu-muted {
+  color: var(--on-media-muted);
+  font-size: 13px;
+}
+
+.menu-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu-inline .volume {
+  flex: 1;
+  width: auto;
+}
+
+.menu-value {
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-volume {
+  display: none;
+}
+
+.segmented-media {
+  background: var(--on-media-soft);
+  justify-self: start;
+}
+
+.segmented-media button {
+  color: var(--on-media-muted);
+  min-width: 46px;
+}
+
+.segmented-media button:hover {
+  color: var(--on-media);
+}
+
+.stage-menu kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: 4px;
+  background: var(--on-media-soft);
+  font: 600 12px/1.5 var(--font);
+  text-align: center;
+}
+
+.menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 6px 12px;
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 4px 12px 12px;
+  font-size: 13px;
+}
+
+.keys dt {
+  white-space: nowrap;
+}
+
+.keys dd {
+  margin: 0;
+  color: var(--on-media-muted);
+}
+
+/* File subtitle tracks (hls.js) follow the same size setting. */
+.stage .video::cue {
+  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
+}
+
+/* Touch screens: volume lives in the menu (phones also have volume buttons);
+   no keyboard shortcuts entry. */
+@media (max-width: 640px), (pointer: coarse) {
+  .volume-group .volume,
+  .volume-group .volume-pct {
+    display: none;
+  }
+  .menu-volume {
+    display: grid;
+  }
+}
+
+@media (hover: none) {
+  .menu-keys {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .btn-round {
+    width: 44px;
+    height: 44px;
+  }
+  .controls-row {
+    gap: 4px;
+    flex-wrap: nowrap;
+  }
+  .seek-row {
+    gap: 8px;
+  }
+  .stage-menu {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    bottom: 92px;
+  }
+  .stop-btn:not(.armed) .btn-label {
+    display: none;
+  }
+  .stage-notice {
+    top: 66px;
+    font-size: 12px;
+  }
 }
 
 /* ---------------------------------------------------------------- legal links */
@@ -1873,29 +2476,12 @@ input[type='range'] {
   border-radius: var(--radius-sm);
   background: var(--media-scrim-top);
   color: var(--on-media);
-  font-size: clamp(16px, 2.4vw, 34px);
+  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
   line-height: 1.3;
   font-weight: 500;
   white-space: pre-line;
 }
 
-.subs-shift {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.subs-shift[hidden] {
-  display: none;
-}
-
-.subs-shift-value {
-  min-width: 44px;
-  text-align: center;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--on-media-muted);
-}
 
 .badge-accent {
   border-color: var(--accent);
@@ -2449,17 +3035,7 @@ kbd {
   .controls {
     padding: 30px 12px 12px;
   }
-  .volume-group {
-    display: none;
-  }
-  .controls-right .btn-label {
-    display: none;
-  }
   .toasts {
     bottom: calc(var(--tabbar-h) + 90px);
-  }
-  /* Controls wrap on two or three lines here: keep subtitles above them. */
-  .stage:not(.idle) > .subs {
-    margin-bottom: 180px;
   }
 }
