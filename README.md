@@ -24,8 +24,10 @@ directement sur le site, dans un navigateur.
   le choix de la saison et la liste des épisodes (✓ vus, barre de progression). Les
   sources sont dans le panneau de droite, avec les mêmes infos qu'avant (qualité,
   👤 sources, taille, HDR/DV/HEVC, ⚡ débrid, filtres et tri).
-  - **Regarder ensemble** lance la meilleure source (débrid d'abord, puis 1080p, puis le
-    plus de sources) **pour tout le salon**. Tu peux aussi cliquer une source précise.
+  - **Regarder ensemble** lance la meilleure source (**MULTI** d'abord, pour que chacun
+    choisisse VF ou VO, puis débrid, puis 1080p, puis le plus de sources) **pour tout le
+    salon**. Tu peux aussi cliquer une source précise. Les badges **MULTI**, **VF** et
+    **VOSTFR** sont lus dans le nom de la release.
   - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
   - **Ajouter à la bibliothèque**.
 - **Bibliothèque** : tes titres, filtrables (films/séries) et triables (récents, A → Z).
@@ -82,6 +84,25 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
 - Les amis qui finissent avec **les mêmes paramètres partagent le même transcodage**. Pour
   ton serveur, c'est 1 transcodage par qualité, pas 1 par personne.
 - Pistes audio et sous-titres texte du fichier : sélectionnables par chacun.
+
+### VF, VO et sous-titres : chacun les siens
+
+Dans un même salon, **une personne peut regarder en VF et une autre en VO sous-titrée**,
+au même moment, synchronisées.
+
+- **Audio** : avec une source **MULTI** (VF + VO dans le même fichier), chacun choisit sa
+  piste dans le lecteur. Chaque piste audio a son propre convertisseur sur le serveur Stremio,
+  partagé par tous ceux qui l'écoutent : la VF de l'un ne coupe plus la VO de l'autre. Le
+  choix (VF ou VO) est retenu et appliqué tout seul au film suivant.
+- **Sous-titres** : en plus de ceux du fichier, le menu **Sous-titres** propose ceux
+  d'**OpenSubtitles** (addon Stremio OpenSubtitles v3), dans toutes les langues, français
+  en premier. Chacun choisit les siens (ou aucun) ; les autres ne voient rien. La langue est
+  retenue pour les films suivants. Boutons **− / +** pour décaler de 0,5 s si les
+  sous-titres sont en avance ou en retard.
+- Les sous-titres sont téléchargés et convertis (SRT → texte) par le serveur : le navigateur
+  ne voit jamais l'adresse des fichiers. Une seule recherche par épisode pour tout le salon.
+- `SUBTITLE_ADDON_URLS` : addons de sous-titres (OpenSubtitles v3 par défaut ; `none`
+  pour désactiver).
 
 ### Comptes, progression et bibliothèque
 
@@ -213,10 +234,11 @@ Pour l'ouvrir dans Discord pendant le dev, mappe `/` vers un tunnel HTTPS qui po
 Au démarrage, le backend règle lui-même le serveur Stremio (`STREMIO_AUTO_TUNE=0` pour
 désactiver) :
 
-- **`transcodeConcurrency` = 6** (`STREMIO_TRANSCODE_CONCURRENCY`) : par défaut à 1, ce qui
+- **`transcodeConcurrency` = 8** (`STREMIO_TRANSCODE_CONCURRENCY`) : par défaut à 1, ce qui
   détruit le transcodage des autres qualités, donc un ami en 720p coupe celui en 1080p. Un
-  film n'utilise jamais plus de 5 conversions (1 copie + 4 tailles de transcodage), quel que
-  soit le nombre de spectateurs : 6 couvre donc 10 personnes et plus.
+  film utilise au plus 1 copie + 4 tailles de transcodage + 1 conversion par piste audio
+  écoutée (souvent 2 : VF et VO), quel que soit le nombre de spectateurs : 8 couvre donc
+  10 personnes et plus.
 - **Cache de `STREMIO_CACHE_GB` Go** (100 dans le compose) : un remux 4K fait 50 à 80 Go ;
   avec 5 Go, revenir en arrière retélécharge.
 - **Accélération matérielle (RX 6650 XT)** : le serveur Stremio sait utiliser une carte AMD
@@ -249,10 +271,12 @@ démarrage.
 - **Pas de conversion HDR → SDR** dans le transcodeur Stremio : une source HDR ou Dolby
   Vision transcodée en H.264 aura des couleurs ternes ou fausses. L'app prévient. Préfère
   une release SDR pour les amis qui ne décodent pas le HEVC, et évite le Dolby Vision seul.
-- **Sous-titres image** (PGS des Blu-ray) : ignorés. Seuls les sous-titres texte du
-  fichier sont proposés.
-- **Pistes audio** : deux amis sur la même qualité qui choisissent deux pistes audio
-  différentes se gênent (une seule piste audio convertie à la fois par transcodage).
+- **Sous-titres image** (PGS des Blu-ray) : ignorés. Utilise ceux d'OpenSubtitles à la
+  place.
+- **VF / VO** : il faut une source **MULTI** (les deux langues dans le fichier). Avec une
+  release VF seule ou VOSTFR, tout le monde a la même piste audio.
+- **Sous-titres OpenSubtitles** : ils correspondent au film, pas forcément à la release
+  exacte ; un petit décalage est possible (boutons − / +).
 - **Torrents en direct** : ton serveur partage aussi des morceaux avec les autres pairs,
   depuis ton IP. Avec un débrid (Real-Debrid, AllDebrid…), rien ne passe en P2P chez toi.
   Comme c'est le backend (une seule IP) qui lit le lien et le relaie, ça respecte aussi la
@@ -270,12 +294,14 @@ démarrage.
 server/src/index.js    routes HTTP + WebSocket, relais HLS, proxy d'images
 server/src/rooms.js    état de lecture autoritaire (testé)
 server/src/media.js    torrent/débrid → session, profils de qualité, réécriture des playlists (testé)
-server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources) (testé)
+server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources, langues) (testé)
+server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)
 server/src/db.js       SQLite : comptes, progression, historique, bibliothèque, addons perso (testé)
 server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
 client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
 client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres
-client/src/streams.ts  panneau des sources (filtres, tri, meilleure source)
+client/src/streams.ts  panneau des sources (filtres, tri, meilleure source, badges MULTI/VF/VOSTFR)
+client/src/subtitles.ts sous-titres externes : choix par spectateur, décalage, affichage
 client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
