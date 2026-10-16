@@ -21,6 +21,9 @@ services:
       # Vide = déduite de la requête.
       PUBLIC_URL: ${PUBLIC_URL:-}
       DATA_DIR: /app/data
+      # Affichés sur /conditions et /confidentialite.
+      LEGAL_OPERATOR: ${LEGAL_OPERATOR:-}
+      LEGAL_CONTACT: ${LEGAL_CONTACT:-}
     volumes:
       # Comptes, progression, bibliothèque (SQLite).
       - watch-party-data:/app/data

@@ -35,8 +35,8 @@ export const config = {
   // Signs session tokens. Must be set in production.
   sessionSecret: process.env.SESSION_SECRET || '',
 
-  // Public base URL (https://watch.example.com) for the web login redirect URI.
-  // Defaults to the request's own scheme + host (trustProxy is on).
+  // Public address of the site, e.g. https://watch.mciut.fr: web login redirect URI and
+  // links opened outside the Discord iframe. Default: the request's scheme + host.
   publicUrl: trimSlash(process.env.PUBLIC_URL || ''),
 
   // SQLite database (accounts, progress, library). Mount it as a volume in Docker.
@@ -44,6 +44,15 @@ export const config = {
 
   // Lets the app run in a normal browser tab (no Discord), for local testing.
   allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
+
+  // Shown on /conditions and /confidentialite (required by Discord for apps).
+  legal: {
+    appName: process.env.APP_NAME || 'Watch Party',
+    // Who runs this instance, e.g. the community / server name.
+    operator: process.env.LEGAL_OPERATOR || 'l’équipe d’administration de la communauté',
+    // How to reach the operator: an email or a link (Discord server invite, ticket channel…).
+    contact: process.env.LEGAL_CONTACT || '',
+  },
 
   // Where this backend reaches the Stremio streaming server.
   stremioServerUrl: trimSlash(process.env.STREMIO_SERVER_URL || 'http://127.0.0.1:11470'),

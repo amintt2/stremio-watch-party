@@ -2,7 +2,7 @@ import { api, type CatalogDef, type Progress, type SearchResult } from '../api.t
 import type { App, View } from '../app.ts';
 import { clear, h } from '../dom.ts';
 import { routeHref } from '../format.ts';
-import { emptyState, posterCard, row, skeletonRow } from '../ui.ts';
+import { emptyState, legalFooter, posterCard, row, skeletonRow } from '../ui.ts';
 
 let catalogsPromise: Promise<CatalogDef[]> | null = null;
 
@@ -38,7 +38,7 @@ export function continueCard(p: Progress) {
 export function homeView(_app: App): View {
   const continueHost = h('div', { class: 'row-slot' });
   const rows = h('div', { class: 'rows' });
-  const el = h('div', { class: 'page page-home' }, continueHost, rows);
+  const el = h('div', { class: 'page page-home' }, continueHost, rows, legalFooter());
 
   api<{ items: Progress[] }>('/api/continue')
     .then(({ items }) => {

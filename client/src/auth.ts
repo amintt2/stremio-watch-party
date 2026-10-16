@@ -2,6 +2,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { api, setSession, type RoomInfo, type User } from './api.ts';
 import type { Mode } from './app.ts';
 import { h } from './dom.ts';
+import { legalFooter } from './ui.ts';
 
 export interface Identity {
   user: User;
@@ -13,6 +14,7 @@ interface ServerConfig {
   clientId: string | null;
   browserMode: boolean;
   webLogin: boolean;
+  publicUrl: string;
 }
 
 /** Discord passes frame_id (among others) to the Activity URL. */
@@ -27,12 +29,27 @@ export class LoginRequired extends Error {
   }
 }
 
+let discordSdk: DiscordSDK | null = null;
+let publicUrl = location.origin;
+
+/**
+ * Opens a page outside the app. Inside the Discord iframe plain links are blocked,
+ * so they go through the SDK (Discord asks the user to confirm).
+ */
+export function openExternal(url: string) {
+  const absolute = new URL(url, publicUrl).toString();
+  if (discordSdk) discordSdk.commands.openExternalLink({ url: absolute }).catch(() => {});
+  else window.open(absolute, '_blank', 'noopener');
+}
+
 export async function signIn(): Promise<Identity> {
   const cfg = await api<ServerConfig>('/api/config');
+  if (cfg.publicUrl) publicUrl = cfg.publicUrl;
 
   if (insideDiscord()) {
     if (!cfg.clientId) throw new Error('DISCORD_CLIENT_ID manquant côté serveur');
     const sdk = new DiscordSDK(cfg.clientId);
+    discordSdk = sdk;
     await sdk.ready();
     const { code } = await sdk.commands.authorize({
       client_id: cfg.clientId,
@@ -118,7 +135,8 @@ export function loginScreen(cfg: ServerConfig, onGuest: (id: Identity) => void) 
         ? h('a', { class: 'btn btn-primary btn-lg btn-block', href: loginHref }, 'Se connecter avec Discord')
         : h('p', { class: 'muted small' }, 'Connexion Discord non configurée sur le serveur.'),
       guest
-    )
+    ),
+    legalFooter()
   );
 }
 

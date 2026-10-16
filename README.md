@@ -125,7 +125,11 @@ spectateurs en upload (10 × 8 Mb/s ≈ 80 Mb/s en 1080p).
    (ex. `watch.mciut.fr`). Toutes les requêtes de l'Activité, WebSocket compris, passent
    par `https://<client_id>.discordsays.com` puis par ce mapping. C'est pour ça que le
    backend relaie la vidéo et les images.
-5. Garde l'app **non publiée** : elle est alors utilisable par toi et par les testeurs que
+5. **General Information** : *Terms of Service URL* = `https://<ton-domaine>/conditions`,
+   *Privacy Policy URL* = `https://<ton-domaine>/confidentialite`. Les deux pages sont servies
+   par l'app ; règle `LEGAL_OPERATOR` (qui exploite le service) et `LEGAL_CONTACT` (e-mail
+   ou lien d'invitation) pour qu'elles affichent les bonnes infos.
+6. Garde l'app **non publiée** : elle est alors utilisable par toi et par les testeurs que
    tu ajoutes dans le portail (App Testers). Lance-la depuis un salon vocal → 🚀
    Activités.
 
@@ -225,6 +229,20 @@ désactiver) :
   sans authentification, et n'importe qui peut lancer des torrents avec ta connexion.
   Seul le backend doit pouvoir le joindre (réseau Docker interne, ou authentification sur
   ton reverse proxy).
+
+## Dépannage
+
+`https://<ton-domaine>/api/health/details` vérifie depuis le serveur le serveur Stremio,
+l'addon de métadonnées et chaque addon de sources, avec l'erreur exacte. Les URL d'addon
+sont masquées. Le même diagnostic apparaît dans les logs (`diag: …`) 15 s après le
+démarrage.
+
+- **`HTTP 403 (cloudflare)` sur `torrentio.strem.fun`** : Torrentio bloque beaucoup d'IP
+  de serveurs (VPS, hébergeurs). Utilise un addon qui répond depuis un serveur, par exemple
+  **TorrentsDB** (`https://torrentsdb.com/manifest.json`, configurable sur
+  `https://torrentsdb.com/configure` : langue, débrid…), même format de résultats que
+  Torrentio. Si un addon ne donne pas de trackers, le serveur ajoute des trackers publics
+  en plus du DHT.
 
 ## Limites connues
 

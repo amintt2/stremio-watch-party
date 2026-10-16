@@ -2,7 +2,7 @@ import { api, type UserAddon } from '../api.ts';
 import type { App, View } from '../app.ts';
 import { localStorageGet, localStorageSet } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
-import { avatar, icon } from '../ui.ts';
+import { avatar, icon, legalFooter } from '../ui.ts';
 
 export type Theme = 'dark' | 'light' | 'auto';
 const THEME_KEY = 'wp-theme';
@@ -221,7 +221,8 @@ export function settingsView(app: App): View {
       ),
       addonList,
       addonForm
-    )
+    ),
+    legalFooter()
   );
   return { el };
 }

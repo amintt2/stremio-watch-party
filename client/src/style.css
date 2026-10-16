@@ -662,6 +662,7 @@ input[type='range'] {
 
 .login-guest {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   width: 100%;
   padding-top: 18px;
@@ -1763,6 +1764,19 @@ input[type='range'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- legal links */
+
+.legal {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 24px 0 8px;
+}
+
+.legal a {
+  color: var(--text-muted);
 }
 
 /* ---------------------------------------------------------------- toasts */

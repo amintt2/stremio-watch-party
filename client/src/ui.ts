@@ -1,4 +1,5 @@
 import { img, type Member, type SearchResult } from './api.ts';
+import { openExternal } from './auth.ts';
 import { h } from './dom.ts';
 import { progressRatio, routeHref } from './format.ts';
 
@@ -98,4 +99,10 @@ export function avatar(m: Pick<Member, 'name' | 'avatar'>, cls = 'avatar') {
     { class: cls, title: m.name },
     m.avatar ? h('img', { src: img(m.avatar), alt: '' }) : h('span', { class: 'avatar-initial' }, m.name.slice(0, 1).toUpperCase())
   );
+}
+
+/** Terms + privacy links; inside Discord they must open through the SDK. */
+export function legalFooter() {
+  const link = (label: string, href: string) => h('a', { href, onclick: (e: Event) => (e.preventDefault(), openExternal(href)) }, label);
+  return h('footer', { class: 'legal' }, link('Conditions d’utilisation', '/conditions'), ' · ', link('Confidentialité', '/confidentialite'));
 }

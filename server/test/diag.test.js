@@ -17,3 +17,13 @@ test('fetch errors are described with their cause', () => {
   const dns = Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND x' } });
   assert.equal(describeFetchError(dns, 1000), 'ENOTFOUND: getaddrinfo ENOTFOUND x');
 });
+
+test('legal pages render and escape the configured contact', async () => {
+  const { contactHtml, privacyPage, termsPage } = await import('../src/legal.js');
+  assert.match(termsPage(), /Conditions d’utilisation/);
+  assert.match(privacyPage(), /Politique de confidentialité/);
+  assert.equal(contactHtml('a@b.fr'), '<a href="mailto:a@b.fr">a@b.fr</a>');
+  assert.match(contactHtml('https://discord.gg/abc'), /^<a href="https:\/\/discord\.gg\/abc"/);
+  assert.equal(contactHtml('<script>x</script>'), '&lt;script&gt;x&lt;/script&gt;');
+  assert.match(contactHtml(''), /administrateurs/);
+});
