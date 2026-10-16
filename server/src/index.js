@@ -161,7 +161,9 @@ app.post('/api/session', async (request, reply) => {
   const account = web && store.getUser(web.uid);
   if (!account) return reply.code(401).send({ error: 'Non connecté' });
   const own = personalRoomCode(account.uid);
-  const code = normalizeRoomCode(request.body?.room) || own;
+  const asked = request.body?.room;
+  if (asked && !normalizeRoomCode(asked)) return reply.code(400).send({ error: 'Code de salle invalide' });
+  const code = normalizeRoomCode(asked) || own;
   const user = { uid: account.uid, name: account.name, avatar: account.avatar };
   return {
     session: issueSession({ ...user, room: `web:${code}` }),
