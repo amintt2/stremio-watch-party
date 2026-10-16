@@ -22,16 +22,18 @@ function volumeSettable() {
 
 /**
  * This viewer's volume, 0–130 % (never synced). Up to 100 % it is the element's own
- * volume. Above (or on iOS, anything but 100 %), the video is routed once through a
- * Web Audio GainNode; the AudioContext is only created from a user gesture, so the
- * sound is never routed into a suspended (silent) context.
+ * volume. Above, the video is routed once through a Web Audio GainNode; the
+ * AudioContext is only created from a user gesture, so the sound is never routed
+ * into a suspended (silent) context. Where video.volume is read-only (iOS), only
+ * mute is offered: the phone's buttons set the volume, and routing MSE video
+ * through Web Audio there has been known to go silent.
  */
 export class Volume {
   pct: number;
   muted: boolean;
   /** 130 with Web Audio, else 100. */
   max: number;
-  /** The slider does something (false on iOS without Web Audio: mute only). */
+  /** The slider does something (false on iOS: mute only). */
   readonly adjustable: boolean;
   onChange: () => void = () => {};
   onError: (message: string) => void = () => {};
@@ -46,10 +48,10 @@ export class Volume {
   constructor(video: HTMLVideoElement) {
     this.video = video;
     const saved = parseVolume(localStorageGet(VOLUME_KEY));
-    this.max = this.Ctx ? MAX_VOLUME : 100;
+    this.max = this.Ctx && this.settable ? MAX_VOLUME : 100;
     this.pct = clampVolume(saved.pct, this.max);
     this.muted = saved.muted;
-    this.adjustable = this.settable || !!this.Ctx;
+    this.adjustable = this.settable;
     this.apply();
   }
 
@@ -57,13 +59,8 @@ export class Volume {
     return !!this.gain;
   }
 
-  /** What the viewer actually hears right now (100 % until a gesture allows the boost). */
-  get effective() {
-    return this.routed ? this.pct : Math.min(this.pct, 100);
-  }
-
   private needsRoute() {
-    return this.pct > 100 || (!this.settable && this.pct !== 100);
+    return this.settable && this.pct > 100;
   }
 
   set(pct: number) {

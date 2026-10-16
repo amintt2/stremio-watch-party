@@ -229,7 +229,7 @@ export function createStage(host: StageHost) {
       return;
     }
     stopBtn.classList.add('armed');
-    stopLabel.textContent = 'Confirmer l’arrêt ?';
+    stopLabel.textContent = 'Confirmer ?';
     stopTimer = window.setTimeout(disarmStop, 3500);
     wake();
   });
@@ -333,7 +333,7 @@ export function createStage(host: StageHost) {
       b.setAttribute('aria-label', volume.muted ? 'Remettre le son (M)' : 'Couper le son (M)');
       b.title = b.getAttribute('aria-label')!;
     }
-    volGroup.classList.toggle('no-slider', !volume.adjustable);
+    el.classList.toggle('no-volume-slider', !volume.adjustable);
   };
   volume.onChange = renderVolume;
   const bindVolumeSlider = (s: HTMLInputElement) => {

@@ -1,5 +1,5 @@
 import './style.css';
-import { api, img, type RoomState } from './api.ts';
+import { api, type RoomState } from './api.ts';
 import type { App, PlayRequest, View } from './app.ts';
 import { LoginRequired, loginScreen, signIn, type Identity } from './auth.ts';
 import { Connection } from './connection.ts';

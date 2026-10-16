@@ -1927,9 +1927,27 @@ input[type='range'] {
   color: var(--on-media-muted);
 }
 
-.volume-group.no-slider .volume,
-.volume-group.no-slider .volume-pct {
+/* iOS: video.volume is read-only, mute only. */
+.no-volume-slider .volume,
+.no-volume-slider .volume-pct {
   display: none;
+}
+
+/* Status messages over the picture don't swallow clicks/taps on it. */
+.overlay > .overlay-msg {
+  pointer-events: none;
+}
+
+/* Toasts above the controls while the player is open. */
+body.player-open .toasts {
+  bottom: 128px;
+}
+
+/* Easier to grab with a finger. */
+@media (pointer: coarse) {
+  .seek {
+    height: 30px;
+  }
 }
 
 .health {
