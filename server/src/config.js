@@ -35,6 +35,13 @@ export const config = {
   // Signs session tokens. Must be set in production.
   sessionSecret: process.env.SESSION_SECRET || '',
 
+  // Public base URL (https://watch.example.com) for the web login redirect URI.
+  // Defaults to the request's own scheme + host (trustProxy is on).
+  publicUrl: trimSlash(process.env.PUBLIC_URL || ''),
+
+  // SQLite database (accounts, progress, library). Mount it as a volume in Docker.
+  dataDir: process.env.DATA_DIR || './data',
+
   // Lets the app run in a normal browser tab (no Discord), for local testing.
   allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
 

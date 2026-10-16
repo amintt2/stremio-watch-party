@@ -17,6 +17,13 @@ services:
       STREMIO_SELF_URL: http://127.0.0.1:11470
       STREMIO_CACHE_GB: ${STREMIO_CACHE_GB:-100}
       ALLOW_BROWSER_MODE: ${ALLOW_BROWSER_MODE:-0}
+      # URL publique (https://watch.example.com) pour la connexion Discord hors Activité.
+      # Vide = déduite de la requête.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      DATA_DIR: /app/data
+    volumes:
+      # Comptes, progression, bibliothèque (SQLite).
+      - watch-party-data:/app/data
     expose:
       - "3001"
     depends_on:
@@ -43,3 +50,4 @@ services:
 
 volumes:
   stremio-data:
+  watch-party-data:

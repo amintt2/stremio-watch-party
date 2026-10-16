@@ -4,9 +4,27 @@ import Fastify, { LogController } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 
-import { assertConfig, config } from './config.js';
+import { addonBase, assertConfig, config } from './config.js';
 import { issueSession, requireSession, verifySession } from './auth.js';
 import { exchangeCode, fetchUser } from './discord.js';
+import { openStore } from './db.js';
+import {
+  SESSION_COOKIE,
+  STATE_COOKIE,
+  STATE_TTL_S,
+  WEB_SESSION_TTL_S,
+  authorizeUrl,
+  checkState,
+  cookieSecure,
+  createState,
+  issueWebSession,
+  normalizeRoomCode,
+  parseCookies,
+  personalRoomCode,
+  redirectUri,
+  serializeCookie,
+  verifyWebSession,
+} from './webauth.js';
 import * as addons from './addons.js';
 import {
   watchStremioServer,
@@ -30,6 +48,9 @@ const app = Fastify({
 assertConfig(app.log);
 
 await app.register(fastifyWebsocket, { options: { maxPayload: 16 * 1024 } });
+
+const store = openStore(config.dataDir);
+app.log.info({ dataDir: config.dataDir }, 'database ready');
 
 const rooms = new Rooms();
 /** room id -> Set of sockets */
@@ -56,9 +77,12 @@ setInterval(() => {
 
 // ---------------------------------------------------------------- session / auth
 
+const discordConfigured = () => !!(config.discord.clientId && config.discord.clientSecret);
+
 app.get('/api/config', async () => ({
   clientId: config.discord.clientId || null,
   browserMode: config.allowBrowserMode,
+  webLogin: discordConfigured(),
 }));
 
 app.post('/api/token', async (request, reply) => {
@@ -71,9 +95,10 @@ app.post('/api/token', async (request, reply) => {
   }
   const accessToken = await exchangeCode(code);
   const user = await fetchUser(accessToken);
+  store.upsertUser(user);
   // One room per Activity instance: everybody who joined the same activity.
   const session = issueSession({ ...user, room: `discord:${instanceId.slice(0, 128)}` });
-  return { access_token: accessToken, session, user };
+  return { access_token: accessToken, session, user, room: null };
 });
 
 app.post('/api/dev-session', async (request, reply) => {
@@ -81,10 +106,67 @@ app.post('/api/dev-session', async (request, reply) => {
   const { name, room } = request.body || {};
   const cleanName = String(name || '').trim().slice(0, 32) || 'Invité';
   const cleanRoom = String(room || 'test').replace(/[^\w-]/g, '').slice(0, 64) || 'test';
-  const uid = `guest-${Math.random().toString(36).slice(2, 10)}`;
+  // Local test mode only: the account is keyed by the name, flagged as a guest.
+  const slug = cleanName.toLowerCase().normalize('NFKD').replace(/[^\w]+/g, '-').slice(0, 32) || 'invite';
+  const user = { uid: `guest:${slug}`, name: cleanName, avatar: null, guest: true };
+  store.upsertUser(user);
   return {
-    session: issueSession({ uid, name: cleanName, avatar: null, room: `dev:${cleanRoom}` }),
-    user: { uid, name: cleanName, avatar: null },
+    session: issueSession({ ...user, room: `dev:${cleanRoom}` }),
+    user,
+    room: { code: cleanRoom, personal: false },
+  };
+});
+
+// ---------------------------------------------------------------- web login (outside Discord)
+
+app.get('/api/auth/discord/login', async (request, reply) => {
+  if (!discordConfigured()) return reply.code(503).send({ error: 'Connexion Discord non configurée sur le serveur' });
+  const { state, cookie } = createState();
+  const secure = cookieSecure(request);
+  // Where to land after login (only a room code is kept: no open redirect).
+  const join = normalizeRoomCode(request.query.room);
+  reply.header('Set-Cookie', serializeCookie(STATE_COOKIE, join ? `${cookie}|${join}` : cookie, { maxAge: STATE_TTL_S, secure, path: '/api/auth' }));
+  return reply.redirect(authorizeUrl({ clientId: config.discord.clientId, redirect: redirectUri(request), state }));
+});
+
+app.get('/api/auth/discord/callback', async (request, reply) => {
+  const cookies = parseCookies(request.headers.cookie);
+  const [stateCookie, join] = String(cookies[STATE_COOKIE] || '').split('|');
+  const secure = cookieSecure(request);
+  const clearState = serializeCookie(STATE_COOKIE, '', { maxAge: 0, secure, path: '/api/auth' });
+  const { code, state, error } = request.query;
+  if (error || typeof code !== 'string' || !checkState(stateCookie, state)) {
+    request.log.warn({ error: error || 'bad state' }, 'web login refused');
+    reply.header('Set-Cookie', clearState);
+    return reply.redirect('/?login=failed');
+  }
+  const accessToken = await exchangeCode(code, redirectUri(request));
+  const user = await fetchUser(accessToken);
+  store.upsertUser(user);
+  reply.header('Set-Cookie', [
+    clearState,
+    serializeCookie(SESSION_COOKIE, issueWebSession(user), { maxAge: WEB_SESSION_TTL_S, secure }),
+  ]);
+  return reply.redirect(join && normalizeRoomCode(join) ? `/?room=${join}` : '/');
+});
+
+app.post('/api/auth/logout', async (request, reply) => {
+  reply.header('Set-Cookie', serializeCookie(SESSION_COOKIE, '', { maxAge: 0, secure: cookieSecure(request) }));
+  return { ok: true };
+});
+
+/** Web cookie → bearer session for the API/socket, in the personal room or a joined one. */
+app.post('/api/session', async (request, reply) => {
+  const web = verifyWebSession(parseCookies(request.headers.cookie)[SESSION_COOKIE]);
+  const account = web && store.getUser(web.uid);
+  if (!account) return reply.code(401).send({ error: 'Non connecté' });
+  const own = personalRoomCode(account.uid);
+  const code = normalizeRoomCode(request.body?.room) || own;
+  const user = { uid: account.uid, name: account.name, avatar: account.avatar };
+  return {
+    session: issueSession({ ...user, room: `web:${code}` }),
+    user,
+    room: { code, personal: code === own },
   };
 });
 
@@ -99,6 +181,15 @@ app.register(async (api) => {
     return { results: await addons.search(q.slice(0, 100)) };
   });
 
+  api.get('/api/catalogs', async () => ({ catalogs: await addons.catalogs() }));
+
+  api.get('/api/catalog/:type/:id', async (request, reply) => {
+    const { type, id } = request.params;
+    if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
+    const { genre, skip } = request.query;
+    return addons.catalog(type, id, { genre: typeof genre === 'string' ? genre : null, skip });
+  });
+
   api.get('/api/meta/:type/:id', async (request, reply) => {
     const { type, id } = request.params;
     if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
@@ -108,12 +199,13 @@ app.register(async (api) => {
   api.get('/api/streams/:type/:id', async (request, reply) => {
     const { type, id } = request.params;
     if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
-    return addons.streams(type, id, request.log);
+    const own = store.addonUrls(request.session.uid).map(addonBase);
+    return addons.streams(type, id, request.log, own);
   });
 
   /** Starts a stream for the whole room. */
   api.post('/api/room/play', async (request, reply) => {
-    const { streamKey, title, subtitle, poster } = request.body || {};
+    const { streamKey, title, subtitle, poster, startAt, meta } = request.body || {};
     const stream = addons.lookupStream(streamKey);
     if (!stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
 
@@ -127,14 +219,20 @@ app.register(async (api) => {
       notice(roomId, `Impossible de lancer : ${err.message}`);
       return reply.code(502).send({ error: err.message });
     }
+    // What everyone's progress is saved against (see the "progress" socket message).
+    session.meta = cleanMeta(meta, { title, subtitle, poster });
     const room = rooms.get(roomId);
-    room.load({
-      ...publicMedia(session),
-      title: String(title || '').slice(0, 200),
-      subtitle: String(subtitle || '').slice(0, 200),
-      poster: typeof poster === 'string' ? poster : null,
-      startedBy: request.session.name,
-    });
+    room.load(
+      {
+        ...publicMedia(session),
+        title: String(title || '').slice(0, 200),
+        subtitle: String(subtitle || '').slice(0, 200),
+        poster: typeof poster === 'string' ? poster : null,
+        startedBy: request.session.name,
+        meta: session.meta,
+      },
+      { startAt: Number(startAt) || 0 }
+    );
     broadcast(room);
     return { ok: true };
   });
@@ -144,7 +242,81 @@ app.register(async (api) => {
     if (room?.stop()) broadcast(room);
     return { ok: true };
   });
+
+  // ------------------------------------------------------------ per-user data
+  // Always the session's own account: request.session.uid, never a parameter.
+
+  api.get('/api/me', async (request) => ({
+    user: store.getUser(request.session.uid),
+    room: request.session.room,
+  }));
+
+  api.get('/api/continue', async (request) => ({ items: store.continueWatching(request.session.uid) }));
+
+  api.get('/api/history', async (request) => ({ items: store.history(request.session.uid) }));
+
+  api.delete('/api/history/:metaId', async (request) => ({
+    ok: store.removeHistory(request.session.uid, request.params.metaId),
+  }));
+
+  api.get('/api/progress/:metaId', async (request) => ({
+    items: store.progressFor(request.session.uid, request.params.metaId),
+    inLibrary: store.inLibrary(request.session.uid, request.params.metaId),
+  }));
+
+  api.get('/api/library', async (request) => {
+    const { type, sort } = request.query;
+    return { items: store.library(request.session.uid, { type, sort }) };
+  });
+
+  api.put('/api/library/:type/:metaId', async (request, reply) => {
+    const { type, metaId } = request.params;
+    if (!['movie', 'series'].includes(type)) return reply.code(400).send({ error: 'Type invalide' });
+    const { name, poster, year } = request.body || {};
+    store.addToLibrary(request.session.uid, { metaId, metaType: type, name, poster, year });
+    return { ok: true };
+  });
+
+  api.delete('/api/library/:type/:metaId', async (request) => ({
+    ok: store.removeFromLibrary(request.session.uid, request.params.metaId),
+  }));
+
+  api.get('/api/addons', async (request) => ({
+    shared: config.streamAddons.length,
+    items: store.listAddons(request.session.uid),
+  }));
+
+  api.post('/api/addons', async (request, reply) => {
+    if (store.listAddons(request.session.uid).length >= 10) {
+      return reply.code(400).send({ error: 'Maximum 10 addons' });
+    }
+    const { base, name } = await addons.inspectStreamAddon(String(request.body?.url || ''), {
+      allowHttp: config.allowBrowserMode,
+    });
+    store.addAddon(request.session.uid, `${base}/manifest.json`, name);
+    return { items: store.listAddons(request.session.uid) };
+  });
+
+  api.delete('/api/addons/:id', async (request) => ({
+    ok: store.removeAddon(request.session.uid, request.params.id),
+  }));
 });
+
+function cleanMeta(meta, { title, subtitle, poster }) {
+  if (!meta || typeof meta !== 'object') return null;
+  const s = (v, max) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+  const id = s(meta.id, 200);
+  const videoId = s(meta.videoId, 200) || id;
+  if (!id || !['movie', 'series'].includes(meta.type)) return null;
+  return {
+    id,
+    type: meta.type,
+    videoId,
+    name: s(title, 200) || id,
+    episode: s(subtitle, 200),
+    poster: s(poster, 500),
+  };
+}
 
 // ---------------------------------------------------------------- sync socket
 
@@ -188,6 +360,23 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
       case 'quality':
         changed = room.setQuality(session.uid, msg.value);
         break;
+      case 'progress': {
+        // This viewer's own position in a media session they were handed.
+        const media = typeof msg.sid === 'string' ? getSession(msg.sid) : null;
+        if (!media?.meta) return;
+        const m = media.meta;
+        store.saveProgress(session.uid, {
+          videoId: m.videoId,
+          metaId: m.id,
+          metaType: m.type,
+          name: m.name,
+          poster: m.poster,
+          episode: m.episode,
+          position: msg.position,
+          duration: media.info.duration,
+        });
+        return;
+      }
       default:
         return;
     }

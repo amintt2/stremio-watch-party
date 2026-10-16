@@ -2,8 +2,11 @@ import { config } from './config.js';
 
 const API = 'https://discord.com/api';
 
-/** Exchanges the code from discordSdk.commands.authorize() for an access token. */
-export async function exchangeCode(code) {
+/**
+ * Exchanges an authorization code for an access token: from discordSdk.commands.authorize()
+ * (Activity, no redirect URI) or from the web login callback (with its redirect URI).
+ */
+export async function exchangeCode(code, redirectUri) {
   const res = await fetch(`${API}/oauth2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -12,6 +15,7 @@ export async function exchangeCode(code) {
       client_secret: config.discord.clientSecret,
       grant_type: 'authorization_code',
       code,
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
     }),
   });
   const body = await res.json().catch(() => ({}));

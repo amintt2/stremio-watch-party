@@ -16,6 +16,6 @@
     "check": "npm run check --workspace client"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   }
 }

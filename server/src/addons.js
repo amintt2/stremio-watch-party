@@ -2,7 +2,7 @@
 // https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md
 
 import { randomBytes } from 'node:crypto';
-import { config } from './config.js';
+import { addonBase, config } from './config.js';
 
 const STREAM_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -19,6 +19,17 @@ function year(meta) {
   return String(y).slice(0, 4) || null;
 }
 
+function preview(m) {
+  return {
+    id: m.id,
+    type: m.type,
+    name: m.name,
+    poster: m.poster || null,
+    year: year(m),
+    rating: m.imdbRating ? String(m.imdbRating) : null,
+  };
+}
+
 export async function search(query) {
   const q = encodeURIComponent(query.trim());
   const results = await Promise.allSettled(
@@ -27,27 +38,83 @@ export async function search(query) {
     )
   );
   const metas = results.flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
-  return metas.map((m) => ({
-    id: m.id,
-    type: m.type,
-    name: m.name,
-    poster: m.poster || null,
-    year: year(m),
-  }));
+  return metas.map(preview);
+}
+
+const MANIFEST_TTL_MS = 60 * 60 * 1000;
+let manifestCache = null;
+
+async function metaManifest() {
+  if (!manifestCache || manifestCache.expires < Date.now()) {
+    const manifest = await getJson(`${config.metaAddon}/manifest.json`, 10000);
+    manifestCache = { manifest, expires: Date.now() + MANIFEST_TTL_MS };
+  }
+  return manifestCache.manifest;
+}
+
+/**
+ * Browsable catalogs of the meta addon, from its manifest. A catalog that requires an
+ * extra other than "genre" (search, lastVideosIds…) can't be browsed. `home` = no
+ * required extra at all, so it can be shown as a row on the home page.
+ */
+export function browsableCatalogs(manifest) {
+  return (manifest?.catalogs || [])
+    .filter((c) => ['movie', 'series'].includes(c.type) && typeof c.id === 'string')
+    .map((c) => {
+      const extra = Array.isArray(c.extra) ? c.extra : (c.extraSupported || []).map((name) => ({ name }));
+      const required = extra.filter((e) => e.isRequired).map((e) => e.name);
+      const genreExtra = extra.find((e) => e.name === 'genre');
+      const genres = (genreExtra?.options || c.genres || []).filter((g) => typeof g === 'string');
+      return {
+        type: c.type,
+        id: c.id,
+        name: c.name || c.id,
+        genres,
+        genreRequired: required.includes('genre'),
+        skip: extra.some((e) => e.name === 'skip'),
+        required,
+      };
+    })
+    .filter((c) => c.required.every((r) => r === 'genre') && (!c.genreRequired || c.genres.length))
+    .map(({ required, ...c }) => ({ ...c, home: required.length === 0 }));
+}
+
+export async function catalogs() {
+  return browsableCatalogs(await metaManifest());
+}
+
+export async function catalog(type, id, { genre, skip } = {}) {
+  const def = (await catalogs()).find((c) => c.type === type && c.id === id);
+  if (!def) throw Object.assign(new Error('Catalogue inconnu'), { statusCode: 404 });
+  const extras = [];
+  const g = genre && def.genres.includes(genre) ? genre : def.genreRequired ? def.genres[0] : null;
+  if (g) extras.push(`genre=${encodeURIComponent(g)}`);
+  const n = Math.max(0, Math.floor(Number(skip) || 0));
+  if (n && def.skip) extras.push(`skip=${n}`);
+  const path = `${config.metaAddon}/catalog/${type}/${encodeURIComponent(id)}${extras.length ? `/${extras.join('&')}` : ''}.json`;
+  const body = await getJson(path);
+  return { metas: (body.metas || []).filter((m) => m && m.id && m.name).map(preview), genre: g };
 }
 
 export async function meta(type, id) {
   const { meta: m } = await getJson(`${config.metaAddon}/meta/${type}/${encodeURIComponent(id)}.json`);
   if (!m) throw new Error('Introuvable');
+  const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
   return {
     id: m.id,
     type: m.type,
     name: m.name,
     poster: m.poster || null,
     background: m.background || null,
+    logo: m.logo || null,
     description: m.description || '',
     year: year(m),
+    releaseInfo: m.releaseInfo ? String(m.releaseInfo) : null,
     runtime: m.runtime || null,
+    rating: m.imdbRating ? String(m.imdbRating) : null,
+    genres: strings(m.genres || m.genre),
+    cast: strings(m.cast).slice(0, 12),
+    director: strings(m.director).slice(0, 4),
     videos: (m.videos || [])
       .filter((v) => typeof v.season === 'number' && typeof v.episode === 'number')
       .map((v) => ({
@@ -56,6 +123,8 @@ export async function meta(type, id) {
         episode: v.episode,
         title: v.name || v.title || `Épisode ${v.episode}`,
         released: v.released || null,
+        thumbnail: v.thumbnail || null,
+        overview: typeof v.overview === 'string' ? v.overview.slice(0, 600) : null,
       }))
       .sort((a, b) => a.season - b.season || a.episode - b.episode),
   };
@@ -73,6 +142,34 @@ async function addonName(base) {
     addonNames.set(base, name || new URL(base).hostname);
   }
   return addonNames.get(base);
+}
+
+/**
+ * Checks a user-supplied stream addon before saving it: https only (http allowed for
+ * localhost in browser test mode), and its manifest must offer streams.
+ */
+export async function inspectStreamAddon(url, { allowHttp = false } = {}) {
+  const base = addonBase(url);
+  let parsed;
+  try {
+    parsed = new URL(base);
+  } catch {
+    throw Object.assign(new Error('URL invalide'), { statusCode: 400 });
+  }
+  if (parsed.protocol !== 'https:' && !(allowHttp && parsed.protocol === 'http:')) {
+    throw Object.assign(new Error("L'addon doit être en https"), { statusCode: 400 });
+  }
+  let manifest;
+  try {
+    manifest = await getJson(`${base}/manifest.json`, 10000);
+  } catch (err) {
+    throw Object.assign(new Error(`Manifest illisible (${err.message})`), { statusCode: 400 });
+  }
+  const resources = (manifest.resources || []).map((r) => (typeof r === 'string' ? r : r?.name));
+  if (!resources.includes('stream')) {
+    throw Object.assign(new Error("Cet addon ne fournit pas de sources"), { statusCode: 400 });
+  }
+  return { base, name: String(manifest.name || parsed.hostname).slice(0, 100) };
 }
 
 /** Full stream objects (may contain debrid URLs/keys) stay server-side, keyed by an opaque id. */
@@ -138,9 +235,11 @@ function isPlayable(stream) {
   return typeof stream.url === 'string' && /^https?:\/\//i.test(stream.url);
 }
 
-export async function streams(type, id, log) {
+/** `extraBases`: the user's own addons (already normalized with addonBase). */
+export async function streams(type, id, log, extraBases = []) {
+  const bases = [...new Set([...config.streamAddons, ...extraBases])];
   const perAddon = await Promise.allSettled(
-    config.streamAddons.map(async (base) => {
+    bases.map(async (base) => {
       const [name, body] = await Promise.all([
         addonName(base),
         getJson(`${base}/stream/${type}/${encodeURIComponent(id)}.json`, 20000),
@@ -159,7 +258,7 @@ export async function streams(type, id, log) {
     // Host only: the full addon URL may carry a debrid key.
     let host = 'invalid addon URL';
     try {
-      host = new URL(config.streamAddons[i]).hostname;
+      host = new URL(bases[i]).hostname;
     } catch {}
     log?.warn({ addon: host, err: r.reason?.message }, 'stream addon failed');
   });
