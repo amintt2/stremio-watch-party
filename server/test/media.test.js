@@ -2,8 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   availableQualities,
+  chooseFile,
   converterParams,
+  createBody,
   hlsParams,
+  torrentHealth,
   isAllowedHlsPath,
   parseProfile,
   wantedSettings,
@@ -193,4 +196,34 @@ test('source languages come from the release name', () => {
   assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay.x264'), []);
   assert.deepEqual(streamLanguages('Frenchie.2021.1080p'), [], 'word boundaries');
   assert.deepEqual(describeStream({ name: 'X\n1080p', title: 'Film.MULTi.1080p' }, 'a').languages, ['MULTI']);
+});
+
+test('torrent create body follows the Stremio protocol (Stremio and Huwa engines)', () => {
+  const ih = 'A'.repeat(40);
+  const b = createBody({ infoHash: ih });
+  assert.equal(b.torrent.infoHash, 'a'.repeat(40));
+  assert.deepEqual(b.guessFileIdx, {});
+  assert.ok(b.peerSearch.sources.some((s) => s.startsWith('tracker:')), 'public trackers when the addon gives none');
+  assert.equal(createBody({ infoHash: ih, fileIdx: 3 }).guessFileIdx, undefined);
+  assert.deepEqual(createBody({ infoHash: ih, sources: ['tracker:udp://x:1'] }).peerSearch.sources, ['tracker:udp://x:1']);
+});
+
+test('file choice: addon fileIdx, then engine guess, then largest file', () => {
+  const files = [{ length: 10 }, { length: 900 }, { length: 50 }];
+  assert.equal(chooseFile({ fileIdx: 2 }, { guessedFileIdx: 1, files }), 2);
+  assert.equal(chooseFile({}, { guessedFileIdx: 0, files }), 0);
+  assert.equal(chooseFile({}, { guessedFileIdx: null, files }), 1);
+  assert.equal(chooseFile({}, {}), null);
+});
+
+test('torrent health from stats.json: peers and speed vs the stream bitrate', () => {
+  const bitrate = 8_000_000; // 1 MB/s needed
+  assert.equal(torrentHealth({ peers: 12, downloadSpeed: 3e6, streamProgress: 0.2 }, bitrate).level, 'ok');
+  assert.equal(torrentHealth({ peers: 2, downloadSpeed: 4e5, streamProgress: 0.2 }, bitrate).level, 'slow');
+  assert.equal(torrentHealth({ peers: 0, peerSearchRunning: true }, bitrate).level, 'searching');
+  assert.equal(torrentHealth({ peers: 0, peerSearchRunning: false }, bitrate).level, 'stalled');
+  assert.equal(torrentHealth({ peers: 0, streamProgress: 1 }, bitrate).level, 'done');
+  assert.equal(torrentHealth({ peers: 5, downloadSpeed: 1 }, null).level, 'ok', 'unknown bitrate: no slow verdict');
+  assert.equal(torrentHealth(null, bitrate), null);
+  assert.equal(torrentHealth({ peers: 3, downloadSpeed: 2e6 }, bitrate).neededSpeed, 1e6);
 });

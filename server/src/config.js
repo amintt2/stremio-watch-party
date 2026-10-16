@@ -59,6 +59,15 @@ export const config = {
   // Base URL the Stremio server uses to read torrents from itself (it fetches its own
   // /{infoHash}/{fileIdx} endpoint when transcoding). Defaults to its loopback address.
   stremioSelfUrl: trimSlash(process.env.STREMIO_SELF_URL || 'http://127.0.0.1:11470'),
+
+  // Torrent engine: "stremio" (the Stremio server downloads torrents itself) or "huwa"
+  // (Huwa Server's engine downloads them; the Stremio server only converts to HLS, reading
+  // the file from Huwa over HTTP). With "huwa", torrents fall back to Stremio if Huwa is down.
+  torrentEngine: process.env.TORRENT_ENGINE === 'huwa' ? 'huwa' : 'stremio',
+  // Where this backend reaches Huwa Server (its Stremio-compatible routes, HUWA_STREMIO_COMPAT=1).
+  huwaUrl: trimSlash(process.env.HUWA_ENGINE_URL || 'http://127.0.0.1:8080'),
+  // Where the Stremio converter reads torrent files from Huwa (default: HUWA_ENGINE_URL).
+  huwaMediaUrl: trimSlash(process.env.HUWA_MEDIA_URL || process.env.HUWA_ENGINE_URL || 'http://127.0.0.1:8080'),
   // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
   stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
   stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 8),

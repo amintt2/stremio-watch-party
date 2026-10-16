@@ -33,6 +33,7 @@ import {
   createSession,
   fetchHls,
   getSession,
+  fetchTorrentHealth,
   isAllowedHlsPath,
   parseProfile,
   publicMedia,
@@ -220,7 +221,7 @@ app.register(async (api) => {
     notice(roomId, `${request.session.name} lance « ${String(title || '').slice(0, 120)} »…`);
     let session;
     try {
-      session = await createSession(stream);
+      session = await createSession(stream, request.log);
     } catch (err) {
       request.log.warn({ err: err.message }, 'stream resolution failed');
       notice(roomId, `Impossible de lancer : ${err.message}`);
@@ -242,6 +243,15 @@ app.register(async (api) => {
     );
     broadcast(room);
     return { ok: true };
+  });
+
+  /** Torrent download health (peers, speed vs the stream's bitrate) for the player's indicator. */
+  api.get('/api/media/:sid/health', async (request, reply) => {
+    const media = getSession(request.params.sid);
+    if (!media) return reply.code(404).send({ error: 'Session inconnue' });
+    if (!media.torrent) return { kind: 'http' };
+    const health = await fetchTorrentHealth(media).catch(() => null);
+    return health ? { kind: 'torrent', ...health } : { kind: 'torrent', engine: media.torrent.engine, level: 'unknown' };
   });
 
   /** External subtitles of what a media session plays (each viewer picks their own). */

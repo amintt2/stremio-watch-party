@@ -124,6 +124,32 @@ d'Activité, chacun a **sa salle perso**. Pour regarder ensemble, envoie le lien
 l'ouvrent, se connectent, et vous êtes synchronisés. On peut aussi coller un code dans
 **Rejoindre une salle**.
 
+### Moteur torrent Huwa
+
+Par défaut (docker-compose), les torrents sont téléchargés par le **moteur Huwa**
+(`ghcr.io/amintt2/huwa`, librqbit avec des priorités de streaming, une lecture anticipée, la
+surveillance de la santé du swarm et la reprise automatique quand il cale). Le serveur Stremio
+ne fait plus que **convertir** : il lit le fichier chez Huwa en HTTP, comme un lien débrid.
+Les qualités par spectateur, VF/VO et sous-titres restent identiques.
+
+```
+addon → infoHash → Huwa (/{infoHash}/create, puis /{infoHash}/{fichier} en Range)
+                    ↑ lit le fichier
+        serveur Stremio /hlsv2 → relais HLS de Watch Party → chaque ami
+```
+
+- `TORRENT_ENGINE=huwa` (défaut du compose) ou `stremio` (l'ancien moteur, dans le serveur Stremio).
+- **Repli automatique** : si Huwa ne répond pas (redémarrage, image sans les routes Stremio…),
+  le torrent part sur le moteur Stremio, avec un avertissement dans les logs.
+- `HUWA_ENGINE_URL` (`http://huwa:8080` dans le compose) : où le backend et le convertisseur
+  joignent Huwa (`HUWA_MEDIA_URL` si le convertisseur doit passer par une autre adresse).
+- Le service `huwa` est privé (aucun port, aucun domaine), sans app web, sans relais P2P et sans
+  transcodage : seulement le moteur. Son cache (`HUWA_CACHE_GB`, 100 Go) est dans le volume
+  `huwa-cache`. Comme Stremio, il ne partage rien (envoi désactivé à la compilation).
+- `GET /api/media/{sid}/health` (connecté) : pairs, débit, progression et verdict (`ok`,
+  `slow` si le débit est sous celui de la vidéo, `searching`, `stalled`, `done`), pour
+  l'indicateur « risque de coupure » du lecteur.
+
 ### Combien de personnes ?
 
 Aucune limite dans la salle. Ce qui coûte, ce sont les **transcodages différents**, pas
@@ -293,7 +319,7 @@ démarrage.
 ```
 server/src/index.js    routes HTTP + WebSocket, relais HLS, proxy d'images
 server/src/rooms.js    état de lecture autoritaire (testé)
-server/src/media.js    torrent/débrid → session, profils de qualité, réécriture des playlists (testé)
+server/src/media.js    torrent (moteur Huwa ou Stremio)/débrid → session, profils de qualité, santé, playlists (testé)
 server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources, langues) (testé)
 server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)
 server/src/db.js       SQLite : comptes, progression, historique, bibliothèque, addons perso (testé)

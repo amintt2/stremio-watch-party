@@ -14,6 +14,10 @@ services:
       STREAM_ADDON_URLS: ${STREAM_ADDON_URLS}
       META_ADDON_URL: ${META_ADDON_URL:-https://v3-cinemeta.strem.io/manifest.json}
       STREMIO_SERVER_URL: http://stremio:11470
+      # Moteur torrent : "huwa" (service huwa ci-dessous, repli automatique sur Stremio
+      # s'il ne répond pas) ou "stremio".
+      TORRENT_ENGINE: ${TORRENT_ENGINE:-huwa}
+      HUWA_ENGINE_URL: http://huwa:8080
       STREMIO_SELF_URL: http://127.0.0.1:11470
       STREMIO_CACHE_GB: ${STREMIO_CACHE_GB:-100}
       ALLOW_BROWSER_MODE: ${ALLOW_BROWSER_MODE:-0}
@@ -31,6 +35,7 @@ services:
       - "3001"
     depends_on:
       - stremio
+      - huwa
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/api/health"]
       interval: 30s
@@ -51,6 +56,29 @@ services:
     #   - /dev/dri:/dev/dri
     restart: unless-stopped
 
+  # Moteur torrent Huwa (librqbit + priorités de streaming, lecture anticipée, reprise
+  # automatique). Il télécharge les torrents ; le serveur Stremio convertit en HLS en lisant
+  # le fichier chez lui. Privé, comme stremio : aucun domaine, aucun port publié.
+  huwa:
+    image: ghcr.io/amintt2/huwa:latest
+    environment:
+      HUWA_STREMIO_COMPAT: "1"
+      # Watch Party : une source par salle en même temps, avec de la marge.
+      HUWA_STREMIO_COMPAT_STREAMS: ${HUWA_STREAMS:-6}
+      HUWA_CACHE_MAX_GB: ${HUWA_CACHE_GB:-100}
+      # Seulement le moteur : ni app web, ni passerelle P2P, ni relais, ni transcodage
+      # (c'est le serveur Stremio qui convertit).
+      HUWA_WEB_DIR: "-"
+      HUWA_P2P_GATEWAY: "0"
+      HUWA_RELAY: "0"
+      HUWA_TRANSCODE: "0"
+    volumes:
+      - huwa-cache:/cache
+      - huwa-data:/data
+    restart: unless-stopped
+
 volumes:
   stremio-data:
+  huwa-cache:
+  huwa-data:
   watch-party-data:

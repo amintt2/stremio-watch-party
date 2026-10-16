@@ -83,29 +83,68 @@ export function peerSources(stream) {
   return [`dht:${infoHash}`, ...DEFAULT_TRACKERS.map((t) => `tracker:${t}`)];
 }
 
-async function resolveTorrent(stream) {
+/** Torrent `create` body, Stremio streaming-server protocol (Stremio and Huwa speak it). */
+export function createBody(stream) {
+  return {
+    torrent: { infoHash: stream.infoHash.toLowerCase() },
+    peerSearch: { sources: peerSources(stream), min: 40, max: 200 },
+    ...(typeof stream.fileIdx === 'number' ? {} : { guessFileIdx: {} }),
+  };
+}
+
+/** File to play: the addon's fileIdx, else the engine's guess, else the largest file. */
+export function chooseFile(stream, info) {
+  if (typeof stream.fileIdx === 'number') return stream.fileIdx;
+  if (typeof info?.guessedFileIdx === 'number') return info.guessedFileIdx;
+  const files = Array.isArray(info?.files) ? info.files : [];
+  if (!files.length) return null;
+  return files.reduce((best, f, i, all) => ((f.length || 0) > (all[best].length || 0) ? i : best), 0);
+}
+
+/**
+ * Huwa Server's engine (librqbit with streaming priorities, read-ahead, swarm health and
+ * automatic recovery) downloads the torrent; the Stremio converter then reads the file from it
+ * like any HTTP source.
+ */
+async function resolveTorrentHuwa(stream) {
   const infoHash = stream.infoHash.toLowerCase();
-  const sources = peerSources(stream);
+  const res = await fetch(`${config.huwaUrl}/${infoHash}/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createBody(stream)),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok) throw new Error(`Le moteur Huwa n'a pas pu ouvrir le torrent (${res.status})`);
+  const fileIdx = chooseFile(stream, await res.json());
+  if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
+  return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx };
+}
+
+async function resolveTorrent(stream, log) {
+  if (config.torrentEngine === 'huwa') {
+    try {
+      return await resolveTorrentHuwa(stream);
+    } catch (err) {
+      // Huwa down, restarting or without its Stremio routes: the Stremio server's own engine
+      // still plays the torrent (slower to resume/seek, but it plays).
+      log?.warn({ err: err.message }, 'Huwa engine failed, using the Stremio torrent engine');
+    }
+  }
+  return resolveTorrentStremio(stream);
+}
+
+async function resolveTorrentStremio(stream) {
+  const infoHash = stream.infoHash.toLowerCase();
   const res = await stremio(`/${infoHash}/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      torrent: { infoHash },
-      peerSearch: { sources, min: 40, max: 200 },
-      ...(typeof stream.fileIdx === 'number' ? {} : { guessFileIdx: {} }),
-    }),
+    body: JSON.stringify(createBody(stream)),
     signal: AbortSignal.timeout(45000),
   });
   if (!res.ok) throw new Error(`Le serveur Stremio n'a pas pu ouvrir le torrent (${res.status})`);
-  const info = await res.json();
-
-  let fileIdx = typeof stream.fileIdx === 'number' ? stream.fileIdx : info.guessedFileIdx;
-  if (typeof fileIdx !== 'number' && Array.isArray(info.files) && info.files.length) {
-    // Fall back to the largest file.
-    fileIdx = info.files.reduce((best, f, i, all) => (f.length > all[best].length ? i : best), 0);
-  }
+  const fileIdx = chooseFile(stream, await res.json());
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
-  return `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`;
+  return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx };
 }
 
 export async function probe(mediaURL) {
@@ -132,17 +171,50 @@ export async function probe(mediaURL) {
 }
 
 /** Resolves a stream to a media session shared by the whole room. */
-export async function createSession(stream) {
-  const mediaURL = stream.infoHash
-    ? await resolveTorrent(stream)
-    : await resolveRedirects(stream.url);
+export async function createSession(stream, log) {
+  const torrent = stream.infoHash ? await resolveTorrent(stream, log) : null;
+  const mediaURL = torrent ? torrent.mediaURL : await resolveRedirects(stream.url);
   const info = await probe(mediaURL);
   if (!info.video) throw new Error('Pas de piste vidéo dans ce fichier');
 
   const sid = randomBytes(16).toString('base64url');
-  const session = { sid, mediaURL, info, lastUsed: Date.now() };
+  const session = {
+    sid,
+    mediaURL,
+    info,
+    lastUsed: Date.now(),
+    torrent: torrent && { engine: torrent.engine, infoHash: torrent.infoHash, fileIdx: torrent.fileIdx },
+  };
   sessions.set(sid, session);
   return session;
+}
+
+/** Download health of a torrent session (both engines answer Stremio's stats.json). */
+export function torrentHealth(stats, bitrate) {
+  if (!stats || typeof stats !== 'object') return null;
+  const speed = Number(stats.downloadSpeed) || 0;
+  const peers = Number(stats.peers) || 0;
+  const need = bitrate ? bitrate / 8 : null;
+  let level = 'ok';
+  if (stats.streamProgress >= 1) level = 'done';
+  else if (!peers) level = stats.peerSearchRunning ? 'searching' : 'stalled';
+  else if (need && speed < need) level = 'slow';
+  return {
+    level,
+    peers,
+    downloadSpeed: speed,
+    progress: typeof stats.streamProgress === 'number' ? stats.streamProgress : null,
+    neededSpeed: need,
+  };
+}
+
+export async function fetchTorrentHealth(session) {
+  const t = session?.torrent;
+  if (!t) return null;
+  const base = t.engine === 'huwa' ? config.huwaUrl : config.stremioServerUrl;
+  const res = await fetch(`${base}/${t.infoHash}/${t.fileIdx}/stats.json`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return null;
+  return { engine: t.engine, ...torrentHealth(await res.json().catch(() => null), session.info.bitrate) };
 }
 
 export function getSession(sid) {
