@@ -39,9 +39,15 @@ export const SOCIAL_MESSAGES = new Set([
   'respond',
   'cancelRequest',
   'voteAction',
+  'admit',
+  'refuse',
+  'autoAdmit',
+  'kick',
+  'copilot',
 ]);
 
 const isId = (v) => typeof v === 'string' && ID_RE.test(v);
+const isUid = (v) => typeof v === 'string' && UID_RE.test(v);
 const isPosition = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e6;
 
 /**
@@ -72,11 +78,22 @@ export function handleRoomMessage(room, uid, msg) {
     case 'mode':
       return room.setControl(uid, msg.value);
     case 'host':
-      return typeof msg.uid === 'string' && UID_RE.test(msg.uid) ? room.handOver(uid, msg.uid) : false;
+      return isUid(msg.uid) ? room.handOver(uid, msg.uid) : false;
+    case 'copilot':
+      return isUid(msg.uid) && typeof msg.value === 'boolean' ? room.setCopilot(uid, msg.uid, msg.value) : false;
+    case 'kick':
+      return isUid(msg.uid) ? room.kick(uid, msg.uid) : false;
+    case 'admit':
+      return isUid(msg.uid) ? room.admit(uid, msg.uid) : false;
+    case 'refuse':
+      return isUid(msg.uid) ? room.refuse(uid, msg.uid) : false;
+    case 'autoAdmit':
+      return typeof msg.value === 'boolean' ? room.setAutoAdmit(uid, msg.value) : false;
     case 'request':
-      if (!['play', 'pause', 'seek'].includes(msg.kind)) return false;
-      if (msg.kind === 'seek' && !isPosition(msg.position)) return false;
-      return room.request(uid, msg.kind, msg.position);
+      if (msg.kind === 'seek') return isPosition(msg.position) ? room.request(uid, 'seek', msg.position) : false;
+      if (msg.kind === 'start') return isId(msg.id) ? room.request(uid, 'start', msg.id) : false;
+      if (msg.kind === 'play' || msg.kind === 'pause') return room.request(uid, msg.kind);
+      return false;
     case 'respond':
       return isId(msg.id) ? room.respond(uid, msg.id, msg.accept === true) : false;
     case 'cancelRequest':

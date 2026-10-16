@@ -39,7 +39,7 @@ import {
   rewritePlaylist,
 } from './media.js';
 import { Rooms, mediaLabel } from './rooms.js';
-import { RateLimiter, SOCIAL_MESSAGES, cleanProposal, handleRoomMessage } from './roomSocket.js';
+import { RateLimiter, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
 import { privacyPage, termsPage } from './legal.js';
 
@@ -60,30 +60,50 @@ const rooms = new Rooms();
 /** room id -> Set of sockets */
 const sockets = new Map();
 
-function broadcast(room, extra) {
-  const message = JSON.stringify({ t: 'state', ...room.snapshot() });
+/** What one socket may see: the room state, or only the waiting-room status. */
+function stateFor(room, uid, snapshot) {
+  if (room.status(uid) === 'pending') {
+    const host = room.members.get(room.host)?.name || null;
+    return JSON.stringify({ t: 'lobby', host, members: room.members.size });
+  }
+  return snapshot;
+}
+
+function broadcast(room) {
+  const snapshot = JSON.stringify({ t: 'state', ...room.snapshot() });
   for (const ws of sockets.get(room.id) || []) {
-    if (ws.readyState === 1) {
-      ws.send(message);
-      if (extra) ws.send(JSON.stringify(extra));
-    }
+    if (ws.readyState === 1) ws.send(stateFor(room, ws.uid, snapshot));
   }
 }
 
-/** `except`: everyone but that uid (their own action); `to`: only that uid. */
+/** `except`: everyone but that uid (their own action); `to`: only that uid (or uids). */
 function notice(roomId, text, { except = null, to = null } = {}) {
   const message = JSON.stringify({ t: 'notice', text });
+  const only = to === null ? null : new Set([to].flat());
+  const room = rooms.peek(roomId);
   for (const ws of sockets.get(roomId) || []) {
-    if (ws.readyState !== 1 || (except && ws.uid === except) || (to && ws.uid !== to)) continue;
+    if (ws.readyState !== 1 || (except && ws.uid === except) || (only && !only.has(ws.uid))) continue;
+    // People still in the waiting room only hear what is meant for them.
+    if (!only && room?.status(ws.uid) === 'pending') continue;
     ws.send(message);
   }
 }
 
-/** Sends the state, then what the room queued: notices, and stream starts to run. */
+/** Closes every socket of someone who was kicked or refused at the door. */
+function expel(roomId, uid, reason) {
+  for (const ws of sockets.get(roomId) || []) {
+    if (ws.uid !== uid) continue;
+    if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'kicked', reason }));
+    ws.close(4003, reason);
+  }
+}
+
+/** Sends the state, then what the room queued: notices, kicks, stream starts. */
 function publish(room) {
   broadcast(room);
   for (const effect of room.drain()) {
     if (effect.type === 'notice') notice(room.id, effect.text, effect);
+    else if (effect.type === 'kick') expel(room.id, effect.uid, effect.reason);
     else if (effect.type === 'start') runStart(room, effect);
   }
 }
@@ -94,14 +114,14 @@ setInterval(() => {
   for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
 
-const socialLimit = new RateLimiter({ max: 20, windowMs: 10_000 });
-const proposeLimit = new RateLimiter({ max: 10, windowMs: 60_000 });
+// Coarse flood guard per person on the socket; the room has finer per-action limits.
+const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
 
 /**
  * Resolves a stream into a media session and loads it for the room, unless a newer
  * start replaced this one meanwhile. Throws on failure (after telling the room).
  */
-async function startMedia(room, { token, stream, title, subtitle, poster, meta, startAt = 0, host, starterUid, log }) {
+async function startMedia(room, { token, stream, title, subtitle, poster, meta, startAt = 0, startedBy, starterUid, log }) {
   let session;
   try {
     session = await createSession(stream);
@@ -114,18 +134,17 @@ async function startMedia(room, { token, stream, title, subtitle, poster, meta, 
   if (!room.isCurrentStart(token)) return false;
   // What everyone's progress is saved against (see the "progress" socket message).
   session.meta = cleanMeta(meta, { title, subtitle, poster });
-  const hostName = (host && room.members.get(host)?.name) || 'la salle';
   room.load(
     {
       ...publicMedia(session),
       title: String(title || '').slice(0, 200),
       subtitle: String(subtitle || '').slice(0, 200),
       poster: typeof poster === 'string' ? poster : null,
-      startedBy: hostName,
+      startedBy: startedBy || 'la salle',
       startedByUid: starterUid || null,
       meta: session.meta,
     },
-    { startAt: Number(startAt) || 0, by: host }
+    { startAt: Number(startAt) || 0 }
   );
   publish(room);
   findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
@@ -145,7 +164,7 @@ async function findNextEpisode(room, session) {
 }
 
 /** A start decided by the room (vote, next episode, "Lancer" on a suggestion). */
-async function runStart(room, { token, host, item }) {
+async function runStart(room, { token, by, item }) {
   const log = app.log;
   try {
     // The proposer's chosen source if still valid, else the best one with their addons.
@@ -160,7 +179,8 @@ async function runStart(room, { token, host, item }) {
       notice(room.id, `Aucune source trouvée pour « ${mediaLabel(item)} »`);
       return;
     }
-    await startMedia(room, { token, stream, ...item, host, starterUid: item.uid, log });
+    const startedBy = (by && room.members.get(by)?.name) || 'la salle';
+    await startMedia(room, { token, stream, ...item, startedBy, starterUid: item.uid, log });
   } catch (err) {
     log.warn({ err: err.message }, 'room start failed');
     if (room.failStart(token)) publish(room);
@@ -306,16 +326,18 @@ app.register(async (api) => {
     if (!stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
 
     const { uid, name } = request.session;
-    const room = rooms.get(request.session.room);
-    if (!room.canStart(uid)) {
-      return reply.code(403).send({ error: 'Seul l’hôte peut changer de vidéo pendant la lecture : propose-la plutôt.' });
-    }
+    const room = rooms.peek(request.session.room);
+    if (!room || room.status(uid) !== 'member') return reply.code(409).send({ error: 'Tu n’es pas dans la salle' });
     const cleanTitle = String(title || '').slice(0, 200);
     const label = mediaLabel({ title: cleanTitle, subtitle: String(subtitle || '') });
-    const token = room.beginStart({ title: cleanTitle, subtitle: String(subtitle || ''), by: uid, announce: `${name} a lancé « ${label} »` });
+    const token = room.beginStartBy(uid, { title: cleanTitle, subtitle: String(subtitle || ''), announce: `${name} a lancé « ${label} »` });
+    if (!token) {
+      publish(room);
+      return reply.code(403).send({ error: 'Seuls l’hôte et les co-pilotes lancent une vidéo : propose-la plutôt.' });
+    }
     publish(room);
     try {
-      const loaded = await startMedia(room, { token, stream, title, subtitle, poster, meta, startAt, host: uid, starterUid: uid, log: request.log });
+      const loaded = await startMedia(room, { token, stream, title, subtitle, poster, meta, startAt, startedBy: name, starterUid: uid, log: request.log });
       return { ok: true, superseded: !loaded };
     } catch (err) {
       return reply.code(502).send({ error: err.message });
@@ -325,7 +347,6 @@ app.register(async (api) => {
   /** Suggests a title/episode to the room (optionally with the source the proposer chose). */
   api.post('/api/room/propose', async (request, reply) => {
     const { uid } = request.session;
-    if (!proposeLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de propositions, attends un peu' });
     const item = cleanProposal(request.body);
     if (!item) return reply.code(400).send({ error: 'Proposition invalide' });
     const room = rooms.peek(request.session.room);
@@ -337,7 +358,10 @@ app.register(async (api) => {
       streamKey: stream ? item.streamKey : null,
       source: stream ? addons.sourceLabel(stream) : null,
     });
-    if (result.error) return reply.code(400).send({ error: result.error });
+    if (result.error) {
+      publish(room);
+      return reply.code(400).send({ error: result.error });
+    }
     publish(room);
     return { ok: true, id: result.item.id, duplicate: !!result.duplicate };
   });
@@ -375,13 +399,10 @@ app.register(async (api) => {
 
   api.post('/api/room/stop', async (request, reply) => {
     const room = rooms.peek(request.session.room);
-    if (room?.media && !room.canControl(request.session.uid)) {
-      return reply.code(403).send({ error: 'Seul l’hôte peut arrêter la lecture' });
-    }
-    if (room?.stop()) {
-      notice(room.id, `${request.session.name} a arrêté la lecture`, { except: request.session.uid });
-      publish(room);
-    }
+    if (!room?.media) return { ok: true };
+    const stopped = room.stopBy(request.session.uid);
+    publish(room);
+    if (!stopped) return reply.code(403).send({ error: 'Seuls l’hôte et les co-pilotes peuvent arrêter la lecture' });
     return { ok: true };
   });
 
@@ -468,13 +489,21 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
     ws.close(4001, 'unauthorized');
     return;
   }
-  const room = rooms.get(session.room);
+  // Website rooms have a waiting room; the owner of a personal room always gets in.
+  const web = session.room.startsWith('web:');
+  const code = web ? session.room.slice(4) : null;
+  const room = rooms.get(session.room, { lobby: web, owner: web && personalRoomCode(session.uid) === code ? session.uid : null });
+  if (room.status(session.uid) === 'blocked') {
+    ws.send(JSON.stringify({ t: 'kicked', reason: 'kicked' }));
+    ws.close(4003, 'blocked');
+    return;
+  }
   ws.uid = session.uid;
   if (!sockets.has(room.id)) sockets.set(room.id, new Set());
   sockets.get(room.id).add(ws);
 
   if (room.join(session)) publish(room);
-  else ws.send(JSON.stringify({ t: 'state', ...room.snapshot() }));
+  else ws.send(stateFor(room, session.uid, JSON.stringify({ t: 'state', ...room.snapshot() })));
 
   ws.on('message', (raw) => {
     let msg;
@@ -507,11 +536,8 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
       default:
         break;
     }
-    if (SOCIAL_MESSAGES.has(msg?.t) && !socialLimit.allow(session.uid)) {
-      ws.send(JSON.stringify({ t: 'notice', text: 'Doucement : trop d’actions d’un coup' }));
-      return;
-    }
-    // Play/pause/seek go through the room's permissions (host mode), with attribution.
+    if (!floodLimit.allow(session.uid)) return;
+    // Every action goes through the room's permissions and per-person limits.
     if (handleRoomMessage(room, session.uid, msg) || room.outbox.length) publish(room);
   });
 

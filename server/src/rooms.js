@@ -5,20 +5,31 @@
 // clock. Viewers that stall are put in `waiting`: the room freezes until they are
 // ready again, or until WAIT_TIMEOUT_MS passes (then they catch up on their own).
 //
-// Social layer (also server-authoritative, see "Regarder ensemble" in the README):
-// - nobody owns the room: whoever started the Activity or the film can leave and the
-//   film goes on; an emptied room is kept (paused) for EMPTY_ROOM_TTL_MS;
-// - control mode "all" (anyone plays/pauses/seeks) or "host" (only the host does;
-//   others send requests the host accepts/refuses, or vote to pause/skip);
-// - a queue of suggestions with votes, auto-started once a majority agrees;
-// - auto-next episode at the end of a series episode.
+// Social layer, also server-authoritative (see "Regarder ensemble" in the README):
+// - Roles. One host, co-pilotes promoted by the host, viewers. Default control mode
+//   "host" (protected): only the host and co-pilotes play/pause/seek/stop/start;
+//   viewers send requests (accepted/refused by a host or co-pilote, expiring after
+//   REQUEST_TTL_MS) or vote (strict majority of present members, at least 2 votes).
+//   The host may switch to "all" (everyone controls).
+// - Continuity. Nothing depends on one person: the film goes on when anyone leaves;
+//   an absent host is replaced after HOST_GRACE_MS (longest-present co-pilote, then
+//   longest-present member) and comes back as co-pilote; roles and admission survive
+//   reconnects; an emptied room is kept (paused) for EMPTY_ROOM_TTL_MS.
+// - Waiting room (website rooms): newcomers wait in `pending` until a host or
+//   co-pilote lets them in (or "accept everyone automatically" is on).
+// - Moderation: the host kicks (blocked for the room's lifetime), promotes/revokes
+//   co-pilotes, hands over. Every action is rate-limited per person; spammers are
+//   muted for SPAM_COOLDOWN_MS and the moderators are told. Too many stalls from one
+//   viewer stop freezing the room.
+// - A queue of suggestions with votes, auto-started once a majority agrees, and
+//   auto-next at the end of a series episode.
 //
-// Room methods never do I/O. Things the server must do or say are pushed to
-// `outbox` (notices and stream starts) and drained by index.js.
+// Room methods never do I/O. What the server must say or do is pushed to `outbox`
+// (notices, stream starts, kicks) and drained by index.js.
 
 export const WAIT_TIMEOUT_MS = 10_000;
 export const LOAD_TIMEOUT_MS = 20_000;
-/** Host-mode requests ("Demander une pause") expire after this. */
+/** Requests ("Demander une pause") expire after this. */
 export const REQUEST_TTL_MS = 20_000;
 /** Votes to pause/skip expire after this. */
 export const ACTION_VOTE_TTL_MS = 60_000;
@@ -28,11 +39,30 @@ export const AUTOSTART_MS = 5_000;
 export const AUTONEXT_MS = 10_000;
 /** An emptied room keeps its film (paused) and queue this long. */
 export const EMPTY_ROOM_TTL_MS = 10 * 60_000;
+/** A host who dropped out is replaced after this (a reconnect keeps the crown). */
+export const HOST_GRACE_MS = 15_000;
+/** Someone refused at the door can't knock again for this long. */
+export const REFUSE_BLOCK_MS = 2 * 60_000;
+/** Muted after exceeding a rate limit. */
+export const SPAM_COOLDOWN_MS = 30_000;
+/** At most this many waits per viewer per minute; more stalls don't freeze the room. */
+export const STALLS_PER_MINUTE = 4;
+export const MIN_VOTES = 2;
 export const QUEUE_MAX = 30;
 export const QUEUE_PER_USER_MAX = 5;
 export const REQUESTS_MAX = 10;
+export const PENDING_MAX = 20;
+
+/** Per person: [max actions, window ms]. */
+export const LIMITS = {
+  control: [6, 10_000], // play/pause/seek/stop/start applied directly
+  request: [3, 10_000],
+  vote: [10, 10_000],
+  propose: [5, 60_000],
+};
 
 const CONTROL_KINDS = ['play', 'pause', 'seek'];
+const REQUEST_KINDS = ['play', 'pause', 'seek', 'start'];
 const ACTION_VOTE_KINDS = ['pause', 'skip'];
 
 /** 3725 → "1:02:05", 75 → "1:15". */
@@ -50,10 +80,15 @@ export function mediaLabel({ title, subtitle } = {}) {
   return [String(title || '').trim() || 'la vidéo', code].filter(Boolean).join(' · ');
 }
 
-const majority = (count, total) => total > 0 && count * 2 > total;
+/** Strict majority of the present members, and never a single vote. */
+export const majority = (count, total) => count >= MIN_VOTES && count * 2 > total;
 
 export class Room {
-  constructor(id, { now = Date.now } = {}) {
+  /**
+   * @param lobby  waiting room for newcomers (website rooms)
+   * @param owner  uid that always gets in and takes the crown (personal website room)
+   */
+  constructor(id, { now = Date.now, lobby = false, owner = null } = {}) {
     this.id = id;
     this.now = now;
     this.members = new Map(); // uid -> { uid, name, avatar, connections, quality, order, presence }
@@ -64,10 +99,20 @@ export class Room {
     this.updatedAt = now();
     this.rev = 0;
 
-    this.control = 'all';
+    this.lobby = lobby;
+    this.owner = owner;
+    this.autoAdmit = false;
+    this.pending = new Map(); // uid -> { uid, name, avatar, connections, since }
+    this.admitted = new Set(); // uids let in once (a reconnect doesn't wait again)
+    this.blocked = new Map(); // uid -> until (ms), Infinity once kicked
+
+    this.control = 'host';
     this.host = null;
+    this.hostAwayAt = null;
+    this.copilots = new Set();
+
     this.queue = new Map(); // id -> item (votes: Set of uids)
-    this.requests = new Map(); // id -> { id, uid, kind, position, expires }
+    this.requests = new Map(); // id -> { id, uid, kind, position, itemId, expires }
     this.actionVotes = new Map(); // kind -> { kind, voters: Set, expires }
     this.autostart = null; // { itemId, at }
     this.autostartSuppressed = null; // { itemId, count } after a cancel
@@ -75,6 +120,11 @@ export class Room {
     this.autonextCancelled = null; // media sid
     this.starting = null; // { token, title, by }
     this.startSeq = 0;
+
+    this.hits = new Map(); // `${uid}:${bucket}` -> timestamps
+    this.stalls = new Map(); // uid -> timestamps
+    this.muted = new Map(); // uid -> until
+
     this.emptySince = now(); // nobody yet
     this.pausedEmpty = false;
     this.outbox = [];
@@ -98,7 +148,7 @@ export class Room {
     return !!d && this.currentPosition() >= d - 1;
   }
 
-  /** Nothing to watch right now: anyone may start something. */
+  /** Nothing to watch right now. */
   get idle() {
     return !this.media || this.ended;
   }
@@ -127,31 +177,214 @@ export class Room {
   }
 
   #name(uid) {
-    return this.members.get(uid)?.name || 'Quelqu’un';
+    return this.members.get(uid)?.name || this.pending.get(uid)?.name || 'Quelqu’un';
   }
 
-  /** Notice for the room. `except`: not to that uid (their own action); `to`: only them. */
+  /** Notice for the room. `except`: not to that uid; `to`: only that uid or those uids. */
   #notice(text, { except = null, to = null } = {}) {
     this.outbox.push({ type: 'notice', text, except, to });
   }
 
-  /** Takes what index.js must send/do (notices, stream starts). */
+  #toModerators(text) {
+    const to = this.moderators();
+    if (to.length) this.#notice(text, { to });
+  }
+
+  /** Takes what index.js must send/do (notices, stream starts, kicks). */
   drain() {
     const out = this.outbox;
     this.outbox = [];
     return out;
   }
 
-  // ------------------------------------------------------------ members
+  // ------------------------------------------------------------ roles & permissions
 
+  isModerator(uid) {
+    return this.members.has(uid) && (uid === this.host || this.copilots.has(uid));
+  }
+
+  /** Present host and co-pilotes (who answer requests and the waiting room). */
+  moderators() {
+    return [...this.members.keys()].filter((uid) => this.isModerator(uid));
+  }
+
+  /** Play/pause/seek/stop/start a title directly. */
+  canControl(uid) {
+    if (!this.members.has(uid)) return false;
+    return this.control === 'all' || this.isModerator(uid);
+  }
+
+  /** Starting something for the whole room (same rule: requests/votes otherwise). */
+  canStart(uid) {
+    return this.canControl(uid);
+  }
+
+  /**
+   * Rate limit per person and bucket. Over the limit: muted for SPAM_COOLDOWN_MS
+   * (every limited action is dropped), the person and the moderators are told.
+   * The host is trusted (never limited).
+   */
+  #allow(uid, bucket) {
+    if (uid === this.host && this.members.has(uid)) return true;
+    const t = this.now();
+    const until = this.muted.get(uid);
+    if (until && until > t) return false;
+    const [max, windowMs] = LIMITS[bucket];
+    const key = `${uid}:${bucket}`;
+    const list = (this.hits.get(key) || []).filter((x) => t - x < windowMs);
+    if (list.length >= max) {
+      this.hits.set(key, list);
+      this.muted.set(uid, t + SPAM_COOLDOWN_MS);
+      this.#notice(`Doucement : tes actions sont ignorées pendant ${SPAM_COOLDOWN_MS / 1000} s`, { to: uid });
+      const mods = this.moderators().filter((m) => m !== uid);
+      if (mods.length) this.#notice(`${this.#name(uid)} envoie trop d’actions : ignoré ${SPAM_COOLDOWN_MS / 1000} s`, { to: mods });
+      return false;
+    }
+    list.push(t);
+    this.hits.set(key, list);
+    return true;
+  }
+
+  isMuted(uid) {
+    const until = this.muted.get(uid);
+    return !!until && until > this.now();
+  }
+
+  /** Longest-present co-pilote, else longest-present member. */
+  #successor() {
+    let best = null;
+    for (const m of this.members.values()) {
+      const rank = [this.copilots.has(m.uid) ? 0 : 1, m.order];
+      if (!best || rank[0] < best.rank[0] || (rank[0] === best.rank[0] && rank[1] < best.rank[1])) best = { m, rank };
+    }
+    return best?.m || null;
+  }
+
+  /** Gives the crown to the successor; the absent host comes back as co-pilote. */
+  #replaceHost() {
+    const next = this.#successor();
+    if (!next) return false;
+    const old = this.host;
+    if (old && old !== next.uid) this.copilots.add(old);
+    this.copilots.delete(next.uid);
+    this.host = next.uid;
+    this.hostAwayAt = null;
+    this.#notice(`${next.name} est maintenant l’hôte`);
+    return true;
+  }
+
+  /** Switches between "host" (protected, default) and "all". Host only. */
+  setControl(uid, mode) {
+    if (uid !== this.host || !this.members.has(uid) || !['all', 'host'].includes(mode) || mode === this.control) return false;
+    this.control = mode;
+    this.requests.clear();
+    this.actionVotes.clear();
+    this.#notice(
+      mode === 'host'
+        ? `${this.#name(uid)} a protégé la salle : l’hôte et les co-pilotes contrôlent`
+        : `${this.#name(uid)} a donné le contrôle à tout le monde`
+    );
+    return this.#changed();
+  }
+
+  /** The host hands the crown to someone present; they become co-pilote. */
+  handOver(uid, target) {
+    if (uid !== this.host || target === uid || !this.members.has(uid) || !this.members.has(target)) return false;
+    this.host = target;
+    this.copilots.delete(target);
+    this.copilots.add(uid);
+    this.#notice(`${this.#name(uid)} a passé l’hôte à ${this.#name(target)}`);
+    return this.#changed();
+  }
+
+  /** The host promotes (true) or revokes (false) a co-pilote. */
+  setCopilot(uid, target, value) {
+    if (uid !== this.host || target === uid || !this.members.has(uid) || !this.members.has(target)) return false;
+    if (value === this.copilots.has(target)) return false;
+    if (value) this.copilots.add(target);
+    else this.copilots.delete(target);
+    this.#notice(value ? `${this.#name(target)} est co-pilote` : `${this.#name(target)} n’est plus co-pilote`);
+    return this.#changed();
+  }
+
+  /** The host removes someone (member or waiting) and blocks them for this room. */
+  kick(uid, target) {
+    if (uid !== this.host || target === uid || !this.members.has(uid)) return false;
+    if (!this.members.has(target) && !this.pending.has(target)) return false;
+    const name = this.#name(target);
+    this.#forget(target);
+    this.blocked.set(target, Infinity);
+    this.outbox.push({ type: 'kick', uid: target, reason: 'kicked' });
+    this.#notice(`${this.#name(uid)} a exclu ${name}`);
+    this.#evaluate();
+    return this.#changed();
+  }
+
+  /** Removes every trace of someone (kick). */
+  #forget(target) {
+    if (this.members.has(target)) this.#settle();
+    this.members.delete(target);
+    this.pending.delete(target);
+    this.admitted.delete(target);
+    this.copilots.delete(target);
+    this.waiting.delete(target);
+    for (const [id, r] of this.requests) if (r.uid === target) this.requests.delete(id);
+    for (const v of this.actionVotes.values()) v.voters.delete(target);
+    for (const [id, q] of this.queue) {
+      if (q.uid === target) this.queue.delete(id);
+      else q.votes.delete(target);
+    }
+  }
+
+  // ------------------------------------------------------------ members & waiting room
+
+  /** "member", "pending", "blocked" or "none". */
+  status(uid) {
+    const until = this.blocked.get(uid);
+    if (until && until > this.now()) return 'blocked';
+    if (this.members.has(uid)) return 'member';
+    if (this.pending.has(uid)) return 'pending';
+    return 'none';
+  }
+
+  /** A connection opens. Returns true when the room changed. */
   join({ uid, name, avatar }) {
-    const existing = this.members.get(uid);
+    if (this.status(uid) === 'blocked') return false;
+    const existing = this.members.get(uid) || this.pending.get(uid);
     if (existing) {
       existing.connections++;
       return false;
     }
-    this.members.set(uid, { uid, name, avatar, connections: 1, quality: null, order: ++this.seq, presence: 'watching' });
+    const isOwner = !!this.owner && uid === this.owner;
+    const mustWait = this.lobby && !this.autoAdmit && !isOwner && !this.admitted.has(uid) && this.members.size > 0;
+    if (mustWait) {
+      if (this.pending.size >= PENDING_MAX) return false;
+      this.pending.set(uid, { uid, name, avatar, connections: 1, since: this.now() });
+      this.#toModerators(`${name} attend pour entrer`);
+      return this.#changed();
+    }
+    this.#addMember({ uid, name, avatar, connections: 1 });
+    if (isOwner && this.host !== uid) {
+      if (this.host) this.copilots.add(this.host);
+      this.copilots.delete(uid);
+      this.host = uid;
+    }
+    this.#evaluate();
+    return this.#changed();
+  }
+
+  #addMember({ uid, name, avatar, connections }) {
+    this.members.set(uid, { uid, name, avatar, connections, quality: null, order: ++this.seq, presence: 'watching' });
+    this.admitted.add(uid);
     this.emptySince = null;
+    if (uid === this.host) this.hostAwayAt = null;
+    if (this.members.size === 1 && this.host !== uid) {
+      // Alone in the room: somebody must be able to drive it.
+      if (this.host) this.copilots.add(this.host);
+      this.copilots.delete(uid);
+      this.host = uid;
+      this.hostAwayAt = null;
+    }
     if (this.pausedEmpty && this.media) {
       // Back in a room everybody had left: the film goes on once this viewer has loaded it.
       this.pausedEmpty = false;
@@ -159,12 +392,48 @@ export class Room {
       this.updatedAt = this.now();
       this.waiting.set(uid, this.now() + LOAD_TIMEOUT_MS);
     }
-    this.#ensureHost();
+  }
+
+  /** A host or co-pilote lets someone in from the waiting room. */
+  admit(uid, target) {
+    const p = this.pending.get(target);
+    if (!p || !this.isModerator(uid)) return false;
+    this.pending.delete(target);
+    this.#addMember(p);
+    this.#notice(`${this.#name(uid)} a fait entrer ${p.name}`);
+    this.#evaluate();
+    return this.#changed();
+  }
+
+  /** A host or co-pilote refuses someone: they can't knock again for REFUSE_BLOCK_MS. */
+  refuse(uid, target) {
+    const p = this.pending.get(target);
+    if (!p || !this.isModerator(uid)) return false;
+    this.pending.delete(target);
+    this.blocked.set(target, this.now() + REFUSE_BLOCK_MS);
+    this.outbox.push({ type: 'kick', uid: target, reason: 'refused' });
+    return this.#changed();
+  }
+
+  /** "Accepter tout le monde automatiquement" (host or co-pilote). */
+  setAutoAdmit(uid, value) {
+    if (!this.isModerator(uid) || typeof value !== 'boolean' || value === this.autoAdmit) return false;
+    this.autoAdmit = value;
+    if (value) for (const p of [...this.pending.values()]) {
+      this.pending.delete(p.uid);
+      this.#addMember(p);
+    }
     this.#evaluate();
     return this.#changed();
   }
 
   leave(uid) {
+    const p = this.pending.get(uid);
+    if (p) {
+      if (--p.connections > 0) return false;
+      this.pending.delete(uid);
+      return this.#changed();
+    }
     const m = this.members.get(uid);
     if (!m) return false;
     if (--m.connections > 0) return false;
@@ -173,6 +442,15 @@ export class Room {
     this.waiting.delete(uid);
     for (const [id, r] of this.requests) if (r.uid === uid) this.requests.delete(id);
     for (const v of this.actionVotes.values()) v.voters.delete(uid);
+    if (uid === this.host) this.hostAwayAt = this.now();
+    if (this.members.size === 0) {
+      // Somebody waiting at the door while everybody left: let the first one in.
+      const first = [...this.pending.values()].sort((a, b) => a.since - b.since)[0];
+      if (first) {
+        this.pending.delete(first.uid);
+        this.#addMember(first);
+      }
+    }
     if (this.members.size === 0) {
       // Nobody left: keep the film where it is, it resumes when someone comes back.
       this.emptySince = this.now();
@@ -184,8 +462,6 @@ export class Room {
       this.actionVotes.clear();
       this.autostart = null;
       this.autonext = null;
-    } else {
-      this.#ensureHost();
     }
     this.#evaluate();
     return this.#changed();
@@ -193,18 +469,6 @@ export class Room {
 
   get empty() {
     return this.members.size === 0;
-  }
-
-  /** The host left (or there is none): the longest-present member takes over. */
-  #ensureHost() {
-    if (this.host && this.members.has(this.host)) return false;
-    if (this.members.size === 0) return false; // kept: the host may come back
-    let next = null;
-    for (const m of this.members.values()) if (!next || m.order < next.order) next = m;
-    const had = this.host !== null;
-    this.host = next.uid;
-    if (had && this.control === 'host') this.#notice(`${next.name} est maintenant l’hôte`);
-    return true;
   }
 
   setPresence(uid, presence) {
@@ -217,7 +481,7 @@ export class Room {
   // ------------------------------------------------------------ playback primitives
 
   /** New media: everyone currently here loads it, playback starts when all are ready. */
-  load(media, { startAt = 0, by = null } = {}) {
+  load(media, { startAt = 0 } = {}) {
     this.media = media;
     this.paused = false;
     this.pausedEmpty = false;
@@ -226,9 +490,6 @@ export class Room {
     this.waiting.clear();
     const deadline = this.now() + LOAD_TIMEOUT_MS;
     for (const uid of this.members.keys()) this.waiting.set(uid, deadline);
-    // Whoever started it hosts it (if still here).
-    if (by && this.members.has(by)) this.host = by;
-    this.#ensureHost();
     this.starting = null;
     this.requests.clear();
     this.actionVotes.clear();
@@ -277,8 +538,17 @@ export class Room {
     if (!this.media || !this.members.has(uid)) return false;
     if (buffering) {
       if (this.waiting.has(uid) || this.paused) return false;
+      // A viewer stalling again and again (bad link, or on purpose) stops holding the room.
+      const t = this.now();
+      const recent = (this.stalls.get(uid) || []).filter((x) => t - x < 60_000);
+      if (recent.length >= STALLS_PER_MINUTE) {
+        this.stalls.set(uid, recent);
+        return false;
+      }
+      recent.push(t);
+      this.stalls.set(uid, recent);
       this.#settle();
-      this.waiting.set(uid, this.now() + WAIT_TIMEOUT_MS);
+      this.waiting.set(uid, t + WAIT_TIMEOUT_MS);
       return this.#changed();
     }
     if (!this.waiting.has(uid)) return false;
@@ -294,30 +564,29 @@ export class Room {
     return this.#changed();
   }
 
-  // ------------------------------------------------------------ permissions
-
-  /** Play/pause/seek/stop/cancel the next episode. */
-  canControl(uid) {
-    return this.control === 'all' || uid === this.host;
-  }
-
-  /** Starting something: always when nothing plays, otherwise like canControl. */
-  canStart(uid) {
-    return this.idle || this.canControl(uid);
-  }
+  // ------------------------------------------------------------ actions with attribution
 
   /**
-   * Play/pause/seek from a member, with attribution. Without the right (host mode),
-   * it becomes a request to the host instead.
+   * Play/pause/seek from a member, with attribution. Without the right, it becomes a
+   * request to the host and co-pilotes instead.
    */
   act(uid, kind, value) {
     if (!this.media || !this.members.has(uid) || !CONTROL_KINDS.includes(kind)) return false;
     if (!this.canControl(uid)) return this.request(uid, kind, value);
+    if (!this.#allow(uid, 'control')) return false;
     const before = this.currentPosition();
     const ok = this.#apply(kind, value);
     if (ok) this.#notice(this.#describe(this.#name(uid), kind, this.position, before), { except: uid });
     this.#evaluate();
     return ok;
+  }
+
+  /** Stop for everyone (controllers only). */
+  stopBy(uid) {
+    if (!this.media || !this.canControl(uid) || !this.#allow(uid, 'control')) return false;
+    this.stop();
+    this.#notice(`${this.#name(uid)} a arrêté la lecture`, { except: uid });
+    return true;
   }
 
   #apply(kind, value) {
@@ -332,62 +601,56 @@ export class Room {
     return `${name} ${position >= before ? 'a avancé' : 'a reculé'} à ${formatTime(position)}`;
   }
 
-  /** Switches between "all" and "host". Anyone may enable host mode; only the host may end it. */
-  setControl(uid, mode) {
-    if (!this.members.has(uid) || !['all', 'host'].includes(mode) || mode === this.control) return false;
-    if (mode === 'all' && uid !== this.host) return false;
-    this.control = mode;
-    this.requests.clear();
-    this.actionVotes.clear();
-    this.#ensureHost();
-    this.#notice(
-      mode === 'host'
-        ? `${this.#name(uid)} a activé « Seul l’hôte contrôle » · hôte : ${this.#name(this.host)}`
-        : `${this.#name(uid)} a rendu le contrôle à tout le monde`
-    );
-    return this.#changed();
-  }
+  // ------------------------------------------------------------ requests
 
-  /** The host hands the crown to someone else. */
-  handOver(uid, target) {
-    if (uid !== this.host || target === uid || !this.members.has(target)) return false;
-    this.host = target;
-    this.#notice(`${this.#name(uid)} a passé l’hôte à ${this.#name(target)}`);
-    return this.#changed();
-  }
-
-  // ------------------------------------------------------------ host-mode requests
-
+  /** A viewer asks the host/co-pilotes: pause, play, seek (position) or start (item id). */
   request(uid, kind, value) {
-    if (!this.media || this.control !== 'host' || uid === this.host || !this.members.has(uid)) return false;
-    if (!CONTROL_KINDS.includes(kind)) return false;
-    if ((kind === 'pause' && this.paused) || (kind === 'play' && !this.paused)) return false;
+    if (!this.members.has(uid) || this.canControl(uid) || !REQUEST_KINDS.includes(kind)) return false;
+    let position = null;
+    let itemId = null;
+    if (kind === 'start') {
+      if (!this.queue.has(value)) return false;
+      itemId = value;
+    } else {
+      if (!this.media) return false;
+      if ((kind === 'pause' && this.paused) || (kind === 'play' && !this.paused)) return false;
+      if (kind === 'seek') position = this.#clamp(value);
+    }
+    if (!this.#allow(uid, 'request')) return false;
     for (const [id, r] of this.requests) if (r.uid === uid) this.requests.delete(id); // one per person
     if (this.requests.size >= REQUESTS_MAX) return false;
     const id = this.#id();
-    const position = kind === 'seek' ? this.#clamp(value) : null;
-    this.requests.set(id, { id, uid, kind, position, expires: this.now() + REQUEST_TTL_MS });
-    this.#notice(`Demande envoyée à ${this.#name(this.host)}`, { to: uid });
+    this.requests.set(id, { id, uid, kind, position, itemId, expires: this.now() + REQUEST_TTL_MS });
+    const mods = this.moderators();
+    this.#notice(mods.length ? 'Demande envoyée à l’hôte' : 'Demande envoyée (l’hôte n’est pas là : votez !)', { to: uid });
     return this.#changed();
   }
 
   #requestLabel(r) {
     if (r.kind === 'pause') return 'une pause';
     if (r.kind === 'play') return 'de reprendre';
-    return `d’aller à ${formatTime(r.position)}`;
+    if (r.kind === 'seek') return `d’aller à ${formatTime(r.position)}`;
+    const item = this.queue.get(r.itemId);
+    return `de lancer « ${item ? mediaLabel(item) : '…'} »`;
   }
 
-  /** The host accepts or refuses a request. */
+  /** A host or co-pilote accepts or refuses a request. */
   respond(uid, id, accept) {
     const r = this.requests.get(id);
-    if (!r || uid !== this.host) return false;
+    if (!r || !this.isModerator(uid)) return false;
     this.requests.delete(id);
-    const host = this.#name(uid);
+    const who = this.#name(uid);
+    const label = this.#requestLabel(r);
     if (accept) {
-      this.#apply(r.kind, r.position);
-      this.#notice(`${host} a accepté la demande de ${this.#name(r.uid)} (${this.#requestLabel(r)})`);
+      this.#notice(`${who} a accepté la demande de ${this.#name(r.uid)} (${label})`);
+      if (r.kind === 'start') {
+        const item = this.queue.get(r.itemId);
+        if (item) this.#startItem(item, { by: uid, reason: 'request' });
+      } else {
+        this.#apply(r.kind, r.position);
+      }
     } else {
-      this.#notice(`${host} a refusé la demande de ${this.#name(r.uid)} (${this.#requestLabel(r)})`);
+      this.#notice(`${who} a refusé la demande de ${this.#name(r.uid)} (${label})`);
     }
     this.#evaluate();
     return this.#changed();
@@ -406,6 +669,7 @@ export class Room {
   /** Toggles uid's vote to pause or skip; applied as soon as a majority agrees. */
   voteAction(uid, kind) {
     if (!this.media || !this.members.has(uid) || !ACTION_VOTE_KINDS.includes(kind)) return false;
+    if (!this.#allow(uid, 'vote')) return false;
     let v = this.actionVotes.get(kind);
     if (!v) {
       if (kind === 'pause' && this.paused) return false;
@@ -429,8 +693,7 @@ export class Room {
 
   /** Skip what plays: next episode, else the top suggestion, else stop. */
   #skip() {
-    const media = this.media;
-    if (media?.next) {
+    if (this.media?.next) {
       this.#startNext('La salle a voté pour passer · ');
       return;
     }
@@ -453,6 +716,7 @@ export class Room {
    */
   propose(uid, item) {
     if (!this.members.has(uid)) return { error: 'Tu n’es pas dans la salle' };
+    if (!this.#allow(uid, 'propose')) return { error: 'Trop de propositions, attends un peu' };
     const existing = [...this.queue.values()].find((q) => q.meta.videoId === item.meta.videoId);
     if (existing) {
       if (!existing.votes.has(uid)) {
@@ -495,27 +759,30 @@ export class Room {
   /** Toggles uid's 👍 on a suggestion. */
   vote(uid, itemId) {
     const item = this.queue.get(itemId);
-    if (!item || !this.members.has(uid)) return false;
+    if (!item || !this.members.has(uid) || !this.#allow(uid, 'vote')) return false;
     if (item.votes.has(uid)) item.votes.delete(uid);
     else item.votes.add(uid);
     this.#evaluate();
     return this.#changed();
   }
 
-  /** The proposer (or the host in host mode) removes a suggestion. */
+  /** The proposer, the host or a co-pilote removes a suggestion. */
   withdraw(uid, itemId) {
     const item = this.queue.get(itemId);
-    if (!item) return false;
-    if (item.uid !== uid && !(this.control === 'host' && uid === this.host)) return false;
+    if (!item || !this.members.has(uid)) return false;
+    if (item.uid !== uid && !this.isModerator(uid)) return false;
     this.queue.delete(itemId);
+    for (const [id, r] of this.requests) if (r.itemId === itemId) this.requests.delete(id);
     this.#evaluate();
     return this.#changed();
   }
 
-  /** "Lancer" on a suggestion. */
+  /** "Lancer" on a suggestion: controllers start it, others ask for it. */
   startSuggestion(uid, itemId) {
     const item = this.queue.get(itemId);
-    if (!item || !this.members.has(uid) || !this.canStart(uid)) return false;
+    if (!item || !this.members.has(uid)) return false;
+    if (!this.canStart(uid)) return this.request(uid, 'start', itemId);
+    if (!this.#allow(uid, 'control')) return false;
     this.#startItem(item, { by: uid, reason: 'manual' });
     return this.#changed();
   }
@@ -534,6 +801,12 @@ export class Room {
     return token;
   }
 
+  /** HTTP "Regarder ensemble": controllers only, rate-limited. Returns a token or null. */
+  beginStartBy(uid, { title, subtitle, announce }) {
+    if (!this.canStart(uid) || !this.#allow(uid, 'control')) return null;
+    return this.beginStart({ title, subtitle, by: uid, announce });
+  }
+
   isCurrentStart(token) {
     return this.startSeq === token;
   }
@@ -548,27 +821,31 @@ export class Room {
 
   #startItem(item, { by, reason }) {
     this.queue.delete(item.id);
+    for (const [id, r] of this.requests) if (r.itemId === item.id) this.requests.delete(id);
     if (this.autostartSuppressed?.itemId === item.id) this.autostartSuppressed = null;
     const label = mediaLabel(item);
     const announce =
       reason === 'vote'
         ? `La salle a voté pour « ${label} »`
         : reason === 'skip'
-          ? `La salle a voté pour passer : « ${label} »`
-          : `${this.#name(by)} a lancé « ${label} »`;
+          ? `La salle a voté pour passer · « ${label} »`
+          : reason === 'request'
+            ? null // the acceptance notice says it
+            : `${this.#name(by)} a lancé « ${label} »`;
     const token = this.beginStart({ title: item.title, subtitle: item.subtitle, by: reason === 'manual' ? by : null, announce });
     this.outbox.push({
       type: 'start',
       token,
-      // The proposer's addons are used to find a source; they host it if present.
-      host: reason === 'manual' ? by : this.members.has(item.uid) ? item.uid : null,
+      by: by || null,
       item: {
+        // The proposer's addons find a source when none was chosen (or it expired).
         uid: item.uid,
         meta: item.meta,
         title: item.title,
         subtitle: item.subtitle,
         poster: item.poster,
         streamKey: item.streamKey,
+        proposer: item.name,
       },
     });
   }
@@ -594,7 +871,7 @@ export class Room {
     this.outbox.push({
       type: 'start',
       token,
-      host: this.host,
+      by: null,
       item: {
         // Same addons as whoever started this one, same ranking.
         uid: media.startedByUid || this.host,
@@ -603,13 +880,14 @@ export class Room {
         subtitle: next.subtitle,
         poster: media.poster,
         streamKey: null,
+        proposer: media.startedBy || null,
       },
     });
   }
 
-  /** Cancels a countdown: "autostart" (anyone) or "autonext" (whoever controls). */
+  /** Cancels a countdown ("autostart" or "autonext"): whoever controls. */
   cancel(uid, what) {
-    if (!this.members.has(uid)) return false;
+    if (!this.canControl(uid)) return false;
     if (what === 'autostart' && this.autostart) {
       const item = this.queue.get(this.autostart.itemId);
       this.autostartSuppressed = item ? { itemId: item.id, count: this.#presentVotes(item.votes) } : null;
@@ -617,7 +895,7 @@ export class Room {
       this.#notice(`${this.#name(uid)} a annulé le lancement automatique`, { except: uid });
       return this.#changed();
     }
-    if (what === 'autonext' && this.autonext && this.canControl(uid)) {
+    if (what === 'autonext' && this.autonext) {
       this.autonext = null;
       this.autonextCancelled = this.media?.sid || null;
       this.#notice(`${this.#name(uid)} a annulé l’épisode suivant`, { except: uid });
@@ -678,7 +956,7 @@ export class Room {
     return changed;
   }
 
-  /** Deadlines: load/stall waits, requests, votes, countdowns. Returns true if state changed. */
+  /** Deadlines: waits, host grace, requests, votes, countdowns. Returns true if state changed. */
   tick() {
     const t = this.now();
     let changed = false;
@@ -689,10 +967,13 @@ export class Room {
         changed = true;
       }
     }
+    if (this.hostAwayAt !== null && !this.members.has(this.host) && this.members.size > 0 && t - this.hostAwayAt >= HOST_GRACE_MS) {
+      if (this.#replaceHost()) changed = true;
+    }
     for (const [id, r] of this.requests) {
       if (r.expires <= t) {
         this.requests.delete(id);
-        this.#notice(`La demande de ${this.#name(r.uid)} a expiré`, { to: r.uid });
+        this.#notice(`Ta demande (${this.#requestLabel(r)}) a expiré`, { to: r.uid });
         changed = true;
       }
     }
@@ -737,6 +1018,11 @@ export class Room {
       })),
       control: this.control,
       host: this.host,
+      copilots: [...this.copilots].filter((uid) => this.members.has(uid)),
+      lobby: this.lobby,
+      autoAdmit: this.autoAdmit,
+      pending: [...this.pending.values()].map(({ uid, name, avatar, since }) => ({ uid, name, avatar, since })),
+      muted: [...this.muted].filter(([, until]) => until > t).map(([uid]) => uid),
       queue: this.sortedQueue().map((q) => ({
         id: q.id,
         uid: q.uid,
@@ -752,12 +1038,14 @@ export class Room {
       autostart: this.autostart && { itemId: this.autostart.itemId, at: this.autostart.at },
       autonext: this.autonext && this.media?.next ? { at: this.autonext.at, subtitle: this.media.next.subtitle } : null,
       starting: this.starting && { title: this.starting.title, by: this.starting.by },
-      requests: [...this.requests.values()].map(({ id, uid, kind, position, expires }) => ({
+      requests: [...this.requests.values()].map(({ id, uid, kind, position, itemId, expires }) => ({
         id,
         uid,
         name: this.#name(uid),
         kind,
         position,
+        itemId,
+        label: this.#requestLabel({ kind, position, itemId }),
         expires,
       })),
       votes: [...this.actionVotes.values()].map(({ kind, voters, expires }) => ({ kind, voters: [...voters], expires })),
@@ -777,10 +1065,11 @@ export class Rooms {
     this.rooms = new Map();
   }
 
-  get(id) {
+  /** `init` (lobby, owner) applies when the room is created. */
+  get(id, init = {}) {
     let room = this.rooms.get(id);
     if (!room) {
-      room = new Room(id, this.options);
+      room = new Room(id, { ...this.options, ...init });
       this.rooms.set(id, room);
     }
     return room;
