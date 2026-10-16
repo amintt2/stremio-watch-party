@@ -265,6 +265,20 @@ function normalizeQuality(raw) {
 }
 
 /**
+ * AIOStreams-style labels in the stream name ("🚀 FHD", "💿 HD", "🔥4K UHD") when no
+ * resolution is spelled out. Only the name is read: "HD" in a description is often a
+ * release group or a tag.
+ */
+function qualityFromLabel(name) {
+  if (/\b(UHD|4K)\b/i.test(name)) return '4K';
+  if (/\bQHD\b/i.test(name)) return '1440p';
+  if (/\bFHD\b/i.test(name)) return '1080p';
+  if (/\bHD\b/.test(name)) return '720p';
+  if (/\bSD\b|low quality/i.test(name)) return '480p';
+  return null;
+}
+
+/**
  * Audio languages announced by the release name / addon text:
  * MULTI (VF + VO), VF (French audio), VOSTFR (original + French subs).
  */
@@ -298,18 +312,20 @@ export function describeStream(stream, addon) {
   const name = String(stream.name || '');
   const title = String(stream.title || stream.description || '');
   const text = `${name}\n${title}`;
-  const seeders = text.match(/👤\s*(\d+)/u);
-  const size = text.match(/💾\s*([\d.,]+\s*[KMGT]i?B)/iu);
+  const seeders = text.match(/(?:👤|🌱|👥)\s*(\d+)/u);
+  const size = text.match(/(?:💾|📦)\s*([\d.,]+\s*[KMGT]i?B)/iu);
   const origin = text.match(/⚙️\s*([^\n]+)/u);
   const quality = text.match(QUALITY_RE);
   // First line of the title is usually the release/file name.
-  const release = title.split('\n')[0].trim() || stream.behaviorHints?.filename || name;
+  // AIOStreams puts "🎬 Title (year)" there instead, its filename hint is more useful.
+  const firstLine = title.split('\n')[0].trim();
+  const release = (firstLine.startsWith('🎬') && stream.behaviorHints?.filename) || firstLine || stream.behaviorHints?.filename || name;
 
   return {
     addon,
     label: name.split('\n')[0].trim() || addon,
     release,
-    quality: normalizeQuality(quality?.[1]),
+    quality: normalizeQuality(quality?.[1]) || qualityFromLabel(name),
     seeders: seeders ? Number(seeders[1]) : null,
     size: size ? size[1].replace(',', '.') : null,
     origin: origin ? origin[1].trim() : null,
@@ -317,7 +333,7 @@ export function describeStream(stream, addon) {
     dolbyVision: /\b(dv|dovi|dolby\s?vision)\b/i.test(text),
     hevc: /\b(hevc|x265|h\.?265)\b/i.test(text),
     // Debrid-cached links (e.g. "[RD+]") start instantly and don't touch P2P.
-    cached: /\[[A-Z]{2,3}\+\]/.test(name),
+    cached: /\[[A-Z]{2,3}\+\]/.test(name) || /⚡\s*Ready/i.test(text),
     languages: streamLanguages(text),
     tooBig: tooBigForServer(stream, parseSize(size?.[1])),
     kind: stream.infoHash ? 'torrent' : 'http',
