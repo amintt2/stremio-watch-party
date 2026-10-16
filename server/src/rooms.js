@@ -431,7 +431,7 @@ export class Room {
   #skip() {
     const media = this.media;
     if (media?.next) {
-      this.#startNext();
+      this.#startNext('La salle a voté pour passer · ');
       return;
     }
     const top = this.sortedQueue()[0];
@@ -439,6 +439,7 @@ export class Room {
       this.#startItem(top, { by: null, reason: 'skip' });
       return;
     }
+    this.#notice('La salle a voté pour passer');
     this.stop();
   }
 
@@ -582,13 +583,13 @@ export class Room {
     return this.#changed();
   }
 
-  #startNext() {
+  #startNext(prefix = '') {
     const media = this.media;
     const next = media.next;
     const token = this.beginStart({
       title: media.title,
       subtitle: next.subtitle,
-      announce: `Épisode suivant : ${mediaLabel({ title: media.title, subtitle: next.subtitle })}`,
+      announce: `${prefix}Épisode suivant : ${mediaLabel({ title: media.title, subtitle: next.subtitle })}`,
     });
     this.outbox.push({
       type: 'start',
@@ -646,7 +647,6 @@ export class Room {
         this.pause();
         this.#notice('La salle a voté : pause');
       } else {
-        this.#notice('La salle a voté pour passer');
         this.#skip();
       }
     }

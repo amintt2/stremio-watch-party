@@ -6,6 +6,7 @@ import { Connection } from './connection.ts';
 import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
+import { RoomSocial } from './room.ts';
 import { ExternalSubtitles } from './subtitles.ts';
 import { formatTime } from './sync.ts';
 import { avatar, icon } from './ui.ts';
@@ -102,14 +103,16 @@ function start({ user: me, mode, room }: Identity) {
       ? null
       : h('a', { class: 'room-badge', href: routeHref('settings'), title: 'Salle : inviter ou rejoindre' }, icon('users', 'icon icon-sm'), room?.code || '');
   const me_ = h('a', { class: 'me', href: routeHref('settings'), title: me.name }, avatar(me));
-  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, roomBadge, topMembers, status, me_));
+  // Social layer (queue, votes, host, presence): room.ts.
+  const social = new RoomSocial(me, conn);
+  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, social.topButton, roomBadge, topMembers, status, me_));
   const content = h('main', { class: 'content', tabindex: -1 });
 
   // ------------------------------------------------------------ player stage
   const backBtn = h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Retour' }, icon('back'));
   const stageTitle = h('div', { class: 'stage-title' });
   const stageMembers = h('div', { class: 'members', 'aria-label': 'Spectateurs' });
-  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, stageMembers);
+  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, social.stageButton, stageMembers);
 
   const playBtn = h('button', { class: 'btn-round', type: 'button', 'aria-label': 'Lecture / pause' }, icon('play'));
   const seek = h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, step: 1, 'aria-label': 'Position' });
@@ -158,7 +161,7 @@ function start({ user: me, mode, room }: Identity) {
   );
   const stage = h('section', { class: 'stage mode-hidden', 'aria-label': 'Lecteur' }, video, subsLayer, overlay, stageTop, controls, miniBar);
 
-  clear(root, rail, topbar, content, stage, h('div', { id: 'toasts', class: 'toasts' }));
+  clear(root, rail, topbar, content, stage, social.el, h('div', { id: 'toasts', class: 'toasts' }));
 
   // ------------------------------------------------------------ app api for views
   const app: App = {
@@ -169,6 +172,12 @@ function start({ user: me, mode, room }: Identity) {
     state: () => state,
     navigate,
     async play(req: PlayRequest) {
+      if (!social.canStart()) {
+        // Host mode while something plays: suggest it to the room instead.
+        const res = await social.propose(req);
+        toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'L’hôte contrôle la lecture : proposé à la salle');
+        return;
+      }
       await api('/api/room/play', {
         method: 'POST',
         body: JSON.stringify({
@@ -181,6 +190,10 @@ function start({ user: me, mode, room }: Identity) {
         }),
       });
       openPlayer();
+    },
+    async propose(req) {
+      const res = await social.propose(req);
+      toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'Proposé à la salle');
     },
   };
 
@@ -396,7 +409,7 @@ function start({ user: me, mode, room }: Identity) {
       h(
         'span',
         {
-          class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === me.uid ? ' me' : ''}`,
+          class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === me.uid ? ' me' : ''}${social.memberInfo(m).cls}`,
           title: `${m.name}${m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
         },
         avatar(m),
@@ -473,6 +486,7 @@ function start({ user: me, mode, room }: Identity) {
     state = s;
     player.applyState(s);
     renderRoom();
+    social.update(s);
     if (sid && sid !== lastMediaSid) {
       openPlayer();
       const src = s.media!.source;

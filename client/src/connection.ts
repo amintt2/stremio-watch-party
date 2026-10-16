@@ -7,7 +7,16 @@ type Outgoing =
   | { t: 'seek'; position: number }
   | { t: 'buffering'; value: boolean }
   | { t: 'quality'; value: string }
-  | { t: 'progress'; sid: string; position: number };
+  | { t: 'progress'; sid: string; position: number }
+  // Social layer (room.ts)
+  | { t: 'presence'; value: 'watching' | 'browsing' }
+  | { t: 'vote' | 'withdraw' | 'start' | 'cancelRequest'; id: string }
+  | { t: 'cancel'; what: 'autostart' | 'autonext' }
+  | { t: 'mode'; value: 'all' | 'host' }
+  | { t: 'host'; uid: string }
+  | { t: 'request'; kind: 'play' | 'pause' | 'seek'; position?: number }
+  | { t: 'respond'; id: string; accept: boolean }
+  | { t: 'voteAction'; kind: 'pause' | 'skip' };
 
 /** Sync socket with automatic reconnect and clock estimation. */
 export class Connection {
