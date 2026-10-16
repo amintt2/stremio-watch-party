@@ -83,7 +83,19 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       button.classList.remove('busy');
     }
   };
-  panel.onPick = (s, button) => start(async () => s, useResume ? resumeAt() : 0, button);
+  // A source clicked in the panel is started now, or proposed to the room (queue).
+  let pickMode: 'play' | 'propose' = 'play';
+  const propose = async (streamKey: string | undefined, button: HTMLButtonElement) => {
+    button.disabled = true;
+    try {
+      await app.propose({ meta: { id: meta.id, type: meta.type, name: meta.name, poster: meta.poster }, videoId: videoId(), subtitle: subtitle(), streamKey });
+    } catch (err) {
+      toast((err as Error).message);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  panel.onPick = (s, button) => (pickMode === 'propose' ? propose(s.key, button) : start(async () => s, useResume ? resumeAt() : 0, button));
 
   // ---- watched marks (movie, episode, season)
   const setWatched = async (videos: Video[] | null, watched: boolean) => {
@@ -157,7 +169,6 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       icon(inLibrary ? 'check' : 'plus'),
       inLibrary ? 'Dans la bibliothèque' : 'Ajouter à la bibliothèque'
     );
-    clear(actions, resumeBtn, watchBtn, libBtn);
 
     // Secondary actions: seen, trailer, IMDb, share.
     const small = (iconName: string, label: string, onclick: (b: HTMLButtonElement) => void | Promise<void>, attrs: Record<string, string> = {}) => {
@@ -224,34 +235,62 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       );
     }
 
-    // Same choice for a source picked by hand.
-    useResume = !!at;
-    panel.setExtra(
-      at
-        ? h(
-            'div',
-            { class: 'segmented segmented-wide', role: 'group', 'aria-label': 'Départ' },
-            [
-              [true, `Reprendre à ${formatTime(at)}`],
-              [false, 'Depuis le début'],
-            ].map(([value, text]) =>
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: value === useResume ? 'active' : '',
-                  onclick: (e: Event) => {
-                    useResume = value as boolean;
-                    (e.currentTarget as HTMLElement).parentElement!.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
-                    (e.currentTarget as HTMLElement).classList.add('active');
-                  },
-                },
-                text as string
-              )
-            )
-          )
-        : null
+    const proposeBtn: HTMLButtonElement = h(
+      'button',
+      {
+        class: 'btn btn-ghost btn-lg',
+        type: 'button',
+        title: 'Ajoute ce titre à la file d’attente de la salle : chacun vote, la majorité lance',
+        onclick: () => propose(undefined, proposeBtn),
+      },
+      icon('plus'),
+      'Proposer'
     );
+    clear(actions, resumeBtn, watchBtn, proposeBtn, libBtn);
+
+    useResume = !!at;
+    const segment = (options: [string, string][], current: string, set: (v: string) => void, label: string) =>
+      h(
+        'div',
+        { class: 'segmented segmented-wide', role: 'group', 'aria-label': label },
+        options.map(([value, text]) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              class: value === current ? 'active' : '',
+              onclick: (e: Event) => {
+                set(value);
+                (e.currentTarget as HTMLElement).parentElement!.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+                (e.currentTarget as HTMLElement).classList.add('active');
+              },
+            },
+            text
+          )
+        )
+      );
+    const pickToggle = segment(
+      [
+        ['play', 'Clic = lancer pour tous'],
+        ['propose', 'Clic = proposer'],
+      ],
+      pickMode,
+      (v) => (pickMode = v as 'play' | 'propose'),
+      'Une source cliquée'
+    );
+    // Same start choice for a source picked by hand.
+    const resumeToggle = at
+      ? segment(
+          [
+            ['resume', `Reprendre à ${formatTime(at)}`],
+            ['start', 'Depuis le début'],
+          ],
+          'resume',
+          (v) => (useResume = v === 'resume'),
+          'Départ'
+        )
+      : null;
+    panel.setExtra(h('div', { class: 'streams-extras' }, pickToggle, resumeToggle));
   };
 
   const title = meta.logo

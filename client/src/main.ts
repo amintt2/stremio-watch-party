@@ -7,6 +7,7 @@ import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
 import { createStage, memberChips } from './stage.ts';
+import { RoomSocial } from './room.ts';
 import { avatar, icon } from './ui.ts';
 import { detailView } from './views/detail.ts';
 import { discoverView } from './views/discover.ts';
@@ -132,7 +133,10 @@ function start({ user: me, mode, room }: Identity) {
       ? null
       : h('a', { class: 'room-badge', href: routeHref('settings'), title: 'Salle : inviter ou rejoindre' }, icon('users', 'icon icon-sm'), room?.code || '');
   const me_ = h('a', { class: 'me', href: routeHref('settings'), title: me.name }, avatar(me));
-  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, roomBadge, topMembers, status, me_));
+  // Social layer (queue, votes, host, presence): room.ts.
+  const social = new RoomSocial(me, conn);
+  player.uid = me.uid;
+  const topbar = h('header', { class: 'topbar' }, searchForm, h('div', { class: 'topbar-right' }, social.topButton, roomBadge, topMembers, status, me_));
   const content = h('main', { class: 'content', tabindex: -1 });
 
   // ------------------------------------------------------------ player stage (stage.ts)
@@ -145,13 +149,16 @@ function start({ user: me, mode, room }: Identity) {
     isOpen: () => route.name === 'player',
     open: () => openPlayer(),
     close: () => closePlayer(),
+    topExtra: [social.stageButton],
+    memberClass: (m) => social.memberInfo(m).cls,
+    canStop: () => social.canStart(),
     stop: () => {
       reportProgress();
       api('/api/room/stop', { method: 'POST' }).catch((err) => toast(err.message));
     },
   });
 
-  clear(root, rail, topbar, content, stage.el, h('div', { id: 'toasts', class: 'toasts' }));
+  clear(root, rail, topbar, content, stage.el, social.el, h('div', { id: 'toasts', class: 'toasts' }));
 
   // ------------------------------------------------------------ app api for views
   const app: App = {
@@ -163,6 +170,12 @@ function start({ user: me, mode, room }: Identity) {
     navigate,
     replaceRoute: (href: string) => replaceRoute(href),
     async play(req: PlayRequest) {
+      if (!social.canStart()) {
+        // Host mode while something plays: suggest it to the room instead.
+        const res = await social.propose(req);
+        toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'L’hôte et les co-pilotes lancent : proposé à la salle');
+        return;
+      }
       await api('/api/room/play', {
         method: 'POST',
         body: JSON.stringify({
@@ -175,6 +188,10 @@ function start({ user: me, mode, room }: Identity) {
         }),
       });
       openPlayer();
+    },
+    async propose(req) {
+      const res = await social.propose(req);
+      toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'Proposé à la salle');
     },
   };
 
@@ -348,7 +365,7 @@ function start({ user: me, mode, room }: Identity) {
     const s = state;
     status.classList.toggle('on', !!s);
     // Others only: my own avatar is already in the top bar.
-    clear(topMembers, memberChips(s && { ...s, members: s.members.filter((m) => m.uid !== me.uid) }, me.uid, stage.label));
+    clear(topMembers, memberChips(s && { ...s, members: s.members.filter((m) => m.uid !== me.uid) }, me.uid, stage.label, (m) => social.memberInfo(m).cls));
     stage.update();
     updateStageMode();
   };
@@ -382,6 +399,7 @@ function start({ user: me, mode, room }: Identity) {
     state = s;
     player.applyState(s);
     renderRoom();
+    social.update(s);
     if (sid && sid !== lastMediaSid) {
       openPlayer();
       const src = s.media!.source;

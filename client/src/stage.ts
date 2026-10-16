@@ -1,7 +1,7 @@
 // The player stage: full-screen player and mini-player, with its controls. Play,
 // pause and seek go to the room (everyone follows); volume, quality, audio track,
 // subtitles and everything else here is per viewer.
-import { api, img, type RoomState, type User } from './api.ts';
+import { api, img, type RoomState, type User, type Member } from './api.ts';
 import { Volume } from './audio.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import type { Connection } from './connection.ts';
@@ -50,6 +50,12 @@ export interface StageHost {
   close(): void;
   /** "Arrêter pour tout le monde" (confirmed). */
   stop(): void;
+  /** Extra buttons in the player's top bar (the room's "Salle" button). */
+  topExtra?: HTMLElement[];
+  /** Extra classes for a member's avatar chip (host crown). */
+  memberClass?: (m: Member) => string;
+  /** May this viewer stop the media for everyone? (protected rooms: host / co-pilotes) */
+  canStop?: () => boolean;
 }
 
 const REMAINING_KEY = 'wp-remaining';
@@ -71,12 +77,12 @@ type IosVideo = HTMLVideoElement & {
 };
 
 /** Avatars of the room members (also used in the top bar). */
-export function memberChips(s: RoomState | null, meUid: string, label: (id: string) => string) {
+export function memberChips(s: RoomState | null, meUid: string, label: (id: string) => string, memberClass?: (m: Member) => string) {
   return (s?.members || []).map((m) =>
     h(
       'span',
       {
-        class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === meUid ? ' me' : ''}`,
+        class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === meUid ? ' me' : ''}${memberClass?.(m) || ''}`,
         title: `${m.name}${m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
       },
       avatar(m),
@@ -108,7 +114,7 @@ export function createStage(host: StageHost) {
   const stageMembers = h('div', { class: 'members', 'aria-label': 'Spectateurs' });
   const stopLabel = h('span', { class: 'btn-label' }, 'Arrêter');
   const stopBtn = h('button', { class: 'btn btn-ghost btn-sm on-media stop-btn', type: 'button', title: 'Arrêter pour tout le monde' }, icon('stop', 'icon icon-sm'), stopLabel);
-  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, stageMembers, stopBtn);
+  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, ...(host.topExtra || []), stageMembers, stopBtn);
 
   // ------------------------------------------------------------ seek bar
   const seek = h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, step: 1, 'aria-label': 'Position' });
@@ -970,7 +976,9 @@ export function createStage(host: StageHost) {
       lastRev = s.rev;
       before = { pos: player.expected(), at: Date.now(), running: s.running };
     }
-    clear(stageMembers, memberChips(s, me.uid, label));
+    clear(stageMembers, memberChips(s, me.uid, label, host.memberClass));
+    // Protected rooms: only the host and co-pilotes may stop for everyone.
+    if (host.canStop) stopBtn.hidden = !host.canStop();
     clear(
       stageTitle,
       media?.poster ? h('img', { class: 'stage-poster', src: img(media.poster), alt: '' }) : null,

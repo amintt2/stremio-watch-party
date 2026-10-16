@@ -72,6 +72,9 @@ export class Player {
   private abr: AutoQuality | null = null;
   private pendingReady = false;
   private reportedStall = false;
+  private lastStallReport = 0;
+  /** This viewer's uid, to notice when the room stopped waiting for it. */
+  uid: string | null = null;
   private stallSince = 0;
   private graceUntil = 0;
   private hasPlayed = false;
@@ -408,9 +411,16 @@ export class Player {
         if (!this.stallSince) this.stallSince = now;
         else if (now - this.stallSince > STALL_REPORT_MS && !this.reportedStall) {
           this.reportedStall = true;
+          this.lastStallReport = now;
           this.send(true);
           const next = this.abr?.onStall(now);
           if (next) this.switchQuality(next);
+        }
+        // The room gave up waiting for us (10 s) but we're still stuck: ask for a second
+        // chance. The server grants a short wait, at most twice a minute per viewer.
+        else if (this.reportedStall && this.uid && !s.waiting.includes(this.uid) && now - this.lastStallReport > 5000) {
+          this.lastStallReport = now;
+          this.send(true);
         }
       } else {
         this.stallSince = 0;

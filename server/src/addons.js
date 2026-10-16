@@ -358,3 +358,47 @@ export async function streams(type, id, log, extraBases = []) {
   });
   return { streams: list, failedAddons: failed };
 }
+
+// ---------------------------------------------------------------- best source (server side)
+
+const QUALITY_RANK = { '4K': 1, '1080p': 3, '720p': 2 };
+
+/**
+ * Same ranking as the client's pickBest (client/src/format.ts): MULTI first (VF and VO
+ * in one file), then débrid-cached, then 1080p over 4K/720p, then most seeders. Used
+ * when the room starts something on its own (vote, next episode).
+ */
+export function pickBestStream(list) {
+  let best = null;
+  // Never a torrent the server's storage can't hold (MAX_TORRENT_GB).
+  list = list.filter((s) => !s.tooBig);
+  const score = (s) => [s.languages?.includes('MULTI') ? 1 : 0, s.cached ? 1 : 0, QUALITY_RANK[s.quality || ''] || 0, s.seeders ?? -1];
+  for (const s of list) {
+    if (!best) {
+      best = s;
+      continue;
+    }
+    const a = score(s);
+    const b = score(best);
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) {
+        if (a[i] > b[i]) best = s;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+/** Full stream object of the best source for a video (shared + these addons), or null. */
+export async function bestStream(type, id, log, extraBases = []) {
+  const { streams: list } = await streams(type, id, log, extraBases);
+  const best = pickBestStream(list);
+  return best ? lookupStream(best.key) : null;
+}
+
+/** Short public label of a source ("1080p · MULTI · ⚡ Débrid"), shown in the queue. */
+export function sourceLabel(stream) {
+  const d = describeStream(stream, '');
+  return [d.quality, ...d.languages, d.cached ? '⚡ Débrid' : null].filter(Boolean).join(' · ') || 'Source choisie';
+}
