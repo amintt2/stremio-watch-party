@@ -1,7 +1,7 @@
 // Pure helpers (no DOM): routes, progress, source ranking. Tested in format.test.ts.
 
 export interface Route {
-  name: 'home' | 'discover' | 'library' | 'history' | 'settings' | 'detail' | 'search' | 'player';
+  name: 'home' | 'discover' | 'library' | 'history' | 'settings' | 'detail' | 'search' | 'player' | 'notfound';
   params: Record<string, string>;
 }
 
@@ -22,12 +22,17 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'detail' && (parts[1] === 'movie' || parts[1] === 'series') && parts[2]) {
     return { name: 'detail', params: { ...params, type: parts[1], id: parts[2] } };
   }
+  if (!parts.length) return { name: 'home', params };
   const name = SIMPLE.find((n) => n === parts[0]);
-  return { name: name || 'home', params };
+  // Unknown page (old or mistyped link): the shell shows a "page introuvable" state.
+  return { name: name || 'notfound', params };
 }
 
 export function routeHref(name: Route['name'], params: Record<string, string | null | undefined> = {}): string {
-  const { type, id, ...rest } = params;
+  // type/id are path parts of a title page only; elsewhere (Discover, Bibliothèque,
+  // Recherche) "type" is an ordinary filter and must stay in the query.
+  const { type, id, ...others } = params;
+  const rest = name === 'detail' ? others : params;
   const path = name === 'detail' ? `detail/${type}/${encodeURIComponent(id || '')}` : name === 'home' ? '' : name;
   const query = new URLSearchParams(
     Object.entries(rest).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '')

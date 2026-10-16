@@ -35,6 +35,8 @@ export function toast(text: string) {
   if (!host) return;
   const el = h('div', { class: 'toast', role: 'status' }, text);
   host.append(el);
+  // Three at most on screen: the oldest go first.
+  while (host.children.length > 3) host.firstElementChild!.remove();
   setTimeout(() => el.classList.add('out'), 4500);
   setTimeout(() => el.remove(), 5000);
 }
