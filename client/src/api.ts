@@ -46,8 +46,12 @@ export interface ControlRequest {
   id: string;
   uid: string;
   name: string;
-  kind: 'play' | 'pause' | 'seek';
+  kind: 'play' | 'pause' | 'seek' | 'start';
   position: number | null;
+  /** Suggestion asked to start (kind "start"). */
+  itemId: string | null;
+  /** "une pause", "d’aller à 42:10", "de lancer « Dune »" */
+  label: string;
   /** server time (ms) */
   expires: number;
 }
@@ -69,8 +73,16 @@ export interface RoomState {
   members: Member[];
   // Social layer (see room.ts).
   ended?: boolean;
+  /** "host": only the host and co-pilotes control (default); "all": everyone. */
   control?: 'all' | 'host';
   host?: string | null;
+  copilots?: string[];
+  /** Website rooms: newcomers wait until a host/co-pilote lets them in. */
+  lobby?: boolean;
+  autoAdmit?: boolean;
+  pending?: { uid: string; name: string; avatar: string | null; since: number }[];
+  /** Muted for spamming. */
+  muted?: string[];
   queue?: QueueItem[];
   autostart?: { itemId: string; at: number } | null;
   autonext?: { at: number; subtitle: string } | null;

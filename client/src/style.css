@@ -2474,3 +2474,123 @@ input[type='range'] {
     justify-content: flex-end;
   }
 }
+
+/* room / social: roles, waiting room, moderation */
+
+.room-tag-copilot {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.room-member-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  flex: none;
+  max-width: 55%;
+}
+
+.room-member-tools .btn {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.room-kick:hover,
+.room-kick.armed {
+  color: var(--danger);
+}
+
+.room-kick.armed {
+  border-color: var(--danger);
+}
+
+.room-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.room-switch input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.room-card .room-avatar .avatar {
+  width: 30px;
+  height: 30px;
+}
+
+.room-gate {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(440px, calc(100% - 32px));
+  z-index: 75;
+}
+
+.room-gate[hidden] {
+  display: none;
+}
+
+.room-gate-kicked,
+.room-gate-refused {
+  inset: 0;
+  left: 0;
+  bottom: 0;
+  width: auto;
+  transform: none;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+  padding: 16px;
+}
+
+.room-gate-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
+  max-width: 440px;
+}
+
+.room-gate-card > div {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+
+.room-gate-kicked .room-gate-card,
+.room-gate-refused .room-gate-card {
+  border-color: var(--danger);
+}
+
+.room-gate-kicked .room-gate-card > .icon,
+.room-gate-refused .room-gate-card > .icon {
+  color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .room-gate {
+    bottom: calc(var(--tabbar-h) + 12px);
+  }
+  .room-member {
+    flex-wrap: wrap;
+  }
+  .room-member-tools {
+    max-width: none;
+    width: 100%;
+    justify-content: flex-start;
+    padding-left: 44px;
+  }
+}

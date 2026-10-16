@@ -19,12 +19,28 @@ export function isIdle(s: RoomState | null) {
   return !s?.media || !!s.ended;
 }
 
-export function canControl(s: RoomState | null, uid: string) {
-  return !s || s.control !== 'host' || s.host === uid;
+/** Host or co-pilote: answers requests and the waiting room. */
+export function isModerator(s: RoomState | null, uid: string) {
+  return !!s && (s.host === uid || !!s.copilots?.includes(uid));
 }
 
-export function canStart(s: RoomState | null, uid: string) {
-  return isIdle(s) || canControl(s, uid);
+/** Plays/pauses/seeks/starts directly (otherwise: requests and votes). */
+export function canControl(s: RoomState | null, uid: string) {
+  if (!s) return false;
+  return s.control === 'all' || isModerator(s, uid);
+}
+
+export const canStart = canControl;
+
+/** Same rule as the server: strict majority and at least 2 votes. */
+export function votesNeeded(n: number) {
+  return Math.max(2, majorityNeeded(n));
+}
+
+export function roleLabel(s: RoomState, uid: string) {
+  if (s.host === uid) return 'hôte';
+  if (s.copilots?.includes(uid)) return 'co-pilote';
+  return null;
 }
 
 export function memberStateLabel(m: Pick<Member, 'state'>) {

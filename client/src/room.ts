@@ -2,7 +2,8 @@
 // - a "Salle" button (top bar + player) opening the room sheet (views/queue.ts):
 //   control mode, members with their state, suggestions and votes;
 // - a dock of live cards visible everywhere: countdowns (vote, next episode), what is
-//   starting, requests for the host, votes to pause/skip;
+//   starting, requests and newcomers for the host/co-pilotes, votes to pause/skip;
+// - the waiting-room and "exclu" screens;
 // - this viewer's presence (watching / browsing) for the others;
 // - proposing a title (detail page) and the host-mode fallback of "Regarder ensemble".
 // Everything is decided by the server (server/src/rooms.js); this only shows and asks.
@@ -11,14 +12,12 @@ import { api, type Member, type RoomState, type User } from './api.ts';
 import type { PlayRequest } from './app.ts';
 import type { Connection } from './connection.ts';
 import { clear, h } from './dom.ts';
-import { canControl, canStart, majorityNeeded, presentVotes, secondsLeft } from './social.ts';
-import { formatTime } from './sync.ts';
-import { queuePanel, roomIcon } from './views/queue.ts';
+import { canControl, canStart, isModerator, presentVotes, secondsLeft, votesNeeded } from './social.ts';
+import { icon } from './ui.ts';
+import { memberAvatar, queuePanel, roomIcon } from './views/queue.ts';
 
 /** A suggestion: like PlayRequest, but the source is optional (best one at start). */
 export type ProposeRequest = Omit<PlayRequest, 'streamKey' | 'startAt'> & { streamKey?: string };
-
-const REQUEST_LABEL = { pause: 'une pause', play: 'de reprendre', seek: 'd’aller à' } as const;
 
 export class RoomSocial {
   /** Top bar button. */
@@ -30,6 +29,8 @@ export class RoomSocial {
 
   private state: RoomState | null = null;
   private readonly dock = h('div', { class: 'room-dock', 'aria-live': 'polite' });
+  /** Full-screen notice: waiting room, kicked, refused. */
+  private readonly gate = h('div', { class: 'room-gate', hidden: true, role: 'alertdialog', 'aria-live': 'assertive' });
   private readonly sheet: HTMLElement;
   private readonly scrim: HTMLElement;
   private readonly panel: ReturnType<typeof queuePanel>;
@@ -60,12 +61,13 @@ export class RoomSocial {
     this.panel = queuePanel({
       me,
       send: (msg) => conn.send(msg),
-      now: () => conn.clock.now(),
       close: () => this.toggle(false),
     });
     this.scrim = h('div', { class: 'room-scrim', hidden: true, onclick: () => this.toggle(false) });
     this.sheet = h('aside', { class: 'room-sheet', role: 'dialog', 'aria-label': 'Salle', 'aria-modal': 'false' }, this.panel.el);
-    this.el = h('div', { class: 'room-layer' }, this.dock, this.scrim, this.sheet);
+    this.el = h('div', { class: 'room-layer' }, this.dock, this.scrim, this.sheet, this.gate);
+    conn.onLobby = (info) => this.showGate('lobby', info.host);
+    conn.onKicked = (reason) => this.showGate(reason === 'refused' ? 'refused' : 'kicked');
 
     document.addEventListener('keydown', (e) => {
       if (e.code === 'Escape' && this.open) {
@@ -86,7 +88,29 @@ export class RoomSocial {
     if (open) this.panel.render(this.state);
   }
 
+  /** Waiting room / kicked / refused screen (the app stays usable under "lobby"). */
+  private showGate(kind: 'lobby' | 'kicked' | 'refused', host: string | null = null) {
+    const text = {
+      lobby: ['Salle d’attente', `${host || 'L’hôte'} doit te faire entrer. Tu peux parcourir le catalogue en attendant.`],
+      kicked: ['Tu as été exclu de la salle', 'L’hôte t’a retiré de cette salle. Tu peux en ouvrir une autre depuis Paramètres.'],
+      refused: ['Entrée refusée', 'L’hôte n’a pas accepté ta demande. Réessaie plus tard.'],
+    }[kind];
+    this.gate.hidden = false;
+    this.gate.className = `room-gate room-gate-${kind}`;
+    clear(
+      this.gate,
+      h(
+        'div',
+        { class: 'room-gate-card' },
+        kind === 'lobby' ? h('span', { class: 'spinner' }) : icon('close'),
+        h('div', {}, h('strong', {}, text[0]), h('p', { class: 'muted' }, text[1])),
+        kind === 'lobby' ? h('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: () => (this.gate.hidden = true) }, 'Masquer') : null
+      )
+    );
+  }
+
   update(s: RoomState) {
+    if (!this.state && this.gate.classList.contains('room-gate-lobby')) this.gate.hidden = true; // let in
     this.state = s;
     const n = s.queue?.length || 0;
     for (const b of [this.topButton, this.stageButton]) {
@@ -105,9 +129,9 @@ export class RoomSocial {
     return canStart(this.state, this.me.uid);
   }
 
-  /** Host crown (host mode only) and state, for the avatar chips of the shell. */
+  /** Host crown on the avatar chips of the shell. */
   memberInfo(m: Member) {
-    const host = this.state?.control === 'host' && this.state.host === m.uid;
+    const host = this.state?.host === m.uid;
     return { host, cls: host ? ' host' : '' };
   }
 
@@ -172,7 +196,9 @@ export class RoomSocial {
               h('strong', {}, `« ${item.title}${item.subtitle ? ` · ${item.subtitle.split(' · ')[0]}` : ''} »`),
               h('span', { class: 'room-card-sub' }, 'La majorité a voté · démarre dans ', h('b', { 'data-at': s.autostart.at }, `${secondsLeft(s.autostart.at, now)} s`))
             ),
-            h('button', { class: 'btn btn-sm', type: 'button', onclick: () => this.conn.send({ t: 'cancel', what: 'autostart' }) }, 'Annuler')
+            canControl(s, me)
+              ? h('button', { class: 'btn btn-sm', type: 'button', onclick: () => this.conn.send({ t: 'cancel', what: 'autostart' }) }, 'Annuler')
+              : null
           )
         );
       }
@@ -195,9 +221,28 @@ export class RoomSocial {
       );
     }
 
+    const moderator = isModerator(s, me);
+    if (moderator) {
+      for (const p of s.pending || []) {
+        cards.push(
+          this.card(
+            'room-card-request',
+            memberAvatar(p, false),
+            h('span', { class: 'room-card-text' }, h('strong', {}, `${p.name} attend pour entrer`), h('span', { class: 'room-card-sub' }, 'Salle d’attente')),
+            h(
+              'span',
+              { class: 'room-card-actions' },
+              h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => this.conn.send({ t: 'admit', uid: p.uid }) }, 'Faire entrer'),
+              h('button', { class: 'btn btn-sm', type: 'button', onclick: () => this.conn.send({ t: 'refuse', uid: p.uid }) }, 'Refuser')
+            )
+          )
+        );
+      }
+    }
+
     for (const r of s.requests || []) {
-      const what = `${REQUEST_LABEL[r.kind]}${r.kind === 'seek' && r.position !== null ? ` ${formatTime(r.position)}` : ''}`;
-      if (s.host === me) {
+      const what = r.label;
+      if (moderator) {
         cards.push(
           this.card(
             'room-card-request',
@@ -219,7 +264,7 @@ export class RoomSocial {
         cards.push(
           this.card(
             'room-card-info',
-            h('span', { class: 'room-card-text' }, h('strong', {}, `Tu as demandé ${what}`), h('span', { class: 'room-card-sub' }, 'En attente de l’hôte · ', h('b', { 'data-at': r.expires }, `${secondsLeft(r.expires, now)} s`))),
+            h('span', { class: 'room-card-text' }, h('strong', {}, `Tu as demandé ${what}`), h('span', { class: 'room-card-sub' }, 'En attente de l’hôte ou d’un co-pilote · ', h('b', { 'data-at': r.expires }, `${secondsLeft(r.expires, now)} s`))),
             h('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: () => this.conn.send({ t: 'cancelRequest', id: r.id }) }, 'Retirer')
           )
         );
@@ -236,7 +281,7 @@ export class RoomSocial {
             'span',
             { class: 'room-card-text' },
             h('strong', {}, v.kind === 'pause' ? 'Vote : mettre en pause' : 'Vote : passer à la suite'),
-            h('span', { class: 'room-card-sub' }, `${count}/${majorityNeeded(s.members.length)} votes nécessaires`)
+            h('span', { class: 'room-card-sub' }, `${count}/${votesNeeded(s.members.length)} votes nécessaires`)
           ),
           h(
             'button',

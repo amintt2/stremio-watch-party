@@ -92,7 +92,8 @@ export async function guestSignIn(name: string, room?: string): Promise<Identity
   localStorageSet('wp-name', name);
   const res = await api<{ session: string; user: User; room: RoomInfo }>('/api/dev-session', {
     method: 'POST',
-    body: JSON.stringify({ name, room: room || 'test' }),
+    // ?lobby=1: local test of the website's waiting room.
+    body: JSON.stringify({ name, room: room || 'test', lobby: new URLSearchParams(location.search).get('lobby') === '1' }),
   });
   setSession(res.session);
   return { user: res.user, mode: 'guest', room: res.room };

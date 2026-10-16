@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { RoomState } from './api.ts';
-import { canControl, canStart, majorityNeeded, memberStateLabel, parseTime, presentVotes, secondsLeft } from './social.ts';
+import { canControl, canStart, isModerator, majorityNeeded, votesNeeded, memberStateLabel, parseTime, presentVotes, secondsLeft } from './social.ts';
 
 const state = (o: Partial<RoomState>): RoomState => ({
   rev: 1,
@@ -30,9 +30,18 @@ test('control rights mirror the server', () => {
   const media = { sid: 's' } as RoomState['media'];
   assert.equal(canControl(state({ control: 'all' }), 'b'), true);
   assert.equal(canControl(state({ control: 'host', host: 'a' }), 'b'), false);
-  assert.equal(canStart(state({ control: 'host', host: 'a', media }), 'b'), false);
-  assert.equal(canStart(state({ control: 'host', host: 'a', media, ended: true }), 'b'), true);
-  assert.equal(canStart(state({ control: 'host', host: 'a' }), 'b'), true, 'nothing playing');
+  assert.equal(canControl(state({ control: 'host', host: 'a', copilots: ['b'] }), 'b'), true, 'co-pilote');
+  assert.equal(canControl(state({ control: 'host', host: 'a' }), 'a'), true);
+  assert.equal(canStart(state({ control: 'host', host: 'a', media, ended: true }), 'b'), false, 'idle gives no remote');
+  assert.equal(isModerator(state({ host: 'a', copilots: ['c'] }), 'c'), true);
+  assert.equal(canControl(null, 'a'), false);
+});
+
+test('votes: strict majority, at least 2', () => {
+  assert.equal(votesNeeded(1), 2);
+  assert.equal(votesNeeded(2), 2);
+  assert.equal(votesNeeded(3), 2);
+  assert.equal(votesNeeded(4), 3);
 });
 
 test('labels and times', () => {

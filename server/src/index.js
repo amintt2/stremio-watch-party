@@ -217,7 +217,7 @@ app.post('/api/token', async (request, reply) => {
 
 app.post('/api/dev-session', async (request, reply) => {
   if (!config.allowBrowserMode) return reply.code(404).send({ error: 'Not found' });
-  const { name, room } = request.body || {};
+  const { name, room, lobby } = request.body || {};
   const cleanName = String(name || '').trim().slice(0, 32) || 'Invité';
   const cleanRoom = String(room || 'test').replace(/[^\w-]/g, '').slice(0, 64) || 'test';
   // Local test mode only: the account is keyed by the name, flagged as a guest.
@@ -225,7 +225,8 @@ app.post('/api/dev-session', async (request, reply) => {
   const user = { uid: `guest:${slug}`, name: cleanName, avatar: null, guest: true };
   store.upsertUser(user);
   return {
-    session: issueSession({ ...user, room: `dev:${cleanRoom}` }),
+    // lobby: test the website's waiting room locally (?lobby=1).
+    session: issueSession({ ...user, room: `${lobby === true ? 'devlobby' : 'dev'}:${cleanRoom}` }),
     user,
     room: { code: cleanRoom, personal: false },
   };
@@ -492,7 +493,8 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
   // Website rooms have a waiting room; the owner of a personal room always gets in.
   const web = session.room.startsWith('web:');
   const code = web ? session.room.slice(4) : null;
-  const room = rooms.get(session.room, { lobby: web, owner: web && personalRoomCode(session.uid) === code ? session.uid : null });
+  const lobby = web || session.room.startsWith('devlobby:');
+  const room = rooms.get(session.room, { lobby, owner: web && personalRoomCode(session.uid) === code ? session.uid : null });
   if (room.status(session.uid) === 'blocked') {
     ws.send(JSON.stringify({ t: 'kicked', reason: 'kicked' }));
     ws.close(4003, 'blocked');

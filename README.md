@@ -29,6 +29,8 @@ directement sur le site, dans un navigateur.
     salon**. Tu peux aussi cliquer une source précise. Les badges **MULTI**, **VF** et
     **VOSTFR** sont lus dans le nom de la release.
   - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
+  - **Proposer** ajoute le titre à la file d'attente de la salle (votes). Si tu n'es ni
+    hôte ni co-pilote, « Regarder ensemble » propose au lieu de lancer.
   - **Ajouter à la bibliothèque**.
 - **Bibliothèque** : tes titres, filtrables (films/séries) et triables (récents, A → Z).
 - **Historique** : ce que tu as regardé, du plus récent au plus ancien, avec ta
@@ -39,6 +41,56 @@ directement sur le site, dans un navigateur.
 - **Paramètres** : thème (sombre, clair, système), qualité par défaut, code de la salle et
   lien d'invitation (hors Discord), **tes propres addons de sources** (ex. ton Torrentio
   avec ta clé débrid : l'URL reste sur le serveur et n'est jamais réaffichée en entier).
+
+## Regarder ensemble : propositions, votes, hôte
+
+Le bouton **Salle** (barre du haut, et en haut du lecteur) ouvre un panneau (à droite sur
+ordinateur, en bas sur téléphone) avec la vidéo en cours, le contrôle, la file d'attente et
+les personnes présentes (👑 hôte, co-pilotes, et l'état de chacun : *en train de regarder*,
+*en chargement*, *parcourt le catalogue*).
+
+- **Personne n'est indispensable.** Celui qui a lancé l'Activité ou le film peut partir :
+  le film continue pour les autres (s'il était le seul à charger, la salle ne l'attend
+  plus). S'il revient, il retrouve le film à la bonne position. Si tout le monde part, le
+  film est mis en pause et reprend quand quelqu'un revient (la salle est gardée 10 min).
+- **Salle protégée par défaut.** Seuls l'**hôte** (le premier arrivé) et les
+  **co-pilotes** qu'il nomme mettent en pause, avancent, arrêtent ou lancent un titre. Les
+  autres **demandent** (une pause, de reprendre, d'aller à 42:10, de lancer une
+  proposition) : l'hôte ou un co-pilote accepte ou refuse, la demande expire au bout de
+  20 s. Un clic sur pause ou sur la barre de progression devient automatiquement une
+  demande. L'hôte peut passer en **Tout le monde contrôle**.
+- **Votes** : sans l'hôte, la salle décide à la **majorité des présents, 2 votes minimum** :
+  *Voter pause*, *Voter pour passer* (épisode suivant, sinon la proposition en tête).
+- **Propositions** : sur une fiche, **Proposer** ajoute le titre ou l'épisode à la file
+  d'attente (avec la source choisie si tu as mis « Clic = proposer » au-dessus des
+  sources ; sinon le serveur prend la meilleure au lancement, avec les addons de celui qui
+  a proposé : MULTI, puis débrid, puis 1080p, puis le plus de sources). Chacun vote 👍
+  (une fois, on peut retirer son vote) ; la file est triée par votes puis par ancienneté.
+  **Lancer quand la majorité est d'accord** : quand rien ne joue (ou que la vidéo est
+  finie), la proposition en tête démarre après un compte à rebours de 5 s si plus de la
+  moitié de la salle a voté pour ; l'hôte ou un co-pilote peut annuler.
+- **Épisode suivant** : à la fin d'un épisode, « Épisode suivant dans 10 s » pour tout le
+  monde, avec Annuler pour ceux qui contrôlent.
+- **Qui a fait quoi** : un petit message pour les autres à chaque action (« Bob a mis en
+  pause », « Zoé a avancé à 42:10 », « Amin a lancé « Série · S1E04 » », « La salle a
+  voté pour … »).
+- **Si l'hôte part**, il garde sa place 15 s (le temps d'une reconnexion), puis la couronne
+  passe au co-pilote présent depuis le plus longtemps, sinon à la personne présente depuis
+  le plus longtemps ; l'ancien hôte revient comme co-pilote. L'hôte peut aussi passer la
+  couronne lui-même.
+- **Contre les trolls** :
+  - sur le **site**, les nouveaux venus attendent en **salle d'attente** jusqu'à ce que
+    l'hôte ou un co-pilote les fasse entrer (option « Accepter tout le monde
+    automatiquement », désactivée par défaut). Le propriétaire d'une salle perso entre
+    toujours et reprend la couronne. Dans **Discord**, les gens viennent du salon vocal :
+    pas de salle d'attente, mais ils entrent sans le contrôle ;
+  - l'hôte peut **exclure** quelqu'un (il ne peut plus revenir dans cette salle), nommer
+    ou retirer des co-pilotes ;
+  - chaque action est limitée par personne (ex. 3 demandes / 10 s) : au-delà, la personne
+    est ignorée 30 s et l'hôte est prévenu. Quelqu'un qui bloque la lecture plus de 4 fois
+    par minute (mauvaise connexion ou exprès) ne fait plus attendre la salle ;
+  - tout est vérifié par le serveur (`server/src/rooms.js`, `roomSocket.js`) : l'interface
+    ne fait qu'afficher ce qui est permis.
 
 ## Comment ça marche
 
@@ -223,7 +275,8 @@ watch.mciut.fr {
 **Tester sans Discord** (mode test local uniquement, jamais en production) :
 `ALLOW_BROWSER_MODE=1 npm start`, puis ouvre `http://localhost:3001/?room=test&name=Alice`
 dans un onglet et `?room=test&name=Bob` dans un autre. Ce sont des comptes **invités**
-(marqués comme tels dans la base), identifiés par leur pseudo.
+(marqués comme tels dans la base), identifiés par leur pseudo. Ajoute `&lobby=1` (dans
+tous les onglets) pour tester la salle d'attente du site.
 
 **Développement** : `npm run dev` (Vite sur :5173 avec rechargement, backend sur :3001).
 Pour l'ouvrir dans Discord pendant le dev, mappe `/` vers un tunnel HTTPS qui pointe sur
@@ -283,7 +336,8 @@ démarrage.
   règle « une IP par compte » de ces services.
 - Le salon (`room`) est l'instance d'activité Discord : tous ceux qui ont rejoint la même
   activité regardent ensemble. Sur le site, c'est la salle perso de quelqu'un (ou celle
-  qu'on a rejointe avec un code). Tout le monde peut piloter la lecture.
+  qu'on a rejointe avec un code). L'hôte et les co-pilotes pilotent la lecture (voir
+  « Regarder ensemble »).
 - « Regarder ensemble » choisit une source tout seul ; si elle ne convient pas, choisis-en
   une autre dans le panneau. Pour reprendre, il faut relancer une source (les liens des
   addons expirent), la position, elle, est gardée.
@@ -292,7 +346,8 @@ démarrage.
 
 ```
 server/src/index.js    routes HTTP + WebSocket, relais HLS, proxy d'images
-server/src/rooms.js    état de lecture autoritaire (testé)
+server/src/rooms.js    état de lecture autoritaire + hôte, demandes, votes, file, salle d'attente (testé)
+server/src/roomSocket.js  messages de la salle : validation, limites (testé)
 server/src/media.js    torrent/débrid → session, profils de qualité, réécriture des playlists (testé)
 server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources, langues) (testé)
 server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)
@@ -300,6 +355,9 @@ server/src/db.js       SQLite : comptes, progression, historique, bibliothèque,
 server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
 client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
 client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres
+client/src/room.ts     bouton Salle, cartes en direct (comptes à rebours, demandes), présence
+client/src/views/queue.ts  panneau Salle : contrôle, file d'attente, votes, membres
+client/src/social.ts   règles côté client (droits, votes) (testé)
 client/src/streams.ts  panneau des sources (filtres, tri, meilleure source, badges MULTI/VF/VOSTFR)
 client/src/subtitles.ts sous-titres externes : choix par spectateur, décalage, affichage
 client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto

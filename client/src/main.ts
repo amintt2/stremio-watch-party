@@ -175,7 +175,7 @@ function start({ user: me, mode, room }: Identity) {
       if (!social.canStart()) {
         // Host mode while something plays: suggest it to the room instead.
         const res = await social.propose(req);
-        toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'L’hôte contrôle la lecture : proposé à la salle');
+        toast(res.duplicate ? 'Déjà proposé : ton vote est ajouté' : 'L’hôte et les co-pilotes lancent : proposé à la salle');
         return;
       }
       await api('/api/room/play', {
