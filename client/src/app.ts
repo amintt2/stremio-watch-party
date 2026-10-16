@@ -1,0 +1,30 @@
+import type { MetaType, RoomInfo, RoomState, User } from './api.ts';
+import type { Player } from './player.ts';
+
+export type Mode = 'discord' | 'web' | 'guest';
+
+export interface PlayRequest {
+  streamKey: string;
+  meta: { id: string; type: MetaType; name: string; poster: string | null };
+  videoId: string;
+  /** "S1E02 · Pilot" for an episode, empty for a movie. */
+  subtitle: string;
+  startAt?: number;
+}
+
+/** What the shell gives each view. */
+export interface App {
+  me: User;
+  mode: Mode;
+  room: RoomInfo | null;
+  player: Player;
+  state(): RoomState | null;
+  navigate(href: string, replace?: boolean): void;
+  /** Starts a source for the whole room. */
+  play(req: PlayRequest): Promise<void>;
+}
+
+export interface View {
+  el: HTMLElement;
+  dispose?: () => void;
+}

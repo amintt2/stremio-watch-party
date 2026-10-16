@@ -12,6 +12,7 @@ export interface RoomMedia {
   poster: string | null;
   duration: number | null;
   startedBy: string;
+  meta: { id: string; type: 'movie' | 'series'; videoId: string } | null;
   source: { codec: string; width: number; height: number; hdr: boolean; dolbyVision: boolean };
   qualities: Quality[];
 }
@@ -38,21 +39,80 @@ export interface User {
   uid: string;
   name: string;
   avatar: string | null;
+  guest?: boolean;
 }
+
+/** Room outside Discord: personal room code, or one joined with a code/link. */
+export interface RoomInfo {
+  code: string;
+  personal: boolean;
+}
+
+export type MetaType = 'movie' | 'series';
 
 export interface SearchResult {
   id: string;
-  type: 'movie' | 'series';
+  type: MetaType;
   name: string;
   poster: string | null;
   year: string | null;
+  rating?: string | null;
+}
+
+export interface Video {
+  id: string;
+  season: number;
+  episode: number;
+  title: string;
+  released: string | null;
+  thumbnail: string | null;
+  overview: string | null;
 }
 
 export interface Meta extends SearchResult {
   background: string | null;
+  logo: string | null;
   description: string;
+  releaseInfo: string | null;
   runtime: string | null;
-  videos: { id: string; season: number; episode: number; title: string; released: string | null }[];
+  genres: string[];
+  cast: string[];
+  director: string[];
+  videos: Video[];
+}
+
+export interface CatalogDef {
+  type: MetaType;
+  id: string;
+  name: string;
+  genres: string[];
+  genreRequired: boolean;
+  skip: boolean;
+  home: boolean;
+}
+
+export interface Progress {
+  videoId: string;
+  metaId: string;
+  type: MetaType;
+  name: string;
+  poster: string | null;
+  episode: string | null;
+  position: number;
+  duration: number | null;
+  watched: boolean;
+  updatedAt: number;
+}
+
+export interface LibraryItem extends SearchResult {
+  addedAt: number;
+}
+
+export interface UserAddon {
+  id: string;
+  name: string;
+  url: string;
+  addedAt: number;
 }
 
 export interface StreamOption {
@@ -85,7 +145,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (sessionToken) headers.set('Authorization', `Bearer ${sessionToken}`);
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(path, { ...init, headers, credentials: 'same-origin' });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Erreur ${res.status}`);
   return body as T;

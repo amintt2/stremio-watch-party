@@ -6,7 +6,8 @@ type Outgoing =
   | { t: 'pause' }
   | { t: 'seek'; position: number }
   | { t: 'buffering'; value: boolean }
-  | { t: 'quality'; value: string };
+  | { t: 'quality'; value: string }
+  | { t: 'progress'; sid: string; position: number };
 
 /** Sync socket with automatic reconnect and clock estimation. */
 export class Connection {

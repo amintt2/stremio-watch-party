@@ -1,9 +1,18 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
-import { api, setSession, type User } from './api.ts';
+import { api, setSession, type RoomInfo, type User } from './api.ts';
+import type { Mode } from './app.ts';
+import { h } from './dom.ts';
 
 export interface Identity {
   user: User;
-  mode: 'discord' | 'browser';
+  mode: Mode;
+  room: RoomInfo | null;
+}
+
+interface ServerConfig {
+  clientId: string | null;
+  browserMode: boolean;
+  webLogin: boolean;
 }
 
 /** Discord passes frame_id (among others) to the Activity URL. */
@@ -11,8 +20,15 @@ export function insideDiscord() {
   return new URLSearchParams(location.search).has('frame_id');
 }
 
+/** Thrown outside Discord when nobody is logged in: the app shows the login screen. */
+export class LoginRequired extends Error {
+  constructor(readonly config: ServerConfig) {
+    super('Connexion requise');
+  }
+}
+
 export async function signIn(): Promise<Identity> {
-  const cfg = await api<{ clientId: string | null; browserMode: boolean }>('/api/config');
+  const cfg = await api<ServerConfig>('/api/config');
 
   if (insideDiscord()) {
     if (!cfg.clientId) throw new Error('DISCORD_CLIENT_ID manquant côté serveur');
@@ -31,25 +47,79 @@ export async function signIn(): Promise<Identity> {
     });
     await sdk.commands.authenticate({ access_token: res.access_token });
     setSession(res.session);
-    return { user: res.user, mode: 'discord' };
+    return { user: res.user, mode: 'discord', room: null };
   }
 
-  if (!cfg.browserMode) {
-    throw new Error('Ouvre cette app depuis une Activité Discord (le mode navigateur est désactivé).');
-  }
-  // Browser test mode: ?room=xyz&name=Bob
   const params = new URLSearchParams(location.search);
-  let name = params.get('name') || localStorageGet('wp-name');
-  if (!name) {
-    name = prompt('Ton pseudo ?') || 'Invité';
-    localStorageSet('wp-name', name);
+  const room = params.get('room') || undefined;
+
+  // Website: the httpOnly cookie from the Discord login identifies the account.
+  try {
+    const res = await api<{ session: string; user: User; room: RoomInfo }>('/api/session', {
+      method: 'POST',
+      body: JSON.stringify({ room }),
+    });
+    setSession(res.session);
+    return { user: res.user, mode: 'web', room: res.room };
+  } catch (err) {
+    if (!/connecté|401/i.test((err as Error).message)) throw err;
   }
-  const res = await api<{ session: string; user: User }>('/api/dev-session', {
+
+  // Local test mode: ?room=xyz&name=Bob, or the guest form.
+  const name = params.get('name') || (cfg.browserMode ? localStorageGet('wp-name') : null);
+  if (cfg.browserMode && name) return guestSignIn(name, room);
+  throw new LoginRequired(cfg);
+}
+
+export async function guestSignIn(name: string, room?: string): Promise<Identity> {
+  localStorageSet('wp-name', name);
+  const res = await api<{ session: string; user: User; room: RoomInfo }>('/api/dev-session', {
     method: 'POST',
-    body: JSON.stringify({ name, room: params.get('room') || 'test' }),
+    body: JSON.stringify({ name, room: room || 'test' }),
   });
   setSession(res.session);
-  return { user: res.user, mode: 'browser' };
+  return { user: res.user, mode: 'guest', room: res.room };
+}
+
+/** Login screen outside Discord: Discord OAuth, plus a guest form in local test mode. */
+export function loginScreen(cfg: ServerConfig, onGuest: (id: Identity) => void) {
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room');
+  const failed = params.get('login') === 'failed';
+  const loginHref = `/api/auth/discord/login${room ? `?room=${encodeURIComponent(room)}` : ''}`;
+
+  const nameInput = h('input', { class: 'input input-lg', placeholder: 'Ton pseudo', 'aria-label': 'Pseudo', maxlength: 32, required: true });
+  const guest = cfg.browserMode
+    ? h(
+        'form',
+        {
+          class: 'login-guest',
+          onsubmit: async (e: Event) => {
+            e.preventDefault();
+            if (!nameInput.value.trim()) return;
+            onGuest(await guestSignIn(nameInput.value.trim(), room || undefined));
+          },
+        },
+        h('p', { class: 'faint small' }, 'Mode test local (invité, sans Discord)'),
+        h('div', { class: 'inline-form' }, nameInput, h('button', { class: 'btn btn-secondary', type: 'submit' }, 'Entrer'))
+      )
+    : null;
+
+  return h(
+    'div',
+    { class: 'login' },
+    h(
+      'div',
+      { class: 'login-card' },
+      h('div', { class: 'brand brand-lg' }, h('span', { class: 'brand-mark' }, 'W'), h('span', {}, 'Watch Party')),
+      h('p', { class: 'muted' }, room ? 'Un ami t’invite à regarder ensemble. Connecte-toi pour rejoindre sa salle.' : 'Regarde des films et des séries avec tes amis, synchronisés.'),
+      failed ? h('p', { class: 'auth-error' }, 'La connexion a échoué, réessaie.') : null,
+      cfg.webLogin
+        ? h('a', { class: 'btn btn-primary btn-lg btn-block', href: loginHref }, 'Se connecter avec Discord')
+        : h('p', { class: 'muted small' }, 'Connexion Discord non configurée sur le serveur.'),
+      guest
+    )
+  );
 }
 
 export function localStorageGet(key: string) {
