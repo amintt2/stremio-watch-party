@@ -11,12 +11,27 @@ export function insideDiscord() {
   return new URLSearchParams(location.search).has('frame_id');
 }
 
+let discordSdk: DiscordSDK | null = null;
+let publicUrl = location.origin;
+
+/**
+ * Opens a page outside the app. Inside the Discord iframe plain links are blocked,
+ * so they go through the SDK (Discord asks the user to confirm).
+ */
+export function openExternal(url: string) {
+  const absolute = new URL(url, publicUrl).toString();
+  if (discordSdk) discordSdk.commands.openExternalLink({ url: absolute }).catch(() => {});
+  else window.open(absolute, '_blank', 'noopener');
+}
+
 export async function signIn(): Promise<Identity> {
-  const cfg = await api<{ clientId: string | null; browserMode: boolean }>('/api/config');
+  const cfg = await api<{ clientId: string | null; browserMode: boolean; publicUrl: string }>('/api/config');
+  if (cfg.publicUrl) publicUrl = cfg.publicUrl;
 
   if (insideDiscord()) {
     if (!cfg.clientId) throw new Error('DISCORD_CLIENT_ID manquant côté serveur');
     const sdk = new DiscordSDK(cfg.clientId);
+    discordSdk = sdk;
     await sdk.ready();
     const { code } = await sdk.commands.authorize({
       client_id: cfg.clientId,

@@ -1,6 +1,6 @@
 import './style.css';
 import { api, img, type RoomState, type User } from './api.ts';
-import { signIn } from './auth.ts';
+import { openExternal, signIn } from './auth.ts';
 import { Browser } from './browse.ts';
 import { Connection } from './connection.ts';
 import { clear, h, toast } from './dom.ts';
@@ -36,6 +36,11 @@ function start(me: User) {
   const browseBtn = h('button', { class: 'btn btn-sm', type: 'button' }, 'Choisir un film');
   const status = h('span', { class: 'conn-dot', title: 'Connexion' });
   const topbar = h('header', { class: 'topbar' }, h('span', { class: 'logo' }, 'Watch Party'), status, title, members, browseBtn);
+  const legalLink = (label: string, href: string) =>
+    h('a', { href, onclick: (e: Event) => (e.preventDefault(), openExternal(href)) }, label);
+  browser.el.append(
+    h('footer', { class: 'legal' }, legalLink('Conditions d’utilisation', '/conditions'), ' · ', legalLink('Confidentialité', '/confidentialite'))
+  );
 
   const playBtn = h('button', { class: 'btn btn-icon', type: 'button', 'aria-label': 'Lecture / pause' }, '▶');
   const seek = h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, step: 1, 'aria-label': 'Position' });
