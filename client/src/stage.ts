@@ -1,7 +1,7 @@
 // The player stage: full-screen player and mini-player, with its controls. Play,
 // pause and seek go to the room (everyone follows); volume, quality, audio track,
 // subtitles and everything else here is per viewer.
-import { img, type RoomState, type User } from './api.ts';
+import { api, img, type RoomState, type User } from './api.ts';
 import { Volume } from './audio.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import type { Connection } from './connection.ts';
@@ -27,7 +27,7 @@ import {
   type TapZone,
 } from './controls.ts';
 import { clear, h, toast } from './dom.ts';
-import { HEALTH_LABEL, lowerQuality, type Health } from './health.ts';
+import { HEALTH_LABEL, lowerQuality, sourceDetail, sourceProblem, type Health, type SourceHealth } from './health.ts';
 import { roomPlayback, type Playback } from './playback.ts';
 import type { Player } from './player.ts';
 import { ExternalSubtitles } from './subtitles.ts';
@@ -821,6 +821,25 @@ export function createStage(host: StageHost) {
   let dismissed = '';
   let noticeKey = '';
   let health: Health | null = null;
+  // The server's view of a torrent source (peers, speed vs the video's bitrate).
+  let source: SourceHealth | null = null;
+  let sourceSince = 0;
+  const SOURCE_NOTICE_MS = 4000;
+  let sourceSid: string | null = null;
+  async function pollSource() {
+    const sid = state()?.media?.sid || null;
+    if (sid !== sourceSid) source = null;
+    sourceSid = sid;
+    if (!sid || source?.kind === 'http' || source?.level === 'done') return;
+    try {
+      const next = await api<SourceHealth>(`/api/media/${encodeURIComponent(sid)}/health`);
+      if (state()?.media?.sid === sid) source = next;
+    } catch {
+      /* the next poll will tell */
+    }
+  }
+  setInterval(pollSource, 10_000);
+
   function renderHealth() {
     const s = state();
     const now = Date.now();
@@ -829,7 +848,13 @@ export function createStage(host: StageHost) {
     healthBtn.dataset.level = health || 'idle';
     const ahead = player.bufferAhead();
     const ratio = player.downloadRatio;
-    const detail = `Tampon : ${Math.round(ahead)} s${ratio !== null ? ` · téléchargement ${ratio.toFixed(1).replace('.', ',')}× plus rapide que la lecture` : ''}`;
+    const detail = [
+      `Tampon : ${Math.round(ahead)} s`,
+      ratio !== null ? `téléchargement ${ratio.toFixed(1).replace('.', ',')}× plus rapide que la lecture` : '',
+      sourceDetail(source),
+    ]
+      .filter(Boolean)
+      .join(' · ');
     healthBtn.title = health ? `${HEALTH_LABEL[health]} · ${detail}` : 'Connexion : mesure en cours';
     healthBtn.setAttribute('aria-label', healthBtn.title);
     healthBtn.hidden = !active;
@@ -841,7 +866,20 @@ export function createStage(host: StageHost) {
     let content: (Node | string | null)[] = [];
     const lower = lowerQuality(player.ladder, player.quality);
     const slowKey = `${s?.media?.sid}:${player.quality}`;
-    if (poorSince && now - poorSince > POOR_NOTICE_MS && dismissed !== slowKey) {
+    // Stuck: loading, catching up, or the room waiting for someone, while it should play.
+    const stuck = !!s?.media && !player.error && (s.waiting.length > 0 || player.catchingUp || (s.running && video.readyState < 3));
+    const problem = sourceProblem(source, health, stuck);
+    if (problem) sourceSince ||= now;
+    else sourceSince = 0;
+    if (problem && now - sourceSince > SOURCE_NOTICE_MS && dismissed !== `src:${slowKey}`) {
+      // The server can't get the file fast enough: a lower quality won't help.
+      key = `slow-source:${problem}`;
+      content = [
+        h('span', { class: 'notice-dot' }),
+        problem,
+        h('button', { class: 'btn btn-ghost btn-icon btn-icon-sm on-media', type: 'button', 'aria-label': 'Masquer', onclick: () => ((dismissed = `src:${slowKey}`), renderHealth()) }, icon('close', 'icon icon-sm')),
+      ];
+    } else if (poorSince && now - poorSince > POOR_NOTICE_MS && dismissed !== slowKey) {
       // Not on Auto (which lowers the quality by itself): offer the next quality down.
       const manual = player.preference !== 'auto' && lower;
       key = `slow:${slowKey}:${manual ? lower : ''}`;

@@ -71,3 +71,40 @@ export function catchUpTarget(expected: number, ranges: [number, number][], late
   const lead = Math.min(MAX_LEAD_S, Math.max(1, latencyS));
   return { position: expected + lead, lead };
 }
+
+/** What the server reports about a torrent source (GET /api/media/:sid/health). */
+export interface SourceHealth {
+  kind: 'torrent' | 'http';
+  level?: 'ok' | 'slow' | 'searching' | 'stalled' | 'done' | 'unknown';
+  peers?: number;
+  downloadSpeed?: number;
+}
+
+/** 3 100 000 → "3,1 Mo/s", 52 000 → "52 Ko/s". */
+export function speedLabel(bytesPerS: number) {
+  if (bytesPerS < 1e6) return `${Math.round(bytesPerS / 1e3)} Ko/s`;
+  return `${(bytesPerS / 1e6).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo/s`;
+}
+
+/** "Torrent : 12 pairs · 3,1 Mo/s" for the health details. */
+export function sourceDetail(s: SourceHealth | null) {
+  if (!s || s.kind !== 'torrent' || !s.level || s.level === 'unknown') return '';
+  if (s.level === 'done') return 'Torrent : fichier complet sur le serveur';
+  const peers = s.peers ?? 0;
+  return `Torrent : ${peers} pair${peers > 1 ? 's' : ''} · ${speedLabel(s.downloadSpeed ?? 0)}`;
+}
+
+/**
+ * When the server itself can't get the file fast enough, lowering this viewer's quality
+ * won't help: say so (it hits everyone) instead of blaming the viewer's connection.
+ * Only once this viewer is actually suffering: thin buffer, or stuck (loading, catching
+ * up, the room waiting), when the buffer meter itself has nothing to show.
+ */
+export function sourceProblem(s: SourceHealth | null, health: Health | null, stuck = false) {
+  if (!s || s.kind !== 'torrent') return null;
+  if (!stuck && (health === 'good' || health === null)) return null;
+  if (s.level === 'stalled') return 'La source torrent ne trouve plus de pairs : essaie une autre source.';
+  if (s.level === 'searching') return 'La source torrent cherche des pairs…';
+  if (s.level === 'slow') return 'La source torrent est plus lente que la vidéo, pour tout le monde : essaie une autre source.';
+  return null;
+}
