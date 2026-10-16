@@ -5,6 +5,7 @@ import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
 import { pickAudioTrack } from './format.ts';
+import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
 
 const TICK_MS = 250;
 const STALL_REPORT_MS = 800;
@@ -75,6 +76,14 @@ export class Player {
   private graceUntil = 0;
   private hasPlayed = false;
   private fatalCount = 0;
+  /** EWMA of segment download speed / media bitrate, on the current quality. */
+  private ratio: number | null = null;
+  /** Catch-up jump in progress: when it started, and whether we wait for the room there. */
+  private catchUpAt = 0;
+  private holding = false;
+  private latencyPending = false;
+  /** How long jumps outside the buffer take to load (s), measured. */
+  private seekLatency = 2;
   private video: HTMLVideoElement;
   private conn: Connection;
 
@@ -82,6 +91,46 @@ export class Player {
     this.video = video;
     this.conn = conn;
     setInterval(() => this.tick(), TICK_MS);
+  }
+
+  /** This viewer's own position (what is on screen), or the room's before loading. */
+  localPosition() {
+    return this.media && this.video.readyState >= 1 ? this.video.currentTime : this.expected();
+  }
+
+  private ranges(): [number, number][] {
+    const b = this.video.buffered;
+    const out: [number, number][] = [];
+    for (let i = 0; i < b.length; i++) out.push([b.start(i), b.end(i)]);
+    return out;
+  }
+
+  /** Seconds buffered ahead of what is on screen. */
+  bufferAhead() {
+    return bufferedAhead(this.ranges(), this.video.currentTime);
+  }
+
+  /** Buffered ranges as [start, end] in seconds (for the seek bar). */
+  bufferedRanges() {
+    return this.ranges();
+  }
+
+  /** Green / orange / red, from the buffer ahead and the download speed. */
+  health(): Health {
+    const duration = this.media?.duration || Infinity;
+    return bufferHealth({ ahead: this.bufferAhead(), ratio: this.ratio, left: duration - this.video.currentTime });
+  }
+
+  get downloadRatio() {
+    return this.ratio;
+  }
+
+  /** True while this viewer is jumping to (or waiting for) the room position. */
+  get catchingUp() {
+    const s = this.state;
+    if (!s?.media || !this.media) return false;
+    if (this.holding || this.latencyPending) return true;
+    return s.running && this.video.readyState >= 1 && Math.abs(this.video.currentTime - this.expected()) > SEEK_THRESHOLD;
   }
 
   get ladder() {
@@ -126,6 +175,10 @@ export class Player {
   private load(media: RoomMedia) {
     this.media = media;
     this.hasPlayed = false;
+    this.ratio = null;
+    this.catchUpAt = 0;
+    this.holding = false;
+    this.latencyPending = false;
     this.pendingReady = true;
     this.reportedStall = false;
     this.audioTrack = 0;
@@ -186,8 +239,11 @@ export class Player {
     this.hls = hls;
 
     hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
-      if (data.frag.type !== 'main' || !this.abr) return;
+      if (data.frag.type !== 'main') return;
       const { loaded, loading } = data.frag.stats;
+      const r = fragmentRatio(loaded, loading.end - loading.start, data.frag.duration);
+      if (r !== null) this.ratio = ewma(this.ratio, r);
+      if (!this.abr) return;
       const next = this.abr.onFragment(
         { bytes: loaded, loadMs: loading.end - loading.start, durationS: data.frag.duration },
         Date.now()
@@ -237,6 +293,8 @@ export class Player {
   private switchQuality(quality: string) {
     if (quality === this.quality) return;
     this.graceUntil = Date.now() + 8000;
+    this.ratio = null;
+    this.holding = false;
     this.startHls(quality, this.expected());
   }
 
@@ -301,7 +359,24 @@ export class Player {
       this.send(false);
     }
 
+    // A catch-up jump outside the buffer finished loading: remember how long it took.
+    if (this.latencyPending && v.readyState >= 3 && !v.seeking) {
+      this.latencyPending = false;
+      this.seekLatency = Math.min(MAX_LEAD_S, ewma(this.seekLatency, (now - this.catchUpAt) / 1000, 0.5));
+    }
+
     if (s.running) {
+      // Landed ahead of the room after a catch-up jump: wait there (paused) until the
+      // room position reaches us, instead of jumping again.
+      if (this.holding && !v.seeking && v.readyState >= 3) {
+        const lead = v.currentTime - expected;
+        if (lead > 0.05 && lead < MAX_LEAD_S + 1) {
+          if (!v.paused) v.pause();
+        } else this.holding = false;
+      }
+    }
+
+    if (s.running && !(this.holding && v.paused)) {
       if (v.paused && !this.needsGesture && v.readyState >= 2) {
         v.play().catch((err: DOMException) => {
           if (err.name === 'NotAllowedError') {
@@ -312,10 +387,18 @@ export class Player {
       }
       if (!v.seeking && v.readyState >= 2) {
         const c = correction(v.currentTime, expected);
-        if (c.seekTo !== undefined) {
-          v.currentTime = c.seekTo;
+        // While the previous catch-up jump is still loading, let it finish instead of
+        // chasing the room clock with jump after jump.
+        const loadingJump = (this.latencyPending || this.holding) && v.readyState < 3 && now < this.graceUntil;
+        if (c.seekTo !== undefined && !loadingJump) {
+          const target = catchUpTarget(expected, this.ranges(), this.seekLatency);
+          v.currentTime = target.position;
+          this.holding = target.lead > 0;
+          this.latencyPending = target.lead > 0;
+          this.catchUpAt = now;
           // Our own catch-up seek must not hold the whole room.
           this.graceUntil = now + 4000;
+          this.onChange();
         }
         if (v.playbackRate !== c.rate) v.playbackRate = c.rate;
       }
@@ -333,7 +416,8 @@ export class Player {
         this.stallSince = 0;
       }
       if (!stalled && !v.paused && v.currentTime > 1) this.hasPlayed = true;
-    } else {
+    } else if (!s.running) {
+      this.holding = false;
       if (!v.paused) v.pause();
       if (v.playbackRate !== 1) v.playbackRate = 1;
       if (!v.seeking && v.readyState >= 1 && Math.abs(v.currentTime - expected) > 0.25) v.currentTime = expected;
