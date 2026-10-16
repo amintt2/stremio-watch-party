@@ -128,6 +128,8 @@ export interface StreamOption {
   dolbyVision: boolean;
   hevc: boolean;
   cached: boolean;
+  /** MULTI (VF + VO), VF, VOSTFR, from the release name. */
+  languages?: string[];
   kind: 'torrent' | 'http';
 }
 

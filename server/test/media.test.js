@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import {
   availableQualities,
   converterParams,
+  hlsParams,
   isAllowedHlsPath,
   parseProfile,
   wantedSettings,
   peerSources,
   rewritePlaylist,
 } from '../src/media.js';
-import { describeStream } from '../src/addons.js';
+import { describeStream, streamLanguages } from '../src/addons.js';
 
 const hevc4k = { video: { codec: 'hevc', width: 3840, height: 2160, hdr: true } };
 const h264p1080 = { video: { codec: 'h264', width: 1920, height: 1080 } };
@@ -144,8 +145,8 @@ test('VP9 sources are copied for viewers that support them', () => {
 });
 
 test('Stremio server tuning only asks for what is missing', () => {
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 6 });
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 6, cacheSize: null }), {});
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 8 });
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 8, cacheSize: null }), {});
 });
 
 test('ten viewers on every quality need at most 5 converters per media', () => {
@@ -165,4 +166,31 @@ test('torrents without trackers get DHT plus public trackers', () => {
   const fallback = peerSources({ infoHash: 'A'.repeat(40) });
   assert.equal(fallback[0], `dht:${'a'.repeat(40)}`);
   assert.ok(fallback.length > 3 && fallback.slice(1).every((s) => s.startsWith('tracker:udp://')));
+});
+
+test('each audio track has its own converter, shared by every viewer of that track', () => {
+  const vf = hlsParams('s', hevc4k, '1080', { hevc: false }, 'audio0/segment3.m4s');
+  const vo = hlsParams('s', hevc4k, '2160', { hevc: true }, 'audio1.m3u8');
+  const vfOther = hlsParams('s', hevc4k, '720', {}, 'audio0/init.mp4');
+  assert.equal(vf.convertId, 'wp-s-a0');
+  assert.equal(vo.convertId, 'wp-s-a1');
+  assert.equal(vfOther.convertId, vf.convertId, 'same track, any quality: one converter');
+  assert.equal(vf.query.toString(), vfOther.query.toString());
+  assert.equal(vf.query.get('forceTranscoding'), null, 'never touches the video');
+  assert.deepEqual(vf.query.getAll('audioCodecs'), ['aac', 'mp3']);
+  // Video and master playlists still come from the quality converter.
+  assert.equal(hlsParams('s', hevc4k, '1080', {}, 'master.m3u8').convertId, 'wp-s-t-1920');
+  assert.equal(hlsParams('s', hevc4k, '1080', {}, 'video0/segment1.m4s').convertId, 'wp-s-t-1920');
+  assert.equal(hlsParams('s', hevc4k, '999', {}, 'audio0.m3u8'), null);
+});
+
+test('source languages come from the release name', () => {
+  assert.deepEqual(streamLanguages('Dune.2021.MULTi.VFF.2160p.WEB'), ['MULTI', 'VF']);
+  assert.deepEqual(streamLanguages('Dune.2021.FRENCH.1080p'), ['VF']);
+  assert.deepEqual(streamLanguages('Dune 2021 VOSTFR 1080p'), ['VOSTFR']);
+  assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay\n🇬🇧 / 🇫🇷'), ['VF']);
+  assert.deepEqual(streamLanguages('Dune.2021.Dual.Audio.1080p'), ['MULTI']);
+  assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay.x264'), []);
+  assert.deepEqual(streamLanguages('Frenchie.2021.1080p'), [], 'word boundaries');
+  assert.deepEqual(describeStream({ name: 'X\n1080p', title: 'Film.MULTi.1080p' }, 'a').languages, ['MULTI']);
 });

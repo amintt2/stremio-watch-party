@@ -6,6 +6,7 @@ import { Connection } from './connection.ts';
 import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
+import { ExternalSubtitles } from './subtitles.ts';
 import { formatTime } from './sync.ts';
 import { avatar, icon } from './ui.ts';
 import { detailView } from './views/detail.ts';
@@ -117,6 +118,17 @@ function start({ user: me, mode, room }: Identity) {
   const qualitySel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Qualité' });
   const audioSel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Audio' });
   const subsSel = h('select', { class: 'input input-sm on-media-input', 'aria-label': 'Sous-titres' });
+  // Subtitles from OpenSubtitles (each viewer their own language), drawn over the video.
+  const subsLayer = h('div', { class: 'subs' });
+  const subs = new ExternalSubtitles(subsLayer);
+  const shiftLabel = h('span', { class: 'subs-shift-value', title: 'Décalage des sous-titres' }, '0 s');
+  const subsShift = h(
+    'span',
+    { class: 'subs-shift', role: 'group', 'aria-label': 'Décalage des sous-titres' },
+    h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Sous-titres plus tôt', onclick: () => subs.shift(-0.5) }, '−'),
+    shiftLabel,
+    h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Sous-titres plus tard', onclick: () => subs.shift(0.5) }, '+')
+  );
   const volume = h('input', { class: 'volume', type: 'range', min: 0, max: 1, step: 0.05, value: 1, 'aria-label': 'Volume' });
   const stopBtn = h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', title: 'Arrêter pour tout le monde' }, icon('stop', 'icon icon-sm'), h('span', { class: 'btn-label' }, 'Arrêter'));
   const fsBtn = h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Plein écran' }, icon('fullscreen'));
@@ -129,7 +141,7 @@ function start({ user: me, mode, room }: Identity) {
       { class: 'controls-row' },
       playBtn,
       h('span', { class: 'volume-group' }, icon('volume', 'icon icon-sm'), volume),
-      h('div', { class: 'controls-right' }, qualitySel, audioSel, subsSel, stopBtn, fsBtn)
+      h('div', { class: 'controls-right' }, qualitySel, audioSel, subsSel, subsShift, stopBtn, fsBtn)
     )
   );
   const overlay = h('div', { class: 'overlay' });
@@ -144,7 +156,7 @@ function start({ user: me, mode, room }: Identity) {
     miniPlay,
     h('button', { class: 'btn btn-ghost btn-icon on-media', type: 'button', 'aria-label': 'Agrandir', onclick: () => openPlayer() }, icon('expand'))
   );
-  const stage = h('section', { class: 'stage mode-hidden', 'aria-label': 'Lecteur' }, video, overlay, stageTop, controls, miniBar);
+  const stage = h('section', { class: 'stage mode-hidden', 'aria-label': 'Lecteur' }, video, subsLayer, overlay, stageTop, controls, miniBar);
 
   clear(root, rail, topbar, content, stage, h('div', { id: 'toasts', class: 'toasts' }));
 
@@ -269,7 +281,15 @@ function start({ user: me, mode, room }: Identity) {
   });
   qualitySel.addEventListener('change', () => player.setPreference(qualitySel.value));
   audioSel.addEventListener('change', () => player.setAudioTrack(Number(audioSel.value)));
-  subsSel.addEventListener('change', () => player.setSubtitleTrack(Number(subsSel.value)));
+  // "off", "f:<file track>" or "x:<OpenSubtitles key>": one subtitle at a time.
+  subsSel.addEventListener('change', () => {
+    const [kind, id] = subsSel.value.split(/:(.*)/s);
+    if (kind !== 'f' && player.subtitleTrack >= 0) player.setSubtitleTrack(-1);
+    if (kind === 'f') {
+      if (subs.selected) subs.select(null);
+      player.setSubtitleTrack(Number(id));
+    } else subs.select(kind === 'x' ? id : null);
+  });
   volume.addEventListener('input', () => (video.volume = Number(volume.value)));
   fsBtn.addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -333,9 +353,20 @@ function start({ user: me, mode, room }: Identity) {
     audioSel.value = String(player.audioTrack);
     audioSel.hidden = player.audioTracks.length < 2;
 
-    clear(subsSel, h('option', { value: -1 }, 'Sans sous-titres'), player.subtitleTracks.map((t) => h('option', { value: t.id }, t.label)));
-    subsSel.value = String(player.subtitleTrack);
-    subsSel.hidden = player.subtitleTracks.length === 0;
+    clear(
+      subsSel,
+      h('option', { value: 'off' }, 'Sans sous-titres'),
+      player.subtitleTracks.length
+        ? h('optgroup', { label: 'Dans le fichier' }, player.subtitleTracks.map((t) => h('option', { value: `f:${t.id}` }, t.label)))
+        : null,
+      subs.options.length
+        ? h('optgroup', { label: 'OpenSubtitles' }, subs.options.map((o) => h('option', { value: `x:${o.key}` }, subs.label(o))))
+        : null
+    );
+    subsSel.value = subs.selected ? `x:${subs.selected}` : player.subtitleTrack >= 0 ? `f:${player.subtitleTrack}` : 'off';
+    subsSel.hidden = !player.subtitleTracks.length && !subs.options.length;
+    subsShift.hidden = !subs.selected;
+    shiftLabel.textContent = subs.loading ? '…' : `${subs.offset > 0 ? '+' : ''}${subs.offset} s`;
   };
 
   const renderOverlay = () => {
@@ -401,6 +432,13 @@ function start({ user: me, mode, room }: Identity) {
     updateStageMode();
   };
 
+  let subsError: string | null = null;
+  subs.onChange = () => {
+    renderSelects();
+    if (subs.error && subs.error !== subsError) toast(`Sous-titres : ${subs.error}`);
+    subsError = subs.error;
+  };
+
   player.onChange = () => {
     renderSelects();
     renderOverlay();
@@ -444,11 +482,15 @@ function start({ user: me, mode, room }: Identity) {
       else if (src.hdr && !copied) toast('Source HDR transcodée : les couleurs peuvent être ternes.');
     }
     if (!sid && route.name === 'player') closePlayer();
+    if (sid !== lastMediaSid) subs.load(sid);
     lastMediaSid = sid;
   };
   conn.onNotice = toast;
   conn.onStatus = (on) => status.classList.toggle('on', on);
   conn.connect();
+
+  // External subtitles follow this viewer's own video time.
+  setInterval(() => state?.media && subs.render(video.currentTime), 100);
 
   // Progress bar / clock, from the room position so everyone sees the same thing.
   setInterval(() => {

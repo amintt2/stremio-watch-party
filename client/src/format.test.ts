@@ -1,6 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canResume, episodeCode, parseRoute, pickBest, progressRatio, relativeTime, routeHref } from './format.ts';
+import {
+  activeCues,
+  canResume,
+  episodeCode,
+  langCode,
+  languageName,
+  parseRoute,
+  pickAudioTrack,
+  pickBest,
+  progressRatio,
+  relativeTime,
+  routeHref,
+} from './format.ts';
 
 test('routes parse and round-trip', () => {
   assert.deepEqual(parseRoute(''), { name: 'home', params: {} });
@@ -45,4 +57,45 @@ test('best source: cached, then 1080p, then seeders', () => {
   assert.deepEqual(pickBest([s('4K', 900), s('1080p', 50), s('1080p', 300), s('720p', 2000)]), s('1080p', 300));
   assert.deepEqual(pickBest([s('1080p', 300), s('4K', null, true)]), s('4K', null, true));
   assert.deepEqual(pickBest([s(null, null), s(null, 3)]), s(null, 3));
+});
+
+test('best source prefers MULTI (VF + VO) so everyone can pick their language', () => {
+  const multi = { quality: '720p', seeders: 5, cached: false, languages: ['MULTI', 'VF'] };
+  const vf = { quality: '1080p', seeders: 900, cached: true, languages: ['VF'] };
+  assert.equal(pickBest([vf, multi]), multi);
+  assert.equal(pickBest([vf]), vf);
+});
+
+test('language codes and names', () => {
+  assert.equal(langCode('fre'), 'fr');
+  assert.equal(langCode('fr-FR'), 'fr');
+  assert.equal(langCode('pob'), 'pb');
+  assert.equal(languageName('eng'), 'Anglais');
+  assert.equal(languageName('xyz'), 'XYZ');
+  assert.equal(languageName(null), 'Inconnu');
+});
+
+test('active cues at a time, overlaps included', () => {
+  const cues = [
+    { start: 1, end: 4, text: 'a' },
+    { start: 3, end: 5, text: 'b' },
+    { start: 10, end: 12, text: 'c' },
+  ];
+  assert.deepEqual(activeCues(cues, 0).map((c) => c.text), []);
+  assert.deepEqual(activeCues(cues, 3.5).map((c) => c.text), ['a', 'b']);
+  assert.deepEqual(activeCues(cues, 4.5).map((c) => c.text), ['b']);
+  assert.deepEqual(activeCues(cues, 7).map((c) => c.text), []);
+  assert.deepEqual(activeCues(cues, 11).map((c) => c.text), ['c']);
+  assert.deepEqual(activeCues([], 3), []);
+});
+
+test('audio preference: VF or VO per viewer', () => {
+  const tracks = [{ lang: 'fre', name: 'Français' }, { lang: 'eng', name: 'English' }];
+  assert.equal(pickAudioTrack(tracks, 'fr'), 0);
+  assert.equal(pickAudioTrack(tracks, 'vo'), 1);
+  assert.equal(pickAudioTrack([tracks[1], tracks[0]], 'fr'), 1);
+  assert.equal(pickAudioTrack([{ name: 'VFF 5.1' }, { name: 'Original' }], 'fr'), 0);
+  assert.equal(pickAudioTrack(tracks, null), null);
+  assert.equal(pickAudioTrack([tracks[1]], 'fr'), null, 'single track: nothing to choose');
+  assert.equal(pickAudioTrack([{ lang: 'eng' }, { lang: 'jpn' }], 'fr'), null);
 });

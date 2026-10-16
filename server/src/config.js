@@ -61,7 +61,7 @@ export const config = {
   stremioSelfUrl: trimSlash(process.env.STREMIO_SELF_URL || 'http://127.0.0.1:11470'),
   // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
   stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
-  stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 6),
+  stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 8),
   stremioCacheBytes: process.env.STREMIO_CACHE_GB
     ? Math.round(Number(process.env.STREMIO_CACHE_GB) * 1024 ** 3)
     : null,
@@ -71,6 +71,11 @@ export const config = {
   // Stream addons (e.g. your Torrentio configuration URL). These URLs can contain
   // debrid API keys: they never leave the server.
   streamAddons: list(process.env.STREAM_ADDON_URLS).map(addonBase),
+  // Subtitle addons (each viewer picks a language in the player). SUBTITLE_ADDON_URLS=none disables.
+  subtitleAddons:
+    process.env.SUBTITLE_ADDON_URLS === 'none'
+      ? []
+      : list(process.env.SUBTITLE_ADDON_URLS || 'https://opensubtitles-v3.strem.io/manifest.json').map(addonBase),
 
   // Hosts the image proxy may fetch posters/avatars from (the Discord iframe can't
   // load third-party images directly).

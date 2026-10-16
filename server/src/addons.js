@@ -225,6 +225,22 @@ function normalizeQuality(raw) {
   return q;
 }
 
+/**
+ * Audio languages announced by the release name / addon text:
+ * MULTI (VF + VO), VF (French audio), VOSTFR (original + French subs).
+ */
+export function streamLanguages(text) {
+  const t = ` ${text} `;
+  const out = [];
+  const multi = /[\s._\-[(](multi|dual[\s._-]?audio|multi[\s._-]?audio)[\s._\-\])]/i.test(t);
+  const vostfr = /[\s._\-[(](vostfr|subfrench|stfr)[\s._\-\])]/i.test(t);
+  const vf = /[\s._\-[(](vff|vfq|vfi|vf2|vf|truefrench|french)[\s._\-\])]/i.test(t) || t.includes('🇫🇷');
+  if (multi) out.push('MULTI');
+  if (vf && !vostfr) out.push('VF');
+  if (vostfr) out.push('VOSTFR');
+  return out;
+}
+
 /** Turns an addon stream into what the browser may see (no URLs, no keys). */
 export function describeStream(stream, addon) {
   const name = String(stream.name || '');
@@ -250,6 +266,7 @@ export function describeStream(stream, addon) {
     hevc: /\b(hevc|x265|h\.?265)\b/i.test(text),
     // Debrid-cached links (e.g. "[RD+]") start instantly and don't touch P2P.
     cached: /\[[A-Z]{2,3}\+\]/.test(name),
+    languages: streamLanguages(text),
     kind: stream.infoHash ? 'torrent' : 'http',
   };
 }

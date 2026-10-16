@@ -26,9 +26,10 @@ import {
   verifyWebSession,
 } from './webauth.js';
 import * as addons from './addons.js';
+import { cuesFor, listSubtitles } from './subtitles.js';
 import {
   watchStremioServer,
-  converterParams,
+  hlsParams,
   createSession,
   fetchHls,
   getSession,
@@ -243,6 +244,37 @@ app.register(async (api) => {
     return { ok: true };
   });
 
+  /** External subtitles of what a media session plays (each viewer picks their own). */
+  const subtitleLists = new Map();
+  api.get('/api/subtitles/:sid', async (request, reply) => {
+    const media = getSession(request.params.sid);
+    if (!media) return reply.code(404).send({ error: 'Session inconnue' });
+    const meta = media.meta;
+    if (!meta?.videoId || !config.subtitleAddons.length) return { items: [] };
+    const cacheKey = `${meta.type}:${meta.videoId}`;
+    let entry = subtitleLists.get(cacheKey);
+    if (!entry || entry.expires < Date.now()) {
+      // One query per video for the whole room, shared for 30 min.
+      entry = { items: listSubtitles(meta.type, meta.videoId, request.log), expires: Date.now() + 30 * 60 * 1000 };
+      subtitleLists.set(cacheKey, entry);
+      entry.items.catch(() => subtitleLists.delete(cacheKey));
+      if (subtitleLists.size > 200) subtitleLists.delete(subtitleLists.keys().next().value);
+    }
+    return { items: await entry.items };
+  });
+
+  api.get('/api/subtitles/cues/:key', async (request, reply) => {
+    let cues;
+    try {
+      cues = await cuesFor(request.params.key);
+    } catch (err) {
+      return reply.code(502).send({ error: err.message });
+    }
+    if (!cues) return reply.code(404).send({ error: 'Sous-titres expirés' });
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return { cues };
+  });
+
   api.post('/api/room/stop', async (request) => {
     const room = rooms.peek(request.session.room);
     if (room?.stop()) broadcast(room);
@@ -412,7 +444,7 @@ app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
   if (!isAllowedHlsPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
 
   const parsed = parseProfile(profile);
-  const params = parsed && converterParams(sid, session.info, parsed.quality, parsed.caps);
+  const params = parsed && hlsParams(sid, session.info, parsed.quality, parsed.caps, rest);
   if (!params) return reply.code(400).send({ error: 'Qualité invalide' });
 
   const abort = new AbortController();

@@ -202,6 +202,29 @@ export function converterParams(sid, info, quality, caps = {}) {
   };
 }
 
+/**
+ * Audio tracks get their own converter, one per track, shared by everyone who listens
+ * to it. In a single converter, two viewers on two different tracks (VF and VO)
+ * cancel each other's segments; separate converters don't.
+ */
+export function audioConverterParams(sid, info, track) {
+  const n = Number(track);
+  if (!Number.isInteger(n) || n < 0 || n > 31) return null;
+  const query = new URLSearchParams();
+  // Only audio is ever requested from it; the video codec is just the source's (no work).
+  query.append('videoCodecs', info.video.codec);
+  for (const a of AUDIO_CODECS) query.append('audioCodecs', a);
+  query.append('maxAudioChannels', '2');
+  return { convertId: `wp-${sid}-a${n}`, query, mode: 'audio' };
+}
+
+/** Which converter serves this relay path: audio paths go to their track's converter. */
+export function hlsParams(sid, info, quality, caps, rest) {
+  const audio = /^audio(\d+)(?:\.m3u8$|\/)/.exec(rest);
+  if (audio) return QUALITIES.some((q) => q.id === quality) ? audioConverterParams(sid, info, audio[1]) : null;
+  return converterParams(sid, info, quality, caps);
+}
+
 /** Public, browser-safe description of a session. */
 export function publicMedia(session) {
   const { info } = session;

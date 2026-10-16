@@ -4,10 +4,13 @@ import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
+import { pickAudioTrack } from './format.ts';
 
 const TICK_MS = 250;
 const STALL_REPORT_MS = 800;
 const PREF_KEY = 'wp-quality';
+/** "fr" (VF) or "vo": this viewer's audio language, applied to every new media. */
+const AUDIO_KEY = 'wp-audio';
 
 export interface Caps {
   hevc: boolean;
@@ -54,6 +57,8 @@ export class Player {
   audioTracks: Track[] = [];
   subtitleTracks: Track[] = [];
   audioTrack = 0;
+  audioPref: string | null = localStorageGet(AUDIO_KEY);
+  private audioPicked = false;
   subtitleTrack = -1;
   needsGesture = false;
   error: string | null = null;
@@ -124,6 +129,7 @@ export class Player {
     this.pendingReady = true;
     this.reportedStall = false;
     this.audioTrack = 0;
+    this.audioPicked = false;
     this.subtitleTrack = -1;
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
@@ -190,6 +196,15 @@ export class Player {
     });
     const updateTracks = () => {
       this.audioTracks = hls.audioTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Piste ${i + 1}` }));
+      // First time this media's tracks are known: apply the viewer's VF / VO choice.
+      if (!this.audioPicked && hls.audioTracks.length) {
+        this.audioPicked = true;
+        const wanted = pickAudioTrack(hls.audioTracks, this.audioPref);
+        if (wanted !== null && wanted !== this.audioTrack) {
+          this.audioTrack = wanted;
+          hls.audioTrack = wanted;
+        }
+      }
       this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}` }));
       this.onChange();
     };
@@ -241,7 +256,15 @@ export class Player {
 
   setAudioTrack(id: number) {
     this.audioTrack = id;
-    if (this.hls) this.hls.audioTrack = id;
+    if (this.hls) {
+      this.hls.audioTrack = id;
+      // Remember the choice as a language, so the next film starts in it too.
+      const tracks = this.hls.audioTracks;
+      if (tracks.length > 1) {
+        this.audioPref = pickAudioTrack(tracks, 'fr') === id ? 'fr' : 'vo';
+        localStorageSet(AUDIO_KEY, this.audioPref);
+      }
+    }
     this.onChange();
   }
 

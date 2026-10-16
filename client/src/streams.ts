@@ -5,6 +5,11 @@ import { loadingState } from './ui.ts';
 
 type SortMode = 'addon' | 'seeders' | 'size';
 const QUALITY_FILTERS = ['Tous', '4K', '1080p', '720p'];
+const LANGUAGE_HINTS: Record<string, string> = {
+  MULTI: 'VF et VO dans le même fichier : chacun choisit sa langue',
+  VF: 'Audio français',
+  VOSTFR: 'Version originale, sous-titres français',
+};
 
 export function sizeInGb(size: string | null) {
   if (!size) return 0;
@@ -130,6 +135,9 @@ export class StreamPanel {
       s.hdr && h('span', { class: 'badge' }, s.dolbyVision ? 'DV' : 'HDR'),
       s.hevc && h('span', { class: 'badge' }, 'HEVC'),
       s.cached && h('span', { class: 'badge badge-success' }, '⚡ Débrid'),
+      ...(s.languages || []).map((l) =>
+        h('span', { class: `badge${l === 'MULTI' ? ' badge-accent' : ''}`, title: LANGUAGE_HINTS[l] }, l)
+      ),
     ];
     const facts = [
       s.seeders !== null && h('span', { title: 'Personnes qui partagent' }, `👤 ${s.seeders}`),
