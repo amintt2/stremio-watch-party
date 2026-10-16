@@ -47,6 +47,10 @@ export const REFUSE_BLOCK_MS = 2 * 60_000;
 export const SPAM_COOLDOWN_MS = 30_000;
 /** At most this many waits per viewer per minute; more stalls don't freeze the room. */
 export const STALLS_PER_MINUTE = 4;
+/** After the room gave up on a viewer, a new stall report waits this long instead. */
+export const RETRY_WAIT_MS = 5_000;
+/** ...at most this many times per minute per viewer. */
+export const RETRIES_PER_MINUTE = 2;
 export const MIN_VOTES = 2;
 export const QUEUE_MAX = 30;
 export const QUEUE_PER_USER_MAX = 5;
@@ -123,6 +127,8 @@ export class Room {
 
     this.hits = new Map(); // `${uid}:${bucket}` -> timestamps
     this.stalls = new Map(); // uid -> timestamps
+    this.gaveUp = new Map(); // uid -> when the room last stopped waiting for them
+    this.retries = new Map(); // uid -> timestamps of second-chance waits
     this.muted = new Map(); // uid -> until
 
     this.emptySince = now(); // nobody yet
@@ -488,6 +494,8 @@ export class Room {
     this.position = this.#clamp(startAt);
     this.updatedAt = this.now();
     this.waiting.clear();
+    this.gaveUp.clear();
+    this.retries.clear();
     const deadline = this.now() + LOAD_TIMEOUT_MS;
     for (const uid of this.members.keys()) this.waiting.set(uid, deadline);
     this.starting = null;
@@ -545,10 +553,23 @@ export class Room {
         this.stalls.set(uid, recent);
         return false;
       }
+      // Second chance after the room gave up on them (still loading): a shorter wait,
+      // at most RETRIES_PER_MINUTE times, so one bad link can't keep freezing the room.
+      const gaveUp = this.gaveUp.get(uid);
+      const retry = gaveUp !== undefined && t - gaveUp < 60_000;
+      if (retry) {
+        const retries = (this.retries.get(uid) || []).filter((x) => t - x < 60_000);
+        if (retries.length >= RETRIES_PER_MINUTE) {
+          this.retries.set(uid, retries);
+          return false;
+        }
+        retries.push(t);
+        this.retries.set(uid, retries);
+      }
       recent.push(t);
       this.stalls.set(uid, recent);
       this.#settle();
-      this.waiting.set(uid, t + WAIT_TIMEOUT_MS);
+      this.waiting.set(uid, t + (retry ? RETRY_WAIT_MS : WAIT_TIMEOUT_MS));
       return this.#changed();
     }
     if (!this.waiting.has(uid)) return false;
@@ -716,7 +737,9 @@ export class Room {
    */
   propose(uid, item) {
     if (!this.members.has(uid)) return { error: 'Tu n’es pas dans la salle' };
-    if (!this.#allow(uid, 'propose')) return { error: 'Trop de propositions, attends un peu' };
+    if (!this.#allow(uid, 'propose')) {
+      return { error: this.isMuted(uid) ? 'Doucement : réessaie dans quelques secondes' : 'Trop de propositions, attends un peu' };
+    }
     const existing = [...this.queue.values()].find((q) => q.meta.videoId === item.meta.videoId);
     if (existing) {
       if (!existing.votes.has(uid)) {
@@ -964,6 +987,7 @@ export class Room {
       if (deadline <= t) {
         if (!changed) this.#settle();
         this.waiting.delete(uid);
+        this.gaveUp.set(uid, t);
         changed = true;
       }
     }
