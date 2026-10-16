@@ -42,6 +42,25 @@ export function openExternal(url: string) {
   else window.open(absolute, '_blank', 'noopener');
 }
 
+/** Address of the site as people outside see it (share links). */
+export function publicBase() {
+  return publicUrl.replace(/\/+$/, '');
+}
+
+const AFTER_LOGIN_KEY = 'wp-after-login';
+
+/** The Discord login comes back to "/": put back the page the link pointed to. */
+function restoreHashAfterLogin() {
+  let hash: string | null = null;
+  try {
+    hash = sessionStorage.getItem(AFTER_LOGIN_KEY);
+    sessionStorage.removeItem(AFTER_LOGIN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  if (hash && /^#\/[\w/%?=&.:+-]*$/.test(hash) && (!location.hash || location.hash === '#/')) history.replaceState(null, '', hash);
+}
+
 export async function signIn(): Promise<Identity> {
   const cfg = await api<ServerConfig>('/api/config');
   if (cfg.publicUrl) publicUrl = cfg.publicUrl;
@@ -77,6 +96,7 @@ export async function signIn(): Promise<Identity> {
       body: JSON.stringify({ room }),
     });
     setSession(res.session);
+    restoreHashAfterLogin();
     return { user: res.user, mode: 'web', room: res.room };
   } catch (err) {
     if (!/connecté|401/i.test((err as Error).message)) throw err;
@@ -132,7 +152,21 @@ export function loginScreen(cfg: ServerConfig, onGuest: (id: Identity) => void) 
       h('p', { class: 'muted' }, room ? 'Un ami t’invite à regarder ensemble. Connecte-toi pour rejoindre sa salle.' : 'Regarde des films et des séries avec tes amis, synchronisés.'),
       failed ? h('p', { class: 'auth-error' }, 'La connexion a échoué, réessaie.') : null,
       cfg.webLogin
-        ? h('a', { class: 'btn btn-primary btn-lg btn-block', href: loginHref }, 'Se connecter avec Discord')
+        ? h(
+            'a',
+            {
+              class: 'btn btn-primary btn-lg btn-block',
+              href: loginHref,
+              onclick: () => {
+                try {
+                  if (location.hash && location.hash !== '#/') sessionStorage.setItem(AFTER_LOGIN_KEY, location.hash);
+                } catch {
+                  /* storage unavailable */
+                }
+              },
+            },
+            'Se connecter avec Discord'
+          )
         : h('p', { class: 'muted small' }, 'Connexion Discord non configurée sur le serveur.'),
       guest
     ),
@@ -145,6 +179,14 @@ export function localStorageGet(key: string) {
     return localStorage.getItem(key);
   } catch {
     return null;
+  }
+}
+
+export function localStorageRemove(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* storage unavailable */
   }
 }
 

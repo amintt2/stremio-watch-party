@@ -13,6 +13,7 @@ import { detailView } from './views/detail.ts';
 import { discoverView } from './views/discover.ts';
 import { homeView } from './views/home.ts';
 import { historyView, libraryView } from './views/library.ts';
+import { notFoundView } from './views/notfound.ts';
 import { searchView } from './views/search.ts';
 import { applyTheme, savedTheme, settingsView } from './views/settings.ts';
 
@@ -57,7 +58,23 @@ function start({ user: me, mode, room }: Identity) {
 
   // ------------------------------------------------------------ shell
   const navLinks = NAV.map((n) =>
-    h('a', { class: 'nav-item', href: routeHref(n.name), 'data-route': n.name }, icon(n.icon), h('span', { class: 'nav-label' }, n.label))
+    h(
+      'a',
+      {
+        class: 'nav-item',
+        href: routeHref(n.name),
+        'data-route': n.name,
+        // Already there (no hashchange): back to the top, like a streaming app's tab bar.
+        onclick: (e: Event) => {
+          if ((location.hash || '#/') === routeHref(n.name) && !(e as MouseEvent).ctrlKey && !(e as MouseEvent).metaKey) {
+            e.preventDefault();
+            content.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        },
+      },
+      icon(n.icon),
+      h('span', { class: 'nav-label' }, n.label)
+    )
   );
   const rail = h(
     'nav',
@@ -79,6 +96,21 @@ function start({ user: me, mode, room }: Identity) {
     clearTimeout(searchTimer);
     if (searchInput.value.trim().length < 2) return;
     searchTimer = window.setTimeout(() => goSearch(route.name === 'search'), 400);
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    clearTimeout(searchTimer);
+    if (searchInput.value) searchInput.value = '';
+    else searchInput.blur();
+  });
+  // "/" puts the cursor in the search bar from anywhere (not while typing, nor in the player).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || route.name === 'player') return;
+    if ((e.target as HTMLElement).closest('input, select, textarea, [contenteditable]')) return;
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.select();
   });
   const searchForm = h(
     'form',
@@ -168,6 +200,7 @@ function start({ user: me, mode, room }: Identity) {
     player,
     state: () => state,
     navigate,
+    replaceRoute: (href: string) => replaceRoute(href),
     async play(req: PlayRequest) {
       await api('/api/room/play', {
         method: 'POST',
@@ -207,40 +240,107 @@ function start({ user: me, mode, room }: Identity) {
     } else navigate(routeHref('home'), true);
   }
 
+  // Infinite lists (Discover, Search) are kept for "back" so they come back as they
+  // were (pages loaded, scroll position) instead of reloading from the top.
+  const KEEP_ALIVE: Route['name'][] = ['discover', 'search'];
+  const kept = new Map<string, View>();
+  const keepView = (key: string, v: View) => {
+    kept.delete(key);
+    kept.set(key, v);
+    while (kept.size > 4) {
+      const [oldKey, old] = kept.entries().next().value!;
+      kept.delete(oldKey);
+      if (old !== view) old.dispose?.();
+    }
+  };
+
+  function createView(r: Route): View {
+    switch (r.name) {
+      case 'discover':
+        return discoverView(app, r.params);
+      case 'library':
+        return libraryView(app, r.params);
+      case 'history':
+        return historyView(app);
+      case 'settings':
+        return settingsView(app);
+      case 'search':
+        return searchView(app, r.params);
+      case 'detail':
+        return detailView(app, r.params);
+      case 'notfound':
+        return notFoundView();
+      default:
+        return homeView(app);
+    }
+  }
+
+  // Each history entry gets an id (history.state.wpEntry); its scroll position is kept
+  // here. Coming back to an entry (browser back, closing the player) restores it; a new
+  // page starts at the top.
+  const scrollByEntry = new Map<string, number>();
+  let entryId = '';
+  const ensureEntry = () => {
+    const id = history.state?.wpEntry;
+    if (typeof id === 'string') return (entryId = id);
+    entryId = Math.random().toString(36).slice(2);
+    try {
+      history.replaceState({ ...(history.state || {}), wpEntry: entryId }, '');
+    } catch {
+      /* some embeds refuse history writes: scroll memory is a nicety */
+    }
+    return entryId;
+  };
+  content.addEventListener(
+    'scroll',
+    () => {
+      if (route.name !== 'player' && entryId) scrollByEntry.set(entryId, content.scrollTop);
+    },
+    { passive: true }
+  );
+  let restoreToken = 0;
+  function restoreScroll(target: number) {
+    const token = ++restoreToken;
+    content.scrollTop = target;
+    if (!target) return;
+    // Content loads asynchronously: retry while the page grows, until the user scrolls.
+    const started = Date.now();
+    const stop = () => (restoreToken = token + 1);
+    content.addEventListener('wheel', stop, { once: true, passive: true });
+    content.addEventListener('touchstart', stop, { once: true, passive: true });
+    const tick = () => {
+      if (token !== restoreToken || Date.now() - started > 4000) return;
+      if (Math.abs(content.scrollTop - target) > 2) content.scrollTop = target;
+      if (Math.abs(content.scrollTop - target) > 2) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   function render() {
     const leavingPlayer = route.name === 'player';
     route = parseRoute(location.hash);
     // Coming back from the player: progress/history shown underneath may be stale.
-    if (leavingPlayer && route.name !== 'player' && !['discover', 'search'].includes(route.name)) viewRoute = '';
+    if (leavingPlayer && route.name !== 'player' && !KEEP_ALIVE.includes(route.name)) viewRoute = '';
     if (route.name === 'player' && !state?.media) {
       // Nothing playing (yet): show home behind the loading state.
       if (state) return navigate(routeHref('home'), true);
     }
     const key = location.hash || '#/';
+    const known = typeof history.state?.wpEntry === 'string' && scrollByEntry.has(history.state.wpEntry);
+    const saved = known ? scrollByEntry.get(ensureEntry())! : null;
+    if (!known) ensureEntry();
     if (route.name !== 'player' && key !== viewRoute) {
-      view?.dispose?.();
-      const r = route;
-      view = (() => {
-        switch (r.name) {
-          case 'discover':
-            return discoverView(app, r.params);
-          case 'library':
-            return libraryView(app, r.params);
-          case 'history':
-            return historyView(app);
-          case 'settings':
-            return settingsView(app);
-          case 'search':
-            return searchView(app, r.params);
-          case 'detail':
-            return detailView(app, r.params);
-          default:
-            return homeView(app);
-        }
-      })();
+      if (view && !kept.has(viewRoute)) view.dispose?.();
+      const reuse = saved !== null ? kept.get(key) : undefined;
+      if (!reuse && kept.has(key)) {
+        kept.get(key)!.dispose?.();
+        kept.delete(key);
+      }
+      view = reuse || createView(route);
+      if (KEEP_ALIVE.includes(route.name)) keepView(key, view);
       viewRoute = key;
       clear(content, view.el);
-      content.scrollTop = 0;
+      restoreScroll(saved || 0);
     } else if (!view) {
       view = homeView(app);
       viewRoute = '#/';
@@ -248,9 +348,30 @@ function start({ user: me, mode, room }: Identity) {
     }
     if (route.name !== 'search' && document.activeElement !== searchInput) searchInput.value = '';
     else if (route.name === 'search' && document.activeElement !== searchInput) searchInput.value = route.params.q || '';
-    const active = route.name === 'detail' || route.name === 'search' || route.name === 'player' ? '' : route.name;
-    for (const a of navLinks) a.classList.toggle('active', a.dataset.route === active);
+    const active = route.name === 'detail' || route.name === 'search' || route.name === 'player' || route.name === 'notfound' ? '' : route.name;
+    for (const a of navLinks) {
+      a.classList.toggle('active', a.dataset.route === active);
+      if (a.dataset.route === active) a.setAttribute('aria-current', 'page');
+      else a.removeAttribute('aria-current');
+    }
     updateStageMode();
+  }
+
+  /** Changes the URL params of the current page without rebuilding it (filters typed in a page). */
+  function replaceRoute(href: string) {
+    const oldKey = viewRoute;
+    try {
+      history.replaceState(history.state, '', href);
+    } catch {
+      return;
+    }
+    viewRoute = location.hash || '#/';
+    route = parseRoute(location.hash);
+    const v = kept.get(oldKey);
+    if (v) {
+      kept.delete(oldKey);
+      keepView(viewRoute, v);
+    }
   }
 
   function updateStageMode() {

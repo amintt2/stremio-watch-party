@@ -16,19 +16,25 @@ import {
 
 test('routes parse and round-trip', () => {
   assert.deepEqual(parseRoute(''), { name: 'home', params: {} });
-  assert.deepEqual(parseRoute('#/nope'), { name: 'home', params: {} });
+  assert.deepEqual(parseRoute('#/nope'), { name: 'notfound', params: {} });
+  assert.deepEqual(parseRoute('#/'), { name: 'home', params: {} });
+  assert.deepEqual(parseRoute('#'), { name: 'home', params: {} });
   assert.deepEqual(parseRoute('#/discover?type=series&genre=Drama'), { name: 'discover', params: { type: 'series', genre: 'Drama' } });
   assert.deepEqual(parseRoute('#/detail/series/tt0903747?video=tt0903747%3A1%3A2'), {
     name: 'detail',
     params: { video: 'tt0903747:1:2', type: 'series', id: 'tt0903747' },
   });
-  assert.equal(parseRoute('#/detail/other/tt1').name, 'home');
+  assert.equal(parseRoute('#/detail/other/tt1').name, 'notfound');
+  assert.equal(parseRoute('#/detail/movie').name, 'notfound');
 
   const href = routeHref('detail', { type: 'movie', id: 'tt 1', video: null });
   assert.equal(href, '#/detail/movie/tt%201');
   assert.deepEqual(parseRoute(href).params, { type: 'movie', id: 'tt 1' });
   assert.equal(routeHref('home'), '#/');
   assert.equal(routeHref('search', { q: 'la la land' }), '#/search?q=la+la+land');
+  // "type" is a filter outside title pages (was dropped: Films/Séries switches did nothing).
+  assert.equal(routeHref('discover', { type: 'series', catalog: 'top', genre: '' }), '#/discover?type=series&catalog=top');
+  assert.deepEqual(parseRoute(routeHref('library', { type: 'movie', sort: 'name' })).params, { type: 'movie', sort: 'name' });
 });
 
 test('progress ratio and resume rules', () => {

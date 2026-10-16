@@ -16,12 +16,24 @@ directement sur le site, dans un navigateur.
 
 ## Ce que tu peux faire
 
-- **Accueil** : « Continuer à regarder » (avec ta progression), puis les catalogues de
-  l'addon de métadonnées (films et séries populaires, à la une…), lus depuis son manifest.
-- **Découvrir** : grille d'affiches filtrable par type, catalogue et genre, qui se charge
-  au fur et à mesure qu'on descend.
-- **Fiche** : fond, logo, année, durée, note, genres, résumé, casting ; pour une série,
-  le choix de la saison et la liste des épisodes (✓ vus, barre de progression). Les
+- **Accueil** : « Continuer à regarder » (avec ta progression ; sur chaque affiche, ✓
+  marque comme vu et ✕ retire de la liste sans toucher à l'historique), puis les
+  catalogues de l'addon de métadonnées (films et séries populaires, à la une…), lus depuis
+  son manifest.
+- **Découvrir** : grille d'affiches par type, **triée par popularité, année ou note**
+  (les catalogues de l'addon), filtrable par genre et par **année**, avec le nombre de
+  titres chargés. Les filtres sont dans l'URL, et le bouton retour revient au même
+  endroit de la liste.
+- **Recherche** : la barre du haut (raccourci **/**, Échap pour vider) ; résultats en
+  grille, filtrables Films / Séries (avec le nombre de chaque) et triables (pertinence,
+  année, note).
+- **Fiche** : fond, logo, année, durée, note, genres (cliquables → Découvrir), résumé,
+  casting (cliquable → Recherche) ; **Bande-annonce** (YouTube), **IMDb**, **Partager**
+  (copie le lien de la fiche), **Marquer comme vu / non vu**. Pour une série, la fiche
+  s'ouvre sur **le prochain épisode à voir** (celui en cours, sinon celui après le dernier
+  vu), avec un raccourci **Épisode suivant** ; chaque épisode a sa date de sortie (« À
+  venir » s'il n'est pas sorti) et un bouton ✓ vu / non vu, et toute une saison peut être
+  marquée d'un coup. Les
   sources sont dans le panneau de droite, avec les mêmes infos qu'avant (qualité,
   👤 sources, taille, HDR/DV/HEVC, ⚡ débrid, filtres et tri).
   - **Regarder ensemble** lance la meilleure source (**MULTI** d'abord, pour que chacun
@@ -30,15 +42,23 @@ directement sur le site, dans un navigateur.
     **VOSTFR** sont lus dans le nom de la release.
   - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
   - **Ajouter à la bibliothèque**.
-- **Bibliothèque** : tes titres, filtrables (films/séries) et triables (récents, A → Z).
+- **Bibliothèque** : tes titres, filtrables (tout / films / séries, avec le nombre de
+  chaque), triables (ajout récent, dernière lecture, A → Z, année, note) et une recherche
+  dans la bibliothèque.
 - **Historique** : ce que tu as regardé, du plus récent au plus ancien, avec ta
-  progression ; reprendre ou retirer.
+  progression ; reprendre, marquer comme vu, retirer, ou **tout effacer** (deux clics pour
+  confirmer : Discord bloque les fenêtres de confirmation).
 - **Lecteur** : synchro, qualité auto et pistes comme avant. Le bouton ← (ou Échap) réduit
   le film en **mini-lecteur** : tu peux continuer à chercher pendant que ça joue, et ce que
   tu lances démarre toujours pour tout le monde.
-- **Paramètres** : thème (sombre, clair, système), qualité par défaut, code de la salle et
-  lien d'invitation (hors Discord), **tes propres addons de sources** (ex. ton Torrentio
-  avec ta clé débrid : l'URL reste sur le serveur et n'est jamais réaffichée en entier).
+- **Paramètres** : thème (sombre, clair, système), qualité par défaut, **langue audio**
+  (VF / VO) et **sous-titres par défaut**, réinitialiser ces préférences, code de la salle
+  et lien d'invitation (hors Discord), **tes propres addons de sources** (ex. ton
+  Torrentio avec ta clé débrid : l'URL reste sur le serveur et n'est jamais réaffichée en
+  entier), et **Mes données** : exporter (fichier JSON), effacer l'historique, ou tout
+  supprimer (historique, bibliothèque, addons perso ; le compte reste).
+- Une adresse inconnue affiche « Page introuvable » ; un lien de fiche partagé ouvre la
+  bonne fiche même après la connexion Discord sur le site.
 
 ## Comment ça marche
 
@@ -340,6 +360,7 @@ client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
 client/src/format.ts   routes, progression, choix de la meilleure source (testé)
+client/src/lists.ts    tris et filtres (bibliothèque, recherche, Découvrir), épisode suivant (testé)
 client/src/style.css   tous les styles ; couleurs et tailles en variables (thèmes sombre/clair)
 ```
 

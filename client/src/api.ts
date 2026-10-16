@@ -78,6 +78,16 @@ export interface Meta extends SearchResult {
   genres: string[];
   cast: string[];
   director: string[];
+  writers?: string[];
+  country?: string | null;
+  awards?: string | null;
+  status?: string | null;
+  released?: string | null;
+  imdbId?: string | null;
+  /** YouTube id of the trailer. */
+  trailer?: string | null;
+  /** Similar titles, when the meta addon lists them in its links. */
+  similar?: { type: MetaType; id: string; name: string }[];
   videos: Video[];
 }
 
@@ -106,6 +116,8 @@ export interface Progress {
 
 export interface LibraryItem extends SearchResult {
   addedAt: number;
+  /** Last time I watched something of this title (null: never). */
+  lastWatchedAt?: number | null;
 }
 
 export interface UserAddon {
