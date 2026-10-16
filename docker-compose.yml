@@ -1,16 +1,31 @@
-# Backend + serveur de streaming Stremio, sur la même machine (ton PC sous Linux,
-# ou un serveur). Seul le backend est exposé : le serveur Stremio reste privé.
+# Backend + serveur de streaming Stremio privé. Prêt pour Coolify (build pack
+# "Docker Compose") comme pour un `docker compose up -d --build` classique.
+#
+# Coolify : les variables ${...} apparaissent dans l'onglet "Environment Variables",
+# et le domaine se met sur le service "watch-party" avec le port 3001
+# (ex. https://watch.mciut.fr:3001). Seul ce service est exposé.
 services:
   watch-party:
     build: .
-    env_file: .env
     environment:
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      STREAM_ADDON_URLS: ${STREAM_ADDON_URLS}
+      META_ADDON_URL: ${META_ADDON_URL:-https://v3-cinemeta.strem.io/manifest.json}
       STREMIO_SERVER_URL: http://stremio:11470
       STREMIO_SELF_URL: http://127.0.0.1:11470
-    ports:
-      - "3001:3001" # derrière ton reverse proxy HTTPS (Caddy, Traefik…)
+      STREMIO_CACHE_GB: ${STREMIO_CACHE_GB:-100}
+      ALLOW_BROWSER_MODE: ${ALLOW_BROWSER_MODE:-0}
+    expose:
+      - "3001"
     depends_on:
       - stremio
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   stremio:
@@ -19,11 +34,11 @@ services:
       NO_CORS: "1"
     volumes:
       - stremio-data:/root/.stremio-server
-    # Transcodage matériel AMD (RX 6650 XT) via VAAPI — Linux uniquement.
-    # Vérifie ensuite que /settings liste "vaapi-renderD128" dans allTranscodeProfiles.
-    devices:
-      - /dev/dri:/dev/dri
-    # Pas de "ports:" : il n'est joignable que par le backend.
+    # Pas de ports ni de domaine : seul le backend le joint, sur le réseau interne.
+    #
+    # Transcodage matériel AMD/Intel (Linux, VAAPI) : décommente si la machine a un GPU.
+    # devices:
+    #   - /dev/dri:/dev/dri
     restart: unless-stopped
 
 volumes:

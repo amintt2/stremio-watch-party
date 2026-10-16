@@ -16,16 +16,18 @@ export const QUALITIES = [
   { id: '480', label: '480p', maxWidth: 854, estBitrate: 1_800_000 },
 ];
 
-// Codecs every browser takes as-is from the converter (fMP4 segments). Others are
-// added per viewer from their capabilities.
+// Video codecs every browser takes as-is from the converter (fMP4 segments). Others
+// are added per viewer from their capabilities.
 const BASE_VIDEO_CODECS = ['h264'];
-const BASE_AUDIO_CODECS = ['aac', 'mp3'];
+// Audio is always made AAC/MP3 for everyone: it is cheap, and keeping a single audio
+// variant means fewer distinct converters when many people watch.
+const AUDIO_CODECS = ['aac', 'mp3'];
 
-/** Profile path segment: quality id + capability letters, e.g. "2160hv" or "1080o". */
-const CAP_LETTERS = { h: 'hevc', a: 'av1', v: 'vp9', o: 'opus' };
+/** Profile path segment: quality id + capability letters, e.g. "2160hv". */
+const CAP_LETTERS = { h: 'hevc', a: 'av1', v: 'vp9' };
 
 export function parseProfile(profile) {
-  const m = /^(\d{3,4})([hvao]*)$/.exec(String(profile));
+  const m = /^(\d{3,4})([hva]*)$/.exec(String(profile));
   if (!m) return null;
   const caps = {};
   for (const letter of m[2]) caps[CAP_LETTERS[letter]] = true;
@@ -155,7 +157,7 @@ export function availableQualities(info) {
  *
  * @param info     probe result of the session
  * @param quality  one of QUALITIES ids
- * @param caps     { hevc, av1, vp9, opus: boolean } what the viewer's browser can decode
+ * @param caps     { hevc, av1, vp9: boolean } what the viewer's browser can decode
  */
 export function converterParams(sid, info, quality, caps = {}) {
   const q = QUALITIES.find((x) => x.id === quality);
@@ -173,13 +175,12 @@ export function converterParams(sid, info, quality, caps = {}) {
     query.append('maxWidth', String(q.maxWidth));
     query.append('forceTranscoding', '1');
   }
-  const audioCodecs = [...BASE_AUDIO_CODECS, ...(caps.opus ? ['opus'] : [])];
-  for (const a of audioCodecs) query.append('audioCodecs', a);
+  for (const a of AUDIO_CODECS) query.append('audioCodecs', a);
   query.append('maxAudioChannels', '2');
 
-  const video = copy ? `c-${codec}` : `t-${q.maxWidth}`;
   return {
-    convertId: `wp-${sid}-${video}${caps.opus ? '-o' : ''}`,
+    // At most one copy + one per transcoded width per media (see transcode concurrency).
+    convertId: `wp-${sid}-${copy ? `c-${codec}` : `t-${q.maxWidth}`}`,
     query,
     mode: copy ? 'copy' : 'transcode',
     outputWidth: copy ? info.video.width : Math.min(q.maxWidth, info.video.width),
@@ -231,24 +232,59 @@ export async function fetchHls(session, params, rest, signal) {
   });
 }
 
-/** Warns when the Stremio server would kill converters of other viewers. */
-export async function checkStremioServer(log) {
-  try {
-    const res = await stremio('/settings', { signal: AbortSignal.timeout(5000) });
-    const { values } = await res.json();
-    log.info(
-      { version: values.serverVersion, hwaccel: values.transcodeHardwareAccel, profile: values.transcodeProfile },
-      'Stremio streaming server reachable'
-    );
-    if ((values.transcodeConcurrency || 1) < 3) {
-      log.warn(
-        `Stremio server transcodeConcurrency=${values.transcodeConcurrency}: viewers on different qualities will ` +
-          'cancel each other. Raise it to 3–4 (see README).'
-      );
-    }
-    return values;
-  } catch (err) {
-    log.warn({ err: err.message }, `Stremio streaming server unreachable at ${config.stremioServerUrl}`);
-    return null;
+/** Settings the watch party needs from the Stremio server (applied when STREMIO_AUTO_TUNE is on). */
+export function wantedSettings(values) {
+  const wanted = {};
+  // One converter per quality must be able to live at the same time.
+  if ((values.transcodeConcurrency || 1) < config.stremioTranscodeConcurrency) {
+    wanted.transcodeConcurrency = config.stremioTranscodeConcurrency;
   }
+  if (config.stremioCacheBytes && values.cacheSize !== null && values.cacheSize !== config.stremioCacheBytes) {
+    wanted.cacheSize = config.stremioCacheBytes;
+  }
+  return wanted;
+}
+
+async function checkOnce(log) {
+  const res = await stremio('/settings', { signal: AbortSignal.timeout(5000) });
+  const { values } = await res.json();
+  log.info(
+    {
+      version: values.serverVersion,
+      hwaccel: values.transcodeHardwareAccel,
+      profile: values.transcodeProfile,
+      profiles: values.allTranscodeProfiles,
+    },
+    'Stremio streaming server reachable'
+  );
+  const wanted = wantedSettings(values);
+  if (Object.keys(wanted).length === 0) return;
+  if (!config.stremioAutoTune) {
+    log.warn({ wanted }, 'Stremio server settings are not suited for several qualities at once (see README)');
+    return;
+  }
+  const post = await stremio('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(wanted),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (post.ok) log.info({ applied: wanted }, 'Stremio server settings updated');
+  else log.warn({ status: post.status, wanted }, 'Could not update Stremio server settings');
+}
+
+/**
+ * Checks (and tunes) the Stremio server in the background, retrying until it is up:
+ * in a compose stack it may start after this backend.
+ */
+export function watchStremioServer(log) {
+  let attempt = 0;
+  const run = () =>
+    checkOnce(log).catch((err) => {
+      if (attempt++ % 6 === 0) {
+        log.warn({ err: err.message }, `Stremio streaming server unreachable at ${config.stremioServerUrl}, retrying`);
+      }
+      setTimeout(run, 10_000).unref();
+    });
+  run();
 }
