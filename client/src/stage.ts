@@ -63,6 +63,18 @@ const IDLE_MS = 3000;
 const SEEK_BURST_MS = 450;
 /** "Risque de coupure" shows after this long in the red. */
 const POOR_NOTICE_MS = 4000;
+/** Phones held upright: picture at the top, details under it (see the CSS "phone player" section). */
+const PORTRAIT_MEDIA = '(max-width: 640px) and (orientation: portrait)';
+/** Avatars shown in the player's top bar before "+N". */
+const MAX_CHIPS = 4;
+
+/** "Toi seul" / "2 spectateurs · toi, Bob". */
+export function watchersLabel(members: { uid: string; name: string }[], meUid: string) {
+  if (members.length <= 1) return 'Toi seul pour l’instant';
+  const names = members.map((m) => (m.uid === meUid ? 'toi' : m.name));
+  const list = names.length > 4 ? `${names.slice(0, 3).join(', ')} et ${names.length - 3} autres` : names.join(', ');
+  return `${members.length} spectateurs · ${list}`;
+}
 
 type Doc = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
 type FsElement = HTMLElement & { webkitRequestFullscreen?: () => void };
@@ -112,7 +124,11 @@ export function createStage(host: StageHost) {
   const stageMembers = h('div', { class: 'members', 'aria-label': 'Spectateurs' });
   const stopLabel = h('span', { class: 'btn-label' }, 'Arrêter');
   const stopBtn = h('button', { class: 'btn btn-ghost btn-sm on-media stop-btn', type: 'button', title: 'Arrêter pour tout le monde' }, icon('stop', 'icon icon-sm'), stopLabel);
-  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, ...(host.topExtra || []), stageMembers, stopBtn);
+  // "Qui regarde" (phones in portrait, under the picture).
+  const stageWho = h('span', { class: 'stage-who' });
+  // Room actions: in the top bar, or under the picture on phones in portrait (see placeLayout).
+  const topActions = h('div', { class: 'stage-top-actions' }, ...(host.topExtra || []), h('div', { class: 'stage-members' }, stageMembers, stageWho), stopBtn);
+  const stageTop = h('div', { class: 'stage-top' }, backBtn, stageTitle, topActions);
 
   // ------------------------------------------------------------ seek bar
   const seek = h('input', { class: 'seek', type: 'range', min: 0, max: 1000, value: 0, step: 1, 'aria-label': 'Position' });
@@ -133,7 +149,7 @@ export function createStage(host: StageHost) {
   const volLabel = h('span', { class: 'volume-pct' });
   const volGroup = h('span', { class: 'volume-group' }, muteBtn, volInline, volLabel);
   const healthBtn = h('button', { class: 'health', type: 'button', 'aria-label': 'Qualité de la connexion' }, h('span', { class: 'health-dot' }));
-  const pipBtn = iconBtn('pip', 'Image dans l’image');
+  const pipBtn = iconBtn('pip', 'Image dans l’image', 'pip-btn');
   const gearBtn = iconBtn('settings', 'Réglages', 'gear-btn');
   gearBtn.setAttribute('aria-haspopup', 'true');
   const fsBtn = iconBtn('fullscreen', 'Plein écran (F)');
@@ -160,6 +176,11 @@ export function createStage(host: StageHost) {
   const miniTitle = h('span', { class: 'mini-title' });
   const miniBar = h('div', { class: 'mini-bar' }, miniTitle, miniPlay, iconBtn('expand', 'Agrandir', 'mini-expand'));
 
+  // ------------------------------------------------------------ phone in portrait
+  // The picture sits at the top (16:9) with its controls attached under it; the space
+  // left below gets the title, who is watching and the room actions (like YouTube's app).
+  const stageInfo = h('div', { class: 'stage-info' });
+
   const el = h(
     'section',
     { class: 'stage mode-hidden', 'aria-label': 'Lecteur' },
@@ -172,10 +193,24 @@ export function createStage(host: StageHost) {
     stageTop,
     notice,
     controls,
+    stageInfo,
     menu,
     help,
     miniBar
   );
+
+  const portraitQuery = matchMedia(PORTRAIT_MEDIA);
+  function placeLayout() {
+    const portrait = portraitQuery.matches && !el.classList.contains('is-fullscreen');
+    el.classList.toggle('portrait', portrait);
+    if (portrait && stageTitle.parentElement !== stageInfo) stageInfo.append(stageTitle, topActions);
+    else if (!portrait && stageTitle.parentElement !== stageTop) {
+      backBtn.after(stageTitle);
+      stageTop.append(topActions);
+    }
+  }
+  portraitQuery.addEventListener('change', placeLayout);
+  placeLayout();
 
   // ------------------------------------------------------------ room actions
   const togglePlay = () => {
@@ -281,6 +316,7 @@ export function createStage(host: StageHost) {
   const onFullscreenChange = () => {
     const full = fsElement() === el;
     el.classList.toggle('is-fullscreen', full);
+    placeLayout();
     setIcon(fsBtn, full ? 'fullscreen-exit' : 'fullscreen');
     fsBtn.setAttribute('aria-label', full ? 'Quitter le plein écran (F)' : 'Plein écran (F)');
     fsBtn.title = fsBtn.getAttribute('aria-label')!;
@@ -361,11 +397,13 @@ export function createStage(host: StageHost) {
   // ------------------------------------------------------------ subtitles
   // Style: sizes follow the picture's height (letterbox included), like on a TV.
   const applySubStyle = () => {
-    const box = el.getBoundingClientRect();
+    const box = (mode === 'full' ? video : el).getBoundingClientRect();
     const height = pictureHeight(box.width, box.height, video.videoWidth, video.videoHeight);
     applyStyleVars(el, styleVars(subtitleStyle(), height || 360, box.height || height || 360));
   };
-  new ResizeObserver(applySubStyle).observe(el);
+  const subObserver = new ResizeObserver(applySubStyle);
+  subObserver.observe(el);
+  subObserver.observe(video);
   video.addEventListener('loadedmetadata', applySubStyle);
   video.addEventListener('resize', applySubStyle);
   onSubtitleStyle(applySubStyle);
@@ -660,6 +698,10 @@ export function createStage(host: StageHost) {
       hasSubs || subs.loading ? row('Sous-titres', subs.loading ? 'Chargement…' : subtitleLabel(subtitleValue()), 'subs') : h('div', { class: 'menu-item menu-muted' }, 'Pas de sous-titres pour cette vidéo'),
       subs.selected ? row('Synchronisation', subs.syncing ? 'Recherche…' : formatOffset(subs.timing.offset), 'sync') : null,
       hasSubs ? row('Style des sous-titres', '', 'style') : null,
+      // Phones: the bar keeps only the essentials, picture-in-picture moves here.
+      pipBtn.hidden
+        ? null
+        : h('button', { class: 'menu-row menu-phone-only', type: 'button', onclick: () => (closeMenus(), pipBtn.click()) }, icon('pip', 'icon icon-sm'), h('span', { class: 'menu-row-title' }, 'Image dans l’image')),
       h('button', { class: 'menu-row menu-keys', type: 'button', onclick: openHelp }, icon('keyboard', 'icon icon-sm'), h('span', { class: 'menu-row-title' }, 'Raccourcis clavier'), h('kbd', {}, '?'))
     );
     renderVolume();
@@ -1070,7 +1112,9 @@ export function createStage(host: StageHost) {
       lastRev = s.rev;
       before = { pos: player.expected(), at: Date.now(), running: s.running };
     }
-    clear(stageMembers, memberChips(s, me.uid, label, host.memberClass));
+    const chips = memberChips(s, me.uid, label, host.memberClass);
+    clear(stageMembers, chips.length > MAX_CHIPS ? [...chips.slice(0, MAX_CHIPS - 1), h('span', { class: 'member member-more' }, `+${chips.length - MAX_CHIPS + 1}`)] : chips);
+    stageWho.textContent = watchersLabel(s?.members || [], me.uid);
     // Protected rooms: only the host and co-pilotes may stop for everyone.
     if (host.canStop) stopBtn.hidden = !host.canStop();
     clear(
