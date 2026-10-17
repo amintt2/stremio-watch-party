@@ -2365,10 +2365,6 @@ body.player-open .toasts {
   color: var(--on-media-muted);
 }
 
-/* File subtitle tracks (hls.js) follow the same size setting. */
-.stage .video::cue {
-  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
-}
 
 /* Touch screens: volume lives in the menu (phones also have volume buttons);
    no keyboard shortcuts entry. */
@@ -2449,21 +2445,35 @@ body.player-open .toasts {
   justify-self: center;
   z-index: 1;
   display: grid;
-  gap: 4px;
+  gap: 0.15em;
   justify-items: center;
   text-align: center;
-  max-width: min(90%, 1100px);
-  margin-bottom: 6%;
+  max-width: min(92%, 1200px);
+  margin-bottom: var(--subs-bottom, 6%);
   pointer-events: none;
   transition: margin-bottom 0.25s;
+  /* The viewer's style (substyle.ts), as custom properties set on the stage. */
+  font-family: var(--subs-family, var(--font));
+  font-size: var(--subs-size, 24px);
+  font-weight: var(--subs-weight, 600);
+  color: var(--subs-color, var(--on-media));
+  line-height: 1.25;
+}
+
+/* "Bande": one band behind the whole block. */
+.subs:not(:empty) {
+  background: var(--subs-band, transparent);
+  padding: 0.15em 0.6em;
+  border-radius: var(--radius-sm);
 }
 
 .stage.mode-full > .subs {
   grid-area: 1 / 1;
 }
 
+/* Controls showing: the lines move up above them, never under. */
 .stage:not(.idle) > .subs {
-  margin-bottom: 120px;
+  margin-bottom: max(var(--subs-bottom, 0px), 120px);
 }
 
 .stage.mode-mini > .subs,
@@ -2472,14 +2482,216 @@ body.player-open .toasts {
 }
 
 .subs-cue {
-  padding: 2px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--media-scrim-top);
-  color: var(--on-media);
-  font-size: calc(clamp(16px, 2.4vw, 34px) * var(--subs-scale, 1));
-  line-height: 1.3;
-  font-weight: 500;
+  padding: 0.05em 0.35em;
+  border-radius: 0.2em;
+  background: var(--subs-box, transparent);
+  text-shadow: var(--subs-shadow, 0 0 4px #000);
   white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* ---- style controls (settings page and player menu) */
+
+.substyle {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.substyle-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.substyle-label {
+  padding-top: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.substyle-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.segmented-wrap {
+  flex-wrap: wrap;
+  border-radius: var(--radius);
+  justify-self: start;
+  max-width: 100%;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 3px var(--bg-2);
+}
+
+.swatch.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--bg-2), 0 0 0 2px var(--accent-ring);
+}
+
+.stage-menu .swatch {
+  box-shadow: inset 0 0 0 3px var(--media-panel);
+  border-color: var(--media-panel-border);
+}
+
+.stage-menu .swatch.active {
+  border-color: var(--on-media);
+}
+
+.stage-menu .substyle {
+  padding: 4px 14px 10px;
+}
+
+.stage-menu .substyle-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.stage-menu .substyle-label {
+  padding-top: 0;
+  color: var(--on-media-muted);
+}
+
+.subs-preview {
+  position: relative;
+  display: grid;
+  /* A screen's shape: the preview shows the real size on a 16:9 picture this wide. */
+  aspect-ratio: 16 / 9;
+  max-height: 380px;
+  margin: 12px 0 18px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* A dusky still: sky, hills, a bright patch where outlines matter most. */
+  background:
+    radial-gradient(circle at 72% 82%, rgba(255, 236, 190, 0.85) 0 9%, transparent 26%),
+    linear-gradient(180deg, #2b3d66 0%, #8c6d8f 48%, #d99a6c 70%, #3a2c32 71%, #1d1a20 100%);
+  container-type: size;
+}
+
+.subs-preview > .subs {
+  align-self: end;
+}
+
+@media (max-width: 640px) {
+  .substyle-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .substyle-label {
+    padding-top: 0;
+  }
+
+}
+
+/* ---- sync page of the player menu */
+
+.menu-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--media-panel-border);
+  color: var(--on-media-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.menu-badge-good {
+  border-color: var(--media-good);
+  color: var(--media-good);
+}
+
+.menu-help {
+  margin: 0;
+  padding: 2px 14px 8px;
+  color: var(--on-media-muted);
+  font-size: 13px;
+}
+
+.menu-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--on-media);
+  font-size: 13px;
+}
+
+.sync-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--media-idle);
+}
+
+.sync-file,
+.sync-reference,
+.sync-audio {
+  background: var(--media-good);
+}
+
+.sync-manual,
+.sync-saved,
+.sync-fps {
+  background: var(--accent);
+}
+
+.sync-busy {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.menu-nudges {
+  display: grid;
+  grid-template-columns: repeat(5, auto);
+  justify-content: space-between;
+  align-items: center;
+}
+
+.menu-nudges .btn {
+  padding-inline: 8px;
+}
+
+.menu-line {
+  align-items: baseline;
+  gap: 10px;
+  text-align: left;
+}
+
+.menu-line-time {
+  flex: none;
+  color: var(--on-media-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.menu-line-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-link {
+  text-decoration: none;
+  color: inherit;
 }
 
 
@@ -3621,5 +3833,749 @@ kbd {
     width: 100%;
     justify-content: flex-start;
     padding-left: 44px;
+  }
+}
+
+/* ---------------------------------------------------------------- GPU encoder (encoder.ts) */
+
+.encoder-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+}
+
+.encoder-status .muted {
+  grid-column: 2;
+}
+
+.encoder-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.encoder-status.online .encoder-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 25%, transparent);
+}
+
+.encoder-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.encoder-suggest {
+  position: fixed;
+  z-index: 40;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  gap: 12px;
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+
+.encoder-suggest-text {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.encoder-suggest-text strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.encoder-suggest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ================================================================ external players
+   "Ouvrir dans…" (VLC, Infuse, MX Player…), "Ouvrir sur le site" and the remote shown
+   while this viewer watches elsewhere (client/src/externalPlayer.ts). Tokens only. */
+
+/* Top-bar shortcut: phones and touch screens (the settings menu has it everywhere). */
+.ext-open {
+  display: none;
+}
+
+.ext-open.active {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .ext-open {
+    display: inline-flex;
+  }
+}
+
+.ext-menu {
+  width: 360px;
+}
+
+.ext-intro,
+.ext-note {
+  margin: 0;
+  padding: 2px 12px 8px;
+  color: var(--on-media-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.ext-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ext-option-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+
+.ext-option-text .menu-row-value {
+  max-width: none;
+  white-space: normal;
+}
+
+.ext-option[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ext-option[disabled]:hover {
+  background: none;
+}
+
+.ext-primary {
+  background: var(--accent-soft);
+}
+
+.ext-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--on-media-soft);
+  color: var(--on-media-muted);
+  font-size: 11px;
+}
+
+/* Watching elsewhere: no picture here, the remote in the middle. */
+.stage.ext-active > .video,
+.stage.ext-active > .overlay,
+.stage.ext-active > .subs {
+  visibility: hidden;
+}
+
+.ext-remote {
+  grid-area: 1 / 1;
+  align-self: center;
+  justify-self: center;
+  z-index: 3;
+  width: min(440px, calc(100% - 32px));
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-lg);
+  background: var(--media-panel);
+  color: var(--on-media);
+  box-shadow: var(--shadow);
+}
+
+.ext-remote[hidden],
+.stage.mode-mini > .ext-remote {
+  display: none;
+}
+
+.ext-remote-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+}
+
+.ext-remote-head .icon {
+  color: var(--accent);
+}
+
+.ext-remote-clock {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.ext-time {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ext-hint {
+  margin: 0;
+  color: var(--on-media-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ext-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ext-outline {
+  border-color: var(--media-panel-border);
+}
+
+/* Member chips: someone watching in an external player (the room doesn't wait for them). */
+.member.external {
+  outline: 2px dashed var(--text-muted);
+  outline-offset: 1px;
+}
+
+.stage .member.external {
+  outline-color: var(--on-media-muted);
+}
+
+@media (max-width: 640px) {
+  .ext-menu {
+    width: auto;
+  }
+  .ext-time {
+    font-size: 24px;
+  }
+/* ================================================================ phones: shell
+   Safe areas (viewport-fit=cover), a top bar that never clips, finger-sized targets.
+   Everything below only adds to the rules above; colours come from the tokens. */
+
+#app {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+.search {
+  min-width: 0;
+}
+
+.topbar-right {
+  flex: none;
+}
+
+/* Grids sized by their content (forms, codes) never push the page wider. */
+.page,
+.settings-section,
+.field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.room-code code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  #app {
+    grid-template-rows: calc(var(--topbar-h) + env(safe-area-inset-top)) minmax(0, 1fr) calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+  }
+  .topbar {
+    padding-top: env(safe-area-inset-top);
+    gap: 6px;
+  }
+  .topbar-right {
+    gap: 2px;
+  }
+  .topbar .room-open {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .topbar .room-open .room-count {
+    position: absolute;
+    top: 4px;
+    right: 2px;
+  }
+  .topbar .conn-dot {
+    display: none;
+  }
+  .topbar .me {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+  }
+  .topbar .me .avatar {
+    width: 32px;
+    height: 32px;
+  }
+  .rail {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .nav-item {
+    min-height: 48px;
+    justify-content: center;
+  }
+  .stage.mode-mini {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px);
+    grid-template-columns: 96px minmax(0, 1fr);
+    border: 1px solid var(--border-strong);
+  }
+  .stage.mode-mini > .video {
+    width: 96px;
+    height: 100%;
+    aspect-ratio: auto;
+    object-fit: cover;
+  }
+  .stage.mode-mini > .mini-bar {
+    min-height: 56px;
+  }
+  .mini-bar .btn-icon {
+    width: 44px;
+    height: 44px;
+  }
+  /* Pages end above the mini-player when something plays. */
+  body:has(.stage.mode-mini) .page {
+    padding-bottom: 96px;
+  }
+  .toasts {
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 84px);
+    width: calc(100% - 24px);
+  }
+  .toast {
+    font-size: 13px;
+    padding: 10px 12px;
+  }
+  .page-title {
+    font-size: 24px;
+  }
+  .row-more {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 2px 0 12px;
+  }
+  .row-head {
+    align-items: center;
+  }
+  /* Settings: the code takes its own line, the join form keeps its button. */
+  .settings-section {
+    padding: 16px;
+  }
+  .room-code code {
+    flex: 1 1 100%;
+  }
+  .inline-form .btn {
+    flex: none;
+  }
+  .field > .input,
+  .field > .inline-form {
+    width: 100%;
+  }
+  /* Detail: main action full width, the others two by two; small actions as tiles. */
+  .detail-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-self: stretch;
+  }
+  .detail-actions .btn {
+    min-width: 0;
+    padding-left: 12px;
+    padding-right: 12px;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.2;
+  }
+  .detail-actions .btn-ghost {
+    background: var(--bg-3);
+  }
+  .detail-actions .btn-primary,
+  .detail-actions .btn:only-child {
+    grid-column: 1 / -1;
+  }
+  .detail-more {
+    display: grid;
+    justify-self: stretch;
+    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    gap: 4px;
+    margin-top: 0;
+  }
+  .detail-more .btn {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    min-height: 60px;
+    padding: 8px 4px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.2;
+  }
+  .history-actions .btn-icon {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Finger-sized targets on touch screens (same look, only taller). */
+@media (pointer: coarse) {
+  .btn-sm,
+  .segmented button,
+  .room-open {
+    min-height: 44px;
+  }
+  .btn-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .input {
+    min-height: 44px;
+  }
+  .chip {
+    padding: 6px 12px;
+  }
+  .swatch {
+    width: 40px;
+    height: 40px;
+  }
+  .card-btn {
+    position: relative;
+  }
+  .card-btn::after {
+    content: '';
+    position: absolute;
+    inset: -7px;
+  }
+}
+
+/* ================================================================ phones: player
+   stage.ts placeLayout(): on a phone held upright (.portrait) the picture sits at the
+   top in 16:9, the controls are attached under it (always shown: they cover nothing),
+   then the title, who's watching and the room actions (.stage-info). On a phone held
+   sideways: full-bleed picture, overlay controls kept inside the safe areas. The gear
+   menu becomes a bottom sheet on phones. */
+
+/* Title: two lines at most, then an ellipsis (every size). */
+.stage-title-text strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.stage-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  min-width: 0;
+}
+
+.stage-members {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stage-who,
+.stage-info {
+  display: none;
+}
+
+.member-more {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  background: var(--on-media-soft);
+  color: var(--on-media);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.seek-row .time {
+  flex: none;
+  min-width: 4ch;
+}
+
+.seek-wrap {
+  min-width: 0;
+}
+
+/* Narrow top bars: avatars only, no quality badges, buttons as icons. */
+@media (max-width: 900px) {
+  .stage-top .member-q {
+    display: none;
+  }
+  .stage-top {
+    gap: 8px;
+  }
+  .stage-top .stage-top-actions {
+    gap: 4px;
+  }
+  .stage-top .room-open .btn-label,
+  .stage-top .stop-btn:not(.armed) .btn-label {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .stage .btn-icon,
+  .stage .btn-sm.on-media,
+  .health {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .stage .btn-sm.on-media {
+    justify-content: center;
+  }
+  .time-btn {
+    min-height: 44px;
+  }
+}
+
+/* ---- phone held upright */
+@media (max-width: 640px) and (orientation: portrait) {
+  .stage.mode-full.portrait {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas: 'picture' 'controls' 'notice' 'info';
+    padding-top: env(safe-area-inset-top);
+  }
+  .stage.mode-full.portrait > .video,
+  .stage.mode-full.portrait > .overlay,
+  .stage.mode-full.portrait > .subs,
+  .stage.mode-full.portrait > .ripple,
+  .stage.mode-full.portrait > .stage-flash,
+  .stage.mode-full.portrait > .stage-top {
+    grid-area: picture;
+  }
+  .stage.mode-full.portrait > .video {
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+  .stage.mode-full.portrait > .subs {
+    margin-bottom: var(--subs-bottom, 6%);
+  }
+  .stage.mode-full.portrait > .stage-top {
+    padding: 4px 4px 28px;
+  }
+  .stage.mode-full.portrait > .controls {
+    grid-area: controls;
+    align-self: start;
+    gap: 0;
+    padding: 0 8px 4px;
+    background: var(--media-bg);
+  }
+  .stage.portrait.idle {
+    cursor: auto;
+  }
+  .stage.portrait.idle > .controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .stage.portrait .seek-row {
+    gap: 10px;
+    padding: 0 6px;
+  }
+  .stage.portrait .controls-row {
+    gap: 2px;
+  }
+  .stage.mode-full.portrait > .stage-notice {
+    grid-area: notice;
+    position: static;
+    transform: none;
+    justify-self: center;
+    margin: 8px 12px 0;
+    max-width: calc(100% - 24px);
+  }
+  .stage.mode-full.portrait > .stage-info {
+    grid-area: info;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px 16px calc(88px + env(safe-area-inset-bottom));
+    background: var(--media-panel);
+    border-top: 1px solid var(--media-panel-border);
+  }
+  .stage-info .stage-title {
+    flex: none;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .stage-info .stage-poster {
+    width: 60px;
+    border-radius: var(--radius-sm);
+  }
+  .stage-info .stage-title-text {
+    gap: 4px;
+    padding-top: 2px;
+  }
+  .stage-info .stage-title-text strong {
+    font-size: 18px;
+  }
+  .stage-info .muted-on-media {
+    font-size: 13px;
+    white-space: normal;
+  }
+  .stage-info .stage-top-actions {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .stage-info .stage-members {
+    order: -1;
+    flex: 1 1 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--on-media-soft);
+  }
+  .stage-info .stage-who {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    color: var(--on-media-muted);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stage-info .btn-sm {
+    min-height: 44px;
+    padding: 10px 16px;
+    font-size: 14px;
+    background: var(--on-media-soft);
+  }
+  .stage-info .room-open .btn-label,
+  .stage-info .stop-btn .btn-label {
+    display: inline;
+  }
+}
+
+/* ---- phone held sideways: full-bleed picture, controls inside the safe areas */
+@media (orientation: landscape) and (max-height: 500px) {
+  .stage.mode-full > .stage-top {
+    padding: max(6px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 28px max(12px, env(safe-area-inset-left));
+  }
+  .stage.mode-full > .controls {
+    gap: 0;
+    padding: 24px max(16px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  .stage-poster {
+    width: 28px;
+  }
+  .stage-title-text strong {
+    font-size: 15px;
+  }
+  .stage-notice {
+    top: 58px;
+  }
+  .stage:not(.idle) > .subs {
+    margin-bottom: max(var(--subs-bottom, 0px), 100px);
+  }
+  body.player-open .toasts {
+    bottom: 110px;
+  }
+}
+
+/* ---- gear menu: bottom sheet on phones */
+@media (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+  .stage.mode-full > .stage-menu {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-width: 560px;
+    max-height: min(78%, 620px);
+    margin: 0 auto;
+    padding: 0 8px calc(12px + env(safe-area-inset-bottom));
+    border-bottom: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    z-index: 6;
+    animation: sheet-up 0.2s ease-out;
+  }
+  /* Drag handle look, kept at the top while the sheet scrolls. */
+  .stage.mode-full > .stage-menu::before {
+    content: '';
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: block;
+    height: 20px;
+    margin: 0 -8px 2px;
+    background: linear-gradient(var(--on-media-track), var(--on-media-track)) 50% 8px / 40px 4px no-repeat, var(--media-panel);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .stage.mode-full.menu-open::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: var(--scrim);
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+/* ================================================================ phones: catalogue & player details
+   Layout ideas taken from Stremio's web app (no code or assets): three posters per row
+   with a peek of the next one, rounded-square player buttons, secondary player actions
+   folded into the menu on narrow screens. */
+
+.stage .controls .btn-icon {
+  border-radius: var(--radius);
+}
+
+.menu-phone-only {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .stage .controls .pip-btn {
+    display: none;
+  }
+  .stage-menu .menu-phone-only {
+    display: flex;
+  }
+  .row-items {
+    gap: 10px;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+  .row-items::-webkit-scrollbar {
+    display: none;
+  }
+  .row-items > .card {
+    width: auto;
+    flex: 0 0 calc((100% - 20px) / 3.2);
   }
 }

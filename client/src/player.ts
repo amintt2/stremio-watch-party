@@ -63,6 +63,8 @@ export class Player {
   subtitleTrack = -1;
   needsGesture = false;
   error: string | null = null;
+  /** Playing in an external player or on the site (see externalPlayer.ts): nothing plays here. */
+  detached = false;
 
   onChange: () => void = () => {};
 
@@ -150,6 +152,7 @@ export class Player {
   applyState(state: RoomState) {
     const prev = this.state;
     this.state = state;
+    if (this.detached) return;
     if (!state.media) {
       if (this.media) this.unload();
       return;
@@ -157,6 +160,11 @@ export class Player {
     if (state.media.sid !== this.media?.sid) {
       this.load(state.media);
       return;
+    }
+    // A GPU encoder took over (or left): same film, reload the stream from where the room is.
+    if ((state.media.encoder?.by || null) !== (this.media.encoder?.by || null)) {
+      this.media = state.media;
+      if (this.quality) this.startHls(this.quality, this.expected());
     }
     // Someone seeked: jump now, without grace, so our buffering holds the room
     // until everybody has the new position ready.
@@ -190,6 +198,20 @@ export class Player {
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
     this.startHls(start, this.expected());
+  }
+
+  /** Stops (true) or resumes (false) playing here, the room going on either way. */
+  setDetached(on: boolean) {
+    if (on === this.detached) return;
+    this.detached = on;
+    if (on) {
+      this.pendingReady = false;
+      this.reportedStall = false;
+      if (this.media) this.unload();
+    } else if (this.state?.media) {
+      this.load(this.state.media);
+    }
+    this.onChange();
   }
 
   private unload() {
@@ -333,7 +355,8 @@ export class Player {
     this.subtitleTrack = id;
     if (this.hls) {
       this.hls.subtitleTrack = id;
-      this.hls.subtitleDisplay = id >= 0;
+      // Cues still load into a hidden text track: the stage draws them in the viewer's style.
+      this.hls.subtitleDisplay = false;
     }
     this.onChange();
   }

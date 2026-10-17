@@ -63,6 +63,16 @@ const MIGRATIONS = [
   // and keep the IMDb rating of library entries (sort by rating).
   `ALTER TABLE progress ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE library ADD COLUMN rating TEXT;`,
+  // Paired GPU encoder apps (encoder.js): only a hash of each key is kept.
+  `CREATE TABLE encoder_keys (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     hash TEXT NOT NULL,
+     label TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     seen_at INTEGER
+   );
+   CREATE INDEX encoder_keys_user ON encoder_keys (user_id);`,
 ];
 
 const str = (v, max) => (typeof v === 'string' && v ? v.slice(0, max) : null);
@@ -321,6 +331,7 @@ export class Store {
         .map(toProgress),
       library: this.library(uid),
       addons: this.listAddons(uid),
+      encoders: this.listEncoderKeys(uid),
     };
   }
 
@@ -330,7 +341,7 @@ export class Store {
     let n = 0;
     this.db.exec('BEGIN');
     try {
-      for (const table of ['progress', 'library', 'addons']) n += this.db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(u).changes;
+      for (const table of ['progress', 'library', 'addons', 'encoder_keys']) n += this.db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(u).changes;
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
@@ -356,6 +367,35 @@ export class Store {
 
   removeAddon(uid, id) {
     return this.db.prepare('DELETE FROM addons WHERE user_id = ? AND id = ?').run(String(uid), String(id)).changes > 0;
+  }
+
+  // ---------------------------------------------------------------- GPU encoder keys
+
+  addEncoderKey(uid, { id, hash, label }) {
+    this.db
+      .prepare('INSERT INTO encoder_keys (id, user_id, hash, label, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(String(id), String(uid), String(hash), str(label, 80) || 'PC', this.now());
+  }
+
+  /** Server-side lookup by key id (the app proves the secret, see encoder.js). */
+  encoderKey(id) {
+    const r = this.db.prepare('SELECT user_id, hash, label FROM encoder_keys WHERE id = ?').get(String(id));
+    return r ? { uid: r.user_id, hash: r.hash, label: r.label } : null;
+  }
+
+  touchEncoderKey(id) {
+    this.db.prepare('UPDATE encoder_keys SET seen_at = ? WHERE id = ?').run(this.now(), String(id));
+  }
+
+  listEncoderKeys(uid) {
+    return this.db
+      .prepare('SELECT id, label, created_at, seen_at FROM encoder_keys WHERE user_id = ? ORDER BY created_at DESC')
+      .all(String(uid))
+      .map((r) => ({ id: r.id, label: r.label, createdAt: r.created_at, seenAt: r.seen_at }));
+  }
+
+  removeEncoderKey(uid, id) {
+    return this.db.prepare('DELETE FROM encoder_keys WHERE user_id = ? AND id = ?').run(String(uid), String(id)).changes > 0;
   }
 
   /** What the browser may see: name, host and a masked URL, never the secret part. */

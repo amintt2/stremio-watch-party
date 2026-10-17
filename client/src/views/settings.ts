@@ -1,8 +1,11 @@
 import { api, type UserAddon } from '../api.ts';
 import type { App, View } from '../app.ts';
-import { localStorageGet, localStorageRemove, localStorageSet } from '../auth.ts';
+import { continueInBrowser, leaveActivityRoom, localStorageGet, localStorageRemove, localStorageSet } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
 import { languageName } from '../format.ts';
+import { subtitlePreview, subtitleStyleControls } from '../subcontrols.ts';
+import { resetSubtitleStyle } from '../substyle.ts';
+import { encoderSection } from '../encoder.ts';
 import { avatar, confirmButton, copyText, icon, legalFooter } from '../ui.ts';
 
 export type Theme = 'dark' | 'light' | 'auto';
@@ -11,6 +14,7 @@ const THEME_KEY = 'wp-theme';
 const QUALITY_KEY = 'wp-quality';
 const AUDIO_KEY = 'wp-audio';
 const SUBS_KEY = 'wp-subs';
+const AUTOSYNC_KEY = 'wp-subs-autosync';
 /** Subtitle languages offered by default (others can be picked in the player). */
 const SUB_LANGS = ['fr', 'en', 'es', 'de', 'it', 'pt', 'nl', 'ar', 'tr', 'pl', 'ru', 'ja', 'ko', 'zh'];
 
@@ -60,7 +64,29 @@ export function settingsView(app: App): View {
   // ---- room
   let roomSection: HTMLElement;
   if (mode === 'discord') {
-    roomSection = section('Salle', h('p', { class: 'muted' }, 'Tu regardes avec les personnes qui ont rejoint cette Activité Discord.'));
+    roomSection = section(
+      'Salle',
+      h('p', { class: 'muted' }, 'Tu regardes avec les personnes qui ont rejoint cette Activité Discord.'),
+      // Not field(): a <label> would forward clicks on its text to the button.
+      h(
+        'div',
+        { class: 'field' },
+        h('span', { class: 'field-label' }, 'Continuer dans le navigateur'),
+        h(
+          'button',
+          { class: 'btn btn-secondary ext-continue', type: 'button', onclick: () => continueInBrowser().catch((err: Error) => toast(err.message)) },
+          icon('external'),
+          'Ouvrir sur le site'
+        ),
+        h('span', { class: 'field-hint' }, 'Même compte, même salle, sans te reconnecter. Pratique sur téléphone, et pour ouvrir le film dans VLC ou Infuse.')
+      )
+    );
+  } else if (room?.activity) {
+    roomSection = section(
+      'Salle',
+      h('p', { class: 'muted' }, 'Tu continues dans le navigateur la salle de ton Activité Discord : tout le monde là-bas voit la même chose que toi.'),
+      h('div', { class: 'room-code' }, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: leaveActivityRoom }, 'Revenir à ma salle'))
+    );
   } else {
     const link = `${location.origin}/?room=${room?.code || ''}`;
     const codeInput = h('input', { class: 'input', placeholder: 'Code de salle', 'aria-label': 'Code de salle', maxlength: 64, autocomplete: 'off' });
@@ -177,10 +203,27 @@ export function settingsView(app: App): View {
   );
   subsSel.value = savedSubs;
 
+  const autoSyncSel = h(
+    'select',
+    {
+      class: 'input',
+      onchange: (e: Event) => {
+        const on = (e.currentTarget as HTMLSelectElement).value === '1';
+        localStorageSet(AUTOSYNC_KEY, on ? '1' : '0');
+        toast(on ? 'Synchro automatique activée' : 'Synchro automatique désactivée');
+      },
+    },
+    h('option', { value: '1' }, 'Oui (recommandé)'),
+    h('option', { value: '0' }, 'Non, je règle moi-même')
+  );
+  autoSyncSel.value = localStorageGet(AUTOSYNC_KEY) === '0' ? '0' : '1';
+
   const resetPrefs = confirmButton(
     { class: 'btn btn-ghost btn-sm', label: 'Réinitialiser les préférences', confirmLabel: 'Réinitialiser ? Clique encore', icon: 'reset' },
     () => {
-      for (const key of [THEME_KEY, QUALITY_KEY, AUDIO_KEY, SUBS_KEY]) localStorageRemove(key);
+      for (const key of [THEME_KEY, QUALITY_KEY, AUDIO_KEY, SUBS_KEY, AUTOSYNC_KEY]) localStorageRemove(key);
+      resetSubtitleStyle();
+      autoSyncSel.value = '1';
       applyTheme(savedTheme());
       player.setPreference('auto');
       localStorageRemove(QUALITY_KEY);
@@ -312,9 +355,21 @@ export function settingsView(app: App): View {
       h('p', { class: 'muted small' }, 'Ces choix sont propres à cet appareil, et chacun a les siens dans la salle.'),
       field('Qualité par défaut', qualitySel, 'Auto choisit selon la vitesse de ta connexion, pendant la lecture.'),
       field('Langue audio', audioSel, 'Quand un fichier a plusieurs pistes (MULTI). Changer de piste dans le lecteur met aussi à jour ce choix.'),
-      field('Sous-titres par défaut', subsSel, 'Chargés automatiquement quand ils existent dans cette langue.'),
       h('div', { class: 'settings-actions' }, resetPrefs)
     ),
+    section(
+      'Sous-titres',
+      h('p', { class: 'muted small' }, 'Chacun choisit les siens dans la salle : langue, calage et style ne changent rien pour les autres.'),
+      field('Langue par défaut', subsSel, 'Chargés automatiquement quand ils existent dans cette langue (ceux faits pour le fichier joué d’abord).'),
+      field(
+        'Synchro automatique',
+        autoSyncSel,
+        'Les sous-titres qui ne sont pas faits pour le fichier joué sont calés sur une version qui l’est, sinon sur les voix du film pendant la lecture (rien n’est enregistré ni envoyé).'
+      ),
+      subtitlePreview(),
+      subtitleStyleControls()
+    ),
+    section('Encodeur GPU', encoderSection()),
     section(
       'Mes addons de sources',
       h(

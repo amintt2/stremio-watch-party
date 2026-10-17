@@ -95,7 +95,7 @@ export class Room {
   constructor(id, { now = Date.now, lobby = false, owner = null } = {}) {
     this.id = id;
     this.now = now;
-    this.members = new Map(); // uid -> { uid, name, avatar, connections, quality, order, presence }
+    this.members = new Map(); // uid -> { uid, name, avatar, connections, quality, order, presence, external }
     this.waiting = new Map(); // uid -> deadline (ms)
     this.media = null;
     this.paused = true;
@@ -380,7 +380,7 @@ export class Room {
   }
 
   #addMember({ uid, name, avatar, connections }) {
-    this.members.set(uid, { uid, name, avatar, connections, quality: null, order: ++this.seq, presence: 'watching' });
+    this.members.set(uid, { uid, name, avatar, connections, quality: null, order: ++this.seq, presence: 'watching', external: false });
     this.admitted.add(uid);
     this.emptySince = null;
     if (uid === this.host) this.hostAwayAt = null;
@@ -497,7 +497,7 @@ export class Room {
     this.gaveUp.clear();
     this.retries.clear();
     const deadline = this.now() + LOAD_TIMEOUT_MS;
-    for (const uid of this.members.keys()) this.waiting.set(uid, deadline);
+    for (const m of this.members.values()) if (!m.external) this.waiting.set(m.uid, deadline);
     this.starting = null;
     this.requests.clear();
     this.actionVotes.clear();
@@ -541,10 +541,20 @@ export class Room {
     return this.#changed();
   }
 
+  /** The media's GPU encoder came or went (encoder.js): everyone reloads their stream. */
+  setEncoder(sid, encoder) {
+    if (this.media?.sid !== sid) return false;
+    if (JSON.stringify(this.media.encoder || null) === JSON.stringify(encoder || null)) return false;
+    this.media = { ...this.media, encoder: encoder || null };
+    return this.#changed();
+  }
+
   /** A viewer stalled (true) or is ready/playing again (false). */
   setBuffering(uid, buffering) {
     if (!this.media || !this.members.has(uid)) return false;
     if (buffering) {
+      // Watching in an external player: their page doesn't play, it never holds the room.
+      if (this.members.get(uid).external) return false;
       if (this.waiting.has(uid) || this.paused) return false;
       // A viewer stalling again and again (bad link, or on purpose) stops holding the room.
       const t = this.now();
@@ -575,6 +585,21 @@ export class Room {
     if (!this.waiting.has(uid)) return false;
     this.#settle();
     this.waiting.delete(uid);
+    return this.#changed();
+  }
+
+  /**
+   * "Lecteur externe": this viewer plays the file in VLC & co. The room never waits for
+   * them (their player doesn't follow the room on its own); their page is a remote.
+   */
+  setExternal(uid, value) {
+    const m = this.members.get(uid);
+    if (!m || typeof value !== 'boolean' || m.external === value) return false;
+    m.external = value;
+    if (value && this.waiting.has(uid)) {
+      this.#settle();
+      this.waiting.delete(uid);
+    }
     return this.#changed();
   }
 
@@ -1033,12 +1058,13 @@ export class Room {
       position: this.currentPosition(t),
       ended: this.ended,
       waiting: [...this.waiting.keys()],
-      members: [...this.members.values()].map(({ uid, name, avatar, quality, presence }) => ({
+      members: [...this.members.values()].map(({ uid, name, avatar, quality, presence, external }) => ({
         uid,
         name,
         avatar,
         quality,
         state: this.waiting.has(uid) ? 'loading' : this.media ? presence : 'browsing',
+        ...(external ? { external: true } : {}),
       })),
       control: this.control,
       host: this.host,

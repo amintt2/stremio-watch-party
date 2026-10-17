@@ -1,12 +1,21 @@
 import './style.css';
+// Subtitle fonts (SIL OFL), bundled: only downloaded when a viewer picks them.
+import '@fontsource/nunito/600.css';
+import '@fontsource/nunito/800.css';
+import '@fontsource/atkinson-hyperlegible/400.css';
+import '@fontsource/atkinson-hyperlegible/700.css';
+import '@fontsource/comic-neue/400.css';
+import '@fontsource/comic-neue/700.css';
 import { api, type RoomState } from './api.ts';
 import type { App, PlayRequest, View } from './app.ts';
 import { LoginRequired, loginScreen, signIn, type Identity } from './auth.ts';
 import { Connection } from './connection.ts';
+import { createExternal } from './externalPlayer.ts';
 import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
 import { createStage, memberChips } from './stage.ts';
+import { suggestEncoder } from './encoder.ts';
 import { RoomSocial } from './room.ts';
 import { avatar, icon } from './ui.ts';
 import { detailView } from './views/detail.ts';
@@ -129,7 +138,7 @@ function start({ user: me, mode, room }: Identity) {
   const status = h('span', { class: 'conn-dot', title: 'Synchro' });
   const topMembers = h('div', { class: 'members', 'aria-label': 'Dans la salle' });
   const roomBadge =
-    mode === 'discord'
+    mode === 'discord' || room?.activity
       ? null
       : h('a', { class: 'room-badge', href: routeHref('settings'), title: 'Salle : inviter ou rejoindre' }, icon('users', 'icon icon-sm'), room?.code || '');
   const me_ = h('a', { class: 'me', href: routeHref('settings'), title: me.name }, avatar(me));
@@ -140,6 +149,8 @@ function start({ user: me, mode, room }: Identity) {
   const content = h('main', { class: 'content', tabindex: -1 });
 
   // ------------------------------------------------------------ player stage (stage.ts)
+  // "Ouvrir dans…" (VLC & co.) and "Ouvrir sur le site": externalPlayer.ts.
+  const external = createExternal({ me, conn, player, state: () => state, inDiscord: mode === 'discord' });
   const stage = createStage({
     me,
     conn,
@@ -149,7 +160,8 @@ function start({ user: me, mode, room }: Identity) {
     isOpen: () => route.name === 'player',
     open: () => openPlayer(),
     close: () => closePlayer(),
-    topExtra: [social.stageButton],
+    topExtra: [external.topButton, social.stageButton],
+    menuExtra: (closeMenu) => external.menuRow(closeMenu),
     memberClass: (m) => social.memberInfo(m).cls,
     canStop: () => social.canStart(),
     stop: () => {
@@ -158,7 +170,10 @@ function start({ user: me, mode, room }: Identity) {
     },
   });
 
+  external.mount(stage.el);
   clear(root, rail, topbar, content, stage.el, social.el, h('div', { id: 'toasts', class: 'toasts' }));
+  // The host is offered the GPU encoder app (computers only, see encoder.ts).
+  void suggestEncoder(() => !!state && state.host === me.uid, root);
 
   // ------------------------------------------------------------ app api for views
   const app: App = {
@@ -367,6 +382,7 @@ function start({ user: me, mode, room }: Identity) {
     // Others only: my own avatar is already in the top bar.
     clear(topMembers, memberChips(s && { ...s, members: s.members.filter((m) => m.uid !== me.uid) }, me.uid, stage.label, (m) => social.memberInfo(m).cls));
     stage.update();
+    external.update();
     updateStageMode();
   };
 
@@ -409,6 +425,11 @@ function start({ user: me, mode, room }: Identity) {
       else if (src.hdr && !copied) toast('Source HDR transcodée : les couleurs peuvent être ternes.');
     }
     if (!sid && route.name === 'player') closePlayer();
+    const enc = s.media?.encoder;
+    if (sid && sid === lastMediaSid && enc && enc.by !== prev?.media?.encoder?.by) {
+      const who = s.members.find((m) => m.uid === enc.by)?.name || 'un membre';
+      toast(enc.by === me.uid ? `Ton GPU prépare les qualités (${enc.encoder})` : `Le GPU de ${who} prépare les qualités`);
+    }
     lastMediaSid = sid;
   };
   conn.onNotice = toast;
@@ -418,6 +439,8 @@ function start({ user: me, mode, room }: Identity) {
   // This viewer's own position (what gets saved to their account).
   setInterval(() => {
     if (state?.media && state.media.sid === lastSid && video.readyState >= 1 && video.currentTime > 0) lastPos = video.currentTime;
+    // Watching elsewhere (external player, the site): the room's position is the best guess.
+    else if (state?.media && state.media.sid === lastSid && player.detached) lastPos = player.expected();
   }, 250);
 
   render();

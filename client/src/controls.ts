@@ -117,6 +117,8 @@ export type ShortcutAction =
   | 'mute'
   | 'fullscreen'
   | 'subtitles'
+  | 'subs-earlier'
+  | 'subs-later'
   | 'help'
   | 'escape';
 
@@ -161,6 +163,10 @@ export function shortcutAction(e: KeyLike): ShortcutAction | null {
       return 'fullscreen';
     case 'c':
       return 'subtitles';
+    case 'g':
+      return 'subs-earlier';
+    case 'h':
+      return 'subs-later';
   }
   return null;
 }
@@ -174,19 +180,12 @@ export const SHORTCUTS: [string, string][] = [
   ['M', 'Couper le son'],
   ['F', 'Plein écran'],
   ['C', 'Changer de sous-titres'],
+  ['G / H', 'Sous-titres 0,1 s plus tôt / plus tard'],
   ['?', 'Afficher les raccourcis'],
   ['Échap', 'Fermer / réduire le lecteur'],
 ];
 
 // ---------------------------------------------------------------- subtitles
-
-export const SUB_SIZES = ['s', 'm', 'l', 'xl'] as const;
-export type SubSize = (typeof SUB_SIZES)[number];
-export const SUB_SCALE: Record<SubSize, number> = { s: 0.8, m: 1, l: 1.25, xl: 1.55 };
-
-export function parseSubSize(raw: string | null): SubSize {
-  return (SUB_SIZES as readonly string[]).includes(raw || '') ? (raw as SubSize) : 'm';
-}
 
 /** Next entry of the subtitle menu (wraps to the first, usually "off"). */
 export function nextOption(values: string[], current: string) {

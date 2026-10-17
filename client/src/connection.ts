@@ -7,6 +7,7 @@ type Outgoing =
   | { t: 'seek'; position: number }
   | { t: 'buffering'; value: boolean }
   | { t: 'quality'; value: string }
+  | { t: 'external'; value: boolean }
   | { t: 'progress'; sid: string; position: number }
   // Social layer (room.ts)
   | { t: 'presence'; value: 'watching' | 'browsing' }

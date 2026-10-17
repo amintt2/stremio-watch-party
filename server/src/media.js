@@ -108,6 +108,77 @@ export function checkFileSize(info, fileIdx, max = config.maxTorrentBytes) {
   }
 }
 
+/** Name (no folders) and size of the torrent file the engine will serve. */
+export function fileFromInfo(info, fileIdx) {
+  const f = Array.isArray(info?.files) ? info.files[fileIdx] : null;
+  const name = String(f?.name || f?.path || '').split(/[\\/]/).pop() || null;
+  return { name, size: Number(f?.length) > 0 ? Number(f.length) : null };
+}
+
+/** File name and size as the addon announced them (debrid / HTTP links). */
+export function fileFromStream(stream, mediaURL) {
+  const h = stream.behaviorHints || {};
+  let name = typeof h.filename === 'string' && h.filename.trim() ? h.filename.trim().split(/[\\/]/).pop() : null;
+  if (!name) {
+    try {
+      const last = decodeURIComponent(new URL(mediaURL).pathname.split('/').pop() || '');
+      if (/\.(mkv|mp4|avi|webm|m4v|mov|ts)$/i.test(last)) name = last;
+    } catch {}
+  }
+  const size = Number.isFinite(h.videoSize) && h.videoSize > 0 ? Math.round(h.videoSize) : null;
+  const hash = typeof h.videoHash === 'string' && /^[0-9a-f]{16}$/i.test(h.videoHash) ? h.videoHash.toLowerCase() : null;
+  return { name, size, hash };
+}
+
+const HASH_CHUNK = 65536;
+
+/**
+ * OpenSubtitles hash: file size + the first and last 64 KiB summed as little-endian
+ * 64-bit words, modulo 2^64. Subtitle addons use it to find files timed for this exact video.
+ */
+export function opensubtitlesHash(head, tail, size) {
+  let sum = BigInt(size);
+  for (const buf of [head, tail]) {
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    for (let i = 0; i + 8 <= buf.byteLength; i += 8) sum += view.getBigUint64(i, true);
+  }
+  return BigInt.asUintN(64, sum).toString(16).padStart(16, '0');
+}
+
+async function readRange(url, start, end, signal) {
+  const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
+  if (res.status !== 206) {
+    res.body?.cancel().catch(() => {});
+    throw new Error(`Range refusé (${res.status})`);
+  }
+  const total = Number(/\/(\d+)$/.exec(res.headers.get('content-range') || '')?.[1]) || null;
+  return { bytes: new Uint8Array(await res.arrayBuffer()), total };
+}
+
+/**
+ * Fills session.file.hash (and the size) once, from two small Range reads of the file.
+ * For a torrent this asks the engine for the last piece early, which players do anyway.
+ */
+export async function ensureFileHash(session, timeoutMs = 15000) {
+  const file = (session.file ||= { name: null, size: null, hash: null });
+  if (file.hash) return file;
+  if (!session.hashing) {
+    session.hashing = (async () => {
+      const signal = AbortSignal.timeout(timeoutMs);
+      const head = await readRange(session.mediaURL, 0, HASH_CHUNK - 1, signal);
+      const size = head.total || file.size;
+      if (!size || size < HASH_CHUNK * 2) throw new Error('taille inconnue');
+      const tail = await readRange(session.mediaURL, size - HASH_CHUNK, size - 1, signal);
+      file.size = size;
+      file.hash = opensubtitlesHash(head.bytes, tail.bytes, size);
+    })().finally(() => {
+      session.hashing = null;
+    });
+  }
+  await session.hashing;
+  return file;
+}
+
 /** File to play: the addon's fileIdx, else the engine's guess, else the largest file. */
 export function chooseFile(stream, info) {
   if (typeof stream.fileIdx === 'number') return stream.fileIdx;
@@ -115,6 +186,17 @@ export function chooseFile(stream, info) {
   const files = Array.isArray(info?.files) ? info.files : [];
   if (!files.length) return null;
   return files.reduce((best, f, i, all) => ((f.length || 0) > (all[best].length || 0) ? i : best), 0);
+}
+
+/** Name of an HTTP source's file: the addon's hint, else the last segment of its URL. */
+export function urlFileName(url, hint) {
+  if (typeof hint === 'string' && hint.trim()) return hint.trim();
+  try {
+    const last = new URL(url).pathname.split('/').filter(Boolean).pop();
+    return last ? decodeURIComponent(last) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -135,7 +217,7 @@ async function resolveTorrentHuwa(stream) {
   const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
   checkFileSize(info, fileIdx);
-  return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx };
+  return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx, file: fileFromInfo(info, fileIdx) };
 }
 
 async function resolveTorrent(stream, log) {
@@ -166,7 +248,7 @@ async function resolveTorrentStremio(stream) {
   const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
   checkFileSize(info, fileIdx);
-  return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx };
+  return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx, file: fileFromInfo(info, fileIdx) };
 }
 
 export async function probe(mediaURL) {
@@ -182,6 +264,7 @@ export async function probe(mediaURL) {
           codec: video.codec,
           width: video.width,
           height: video.height,
+          fps: Number(video.frameRate) > 0 ? Number(video.frameRate) : null,
           hdr: !!video.isHdr,
           dolbyVision: !!video.isDoVi,
         }
@@ -199,12 +282,17 @@ export async function createSession(stream, log) {
   const info = await probe(mediaURL);
   if (!info.video) throw new Error('Pas de piste vidéo dans ce fichier');
 
+  const hint = fileFromStream(stream, mediaURL);
   const sid = randomBytes(16).toString('base64url');
   const session = {
     sid,
     mediaURL,
     info,
     lastUsed: Date.now(),
+    // Name / size / OpenSubtitles hash of the played file: finds subtitles timed for it.
+    file: { name: torrent?.file.name || hint.name, size: torrent?.file.size || hint.size, hash: hint.hash },
+    // Shown by external players (see external.js); the URL itself never leaves the server.
+    fileName: torrent?.file.name || hint.name || urlFileName(mediaURL, stream.behaviorHints?.filename),
     torrent: torrent && { engine: torrent.engine, infoHash: torrent.infoHash, fileIdx: torrent.fileIdx },
   };
   sessions.set(sid, session);

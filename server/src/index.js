@@ -31,6 +31,7 @@ import {
   watchStremioServer,
   hlsParams,
   createSession,
+  ensureFileHash,
   fetchHls,
   getSession,
   fetchTorrentHealth,
@@ -43,7 +44,10 @@ import {
 import { Rooms, mediaLabel } from './rooms.js';
 import { RateLimiter, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
+import { Handoffs, fileUrl, issueRoomPass, proxyFile, safeFileName, signFileToken, verifyFileToken, verifyRoomPass } from './external.js';
 import { privacyPage, termsPage } from './legal.js';
+import { registerEncoder } from './encoderRoutes.js';
+import { parseGpuPath } from './encoder.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -116,6 +120,9 @@ setInterval(() => {
   for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
 
+// Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
+const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
+
 // Coarse flood guard per person on the socket; the room has finer per-action limits.
 const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
 
@@ -149,6 +156,7 @@ async function startMedia(room, { token, stream, title, subtitle, poster, meta, 
     { startAt: Number(startAt) || 0 }
   );
   publish(room);
+  encoders.attach(room, session);
   findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
   return true;
 }
@@ -192,13 +200,15 @@ async function runStart(room, { token, by, item }) {
 // ---------------------------------------------------------------- session / auth
 
 const discordConfigured = () => !!(config.discord.clientId && config.discord.clientSecret);
+/** Public address of the site (links opened outside the Discord iframe, external players). */
+const siteBase = (request) => config.publicUrl || `${request.protocol}://${request.host}`;
 
 app.get('/api/config', async (request) => ({
   clientId: config.discord.clientId || null,
   browserMode: config.allowBrowserMode,
   webLogin: discordConfigured(),
   // Public address of this site (links opened outside the Discord iframe).
-  publicUrl: config.publicUrl || `${request.protocol}://${request.host}`,
+  publicUrl: siteBase(request),
 }));
 
 app.post('/api/token', async (request, reply) => {
@@ -277,6 +287,12 @@ app.post('/api/session', async (request, reply) => {
   const web = verifyWebSession(parseCookies(request.headers.cookie)[SESSION_COOKIE]);
   const account = web && store.getUser(web.uid);
   if (!account) return reply.code(401).send({ error: 'Non connecté' });
+  // A tab handed off from the Activity stays in the Activity's room (see /api/handoff).
+  const passRoom = verifyRoomPass(request.body?.pass, account.uid);
+  if (passRoom) {
+    const user = { uid: account.uid, name: account.name, avatar: account.avatar };
+    return { session: issueSession({ ...user, room: passRoom }), user, room: { code: '', personal: false, activity: true } };
+  }
   const own = personalRoomCode(account.uid);
   const asked = request.body?.room;
   if (asked && !normalizeRoomCode(asked)) return reply.code(400).send({ error: 'Code de salle invalide' });
@@ -287,6 +303,48 @@ app.post('/api/session', async (request, reply) => {
     user,
     room: { code, personal: code === own },
   };
+});
+
+// ---------------------------------------------------------------- "Ouvrir sur le site"
+
+// One-time codes, in memory: a restart only invalidates codes nobody used within 5 min.
+const handoffs = new Handoffs();
+const handoffLimit = new RateLimiter({ max: 5, windowMs: 60_000 });
+
+/** Exchanges a handoff code for a web session cookie + a bearer session in the same room. */
+app.post('/api/handoff/redeem', async (request, reply) => {
+  const entry = handoffs.consume(String(request.body?.code || ''));
+  const account = entry && store.getUser(entry.user.uid);
+  if (!account) return reply.code(410).send({ error: 'Lien expiré ou déjà utilisé : rouvre-le depuis Discord' });
+  const user = { uid: account.uid, name: account.name, avatar: account.avatar };
+  reply.header('Set-Cookie', serializeCookie(SESSION_COOKIE, issueWebSession(user), { maxAge: WEB_SESSION_TTL_S, secure: cookieSecure(request) }));
+  return {
+    session: issueSession({ ...user, room: entry.room }),
+    pass: issueRoomPass({ uid: user.uid, room: entry.room }),
+    user,
+    room: { code: '', personal: false, activity: true },
+  };
+});
+
+// ---------------------------------------------------------------- external players
+
+// The token in the path is the credential (players have no cookie): see external.js.
+const fileLimit = new RateLimiter({ max: 240, windowMs: 60_000 });
+app.route({
+  method: ['GET', 'HEAD'],
+  url: '/api/media/:sid/file/:token/:name',
+  handler: async (request, reply) => {
+    const { sid, token } = request.params;
+    const uid = verifyFileToken(sid, token);
+    if (!uid) return reply.code(403).send({ error: 'Lien expiré ou invalide' });
+    const media = getSession(sid);
+    if (!media) return reply.code(404).send({ error: 'Vidéo terminée' });
+    // Someone kicked from the room that plays it loses their link too.
+    for (const room of rooms) if (room.media?.sid === sid && room.status(uid) === 'blocked') return reply.code(403).send({ error: 'Accès retiré' });
+    // VLC seeks with many short range requests: a generous budget, per person.
+    if (!fileLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de requêtes' });
+    return proxyFile(request, reply, media.mediaURL, { name: safeFileName(media.fileName) });
+  },
 });
 
 // ---------------------------------------------------------------- catalog
@@ -381,6 +439,33 @@ app.register(async (api) => {
     return health ? { kind: 'torrent', ...health } : { kind: 'torrent', engine: media.torrent.engine, level: 'unknown' };
   });
 
+  /** Private file URL for an external player (VLC, Infuse...), plus where the room is. */
+  const externalLimit = new RateLimiter({ max: 20, windowMs: 60_000 });
+  api.post('/api/media/:sid/external', async (request, reply) => {
+    const { sid } = request.params;
+    const { uid } = request.session;
+    const room = rooms.peek(request.session.room);
+    if (!room || room.status(uid) !== 'member' || room.media?.sid !== sid) return reply.code(409).send({ error: 'Cette vidéo ne passe plus dans ta salle' });
+    const media = getSession(sid);
+    if (!media) return reply.code(404).send({ error: 'Session inconnue' });
+    if (!externalLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
+    const name = safeFileName(media.fileName);
+    return {
+      url: fileUrl(siteBase(request), sid, signFileToken(sid, uid), name),
+      name,
+      title: mediaLabel(room.media),
+      position: room.currentPosition(),
+    };
+  });
+
+  /** "Ouvrir sur le site": a one-time link that logs the same account into the same room. */
+  api.post('/api/handoff', async (request, reply) => {
+    const { uid, name, avatar, room } = request.session;
+    if (!handoffLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
+    const code = handoffs.create({ uid, name, avatar }, room);
+    return { url: `${siteBase(request)}/?handoff=${code}` };
+  });
+
   /** External subtitles of what a media session plays (each viewer picks their own). */
   const subtitleLists = new Map();
   api.get('/api/subtitles/:sid', async (request, reply) => {
@@ -388,11 +473,17 @@ app.register(async (api) => {
     if (!media) return reply.code(404).send({ error: 'Session inconnue' });
     const meta = media.meta;
     if (!meta?.videoId || !config.subtitleAddons.length) return { items: [] };
-    const cacheKey = `${meta.type}:${meta.videoId}`;
+    // The file's OpenSubtitles hash finds subtitles timed for this exact release. Not
+    // fatal: without it the addon still answers by name and by title.
+    const file = await ensureFileHash(media, 10000).catch((err) => {
+      request.log.debug({ err: err.message }, 'video hash unavailable');
+      return media.file;
+    });
+    const cacheKey = `${meta.type}:${meta.videoId}:${file?.hash || ''}:${file?.name || ''}`;
     let entry = subtitleLists.get(cacheKey);
     if (!entry || entry.expires < Date.now()) {
-      // One query per video for the whole room, shared for 30 min.
-      entry = { items: listSubtitles(meta.type, meta.videoId, request.log), expires: Date.now() + 30 * 60 * 1000 };
+      // One query per video file for the whole room, shared for 30 min.
+      entry = { items: listSubtitles(meta.type, meta.videoId, request.log, file), expires: Date.now() + 30 * 60 * 1000 };
       subtitleLists.set(cacheKey, entry);
       entry.items.catch(() => subtitleLists.delete(cacheKey));
       if (subtitleLists.size > 200) subtitleLists.delete(subtitleLists.keys().next().value);
@@ -608,9 +699,11 @@ app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
   const rest = request.params['*'];
   const session = getSession(sid);
   if (!session) return reply.code(404).send({ error: 'Session inconnue' });
-  if (!isAllowedHlsPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
+  if (!isAllowedHlsPath(rest) && !parseGpuPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
 
   const parsed = parseProfile(profile);
+  // Qualities the host's GPU encoder makes come from it; the rest from the converter.
+  if (parsed && (await encoders.hls(request, reply, session, parsed, rest))) return reply;
   const params = parsed && hlsParams(sid, session.info, parsed.quality, parsed.caps, rest);
   if (!params) return reply.code(400).send({ error: 'Qualité invalide' });
 

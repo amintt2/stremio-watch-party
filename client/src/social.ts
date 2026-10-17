@@ -43,7 +43,8 @@ export function roleLabel(s: RoomState, uid: string) {
   return null;
 }
 
-export function memberStateLabel(m: Pick<Member, 'state'>) {
+export function memberStateLabel(m: Pick<Member, 'state' | 'external'>) {
+  if (m.external) return 'lecteur externe';
   if (m.state === 'loading') return 'en chargement';
   if (m.state === 'browsing') return 'parcourt le catalogue';
   return 'en train de regarder';

@@ -177,8 +177,17 @@ au même moment, synchronisées.
 - **Sous-titres** : en plus de ceux du fichier, le menu **Sous-titres** propose ceux
   d'**OpenSubtitles** (addon Stremio OpenSubtitles v3), dans toutes les langues, français
   en premier. Chacun choisit les siens (ou aucun) ; les autres ne voient rien. La langue est
-  retenue pour les films suivants. Boutons **− / +** pour décaler de 0,5 s si les
-  sous-titres sont en avance ou en retard.
+  retenue pour les films suivants.
+- **Synchro** : le serveur calcule l'empreinte OpenSubtitles du fichier joué et l'envoie
+  avec son nom à l'addon. Les sous-titres **faits pour ce fichier** (« Fait pour ce
+  fichier ») ou pour la même version sortent en premier, déjà synchronisés. Les autres sont
+  calés automatiquement sur un sous-titre fait pour le fichier (même dans une autre langue,
+  avec correction 25 ↔ 23,976 images/s), sinon sur les voix du film mesurées pendant la
+  lecture (rien n'est enregistré ni envoyé). Réglage à la main : ±0,1 s / ±1 s, touches
+  **G / H**, ou « Caler sur une réplique entendue ». Le calage est retenu par fichier.
+- **Style** (Paramètres → Sous-titres, ou ⚙ → Style des sous-titres) : police, taille
+  (relative à l'image), couleur, contour, ombre, fond (boîte ou bande), position, gras, avec
+  un aperçu. Les sous-titres intégrés au fichier prennent le même style.
 - Les sous-titres sont téléchargés et convertis (SRT → texte) par le serveur : le navigateur
   ne voit jamais l'adresse des fichiers. Une seule recherche par épisode pour tout le salon.
 - `SUBTITLE_ADDON_URLS` : addons de sous-titres (OpenSubtitles v3 par défaut ; `none`
@@ -203,6 +212,41 @@ d'Activité, chacun a **sa salle perso**. Pour regarder ensemble, envoie le lien
 (**Paramètres → Salle → Copier le lien**, ou le badge en haut à droite) : tes amis
 l'ouvrent, se connectent, et vous êtes synchronisés. On peut aussi coller un code dans
 **Rejoindre une salle**.
+
+### Lecteur externe (VLC, Infuse, MX Player…) et « Ouvrir sur le site »
+
+Sur téléphone, surtout dans l'app Discord, le lecteur intégré n'est pas idéal. Dans le
+lecteur, **Réglages → Ouvrir dans…** (ou le bouton ↗ en haut, sur téléphone) envoie le film
+dans une vraie appli :
+
+- **Android** : VLC, MX Player (gratuit ou Pro), qui démarrent **au moment où en est la
+  salle**, ou « Autre lecteur… » (le choix d'appli d'Android).
+- **iPhone / iPad** : VLC, Infuse, Outplayer, nPlayer (à recaler à la main).
+- **Ordinateur** : « Ouvrir dans VLC » télécharge une petite playlist `.m3u` qui démarre au
+  bon moment.
+- Partout : **Copier le lien**, à coller dans n'importe quel lecteur (« Ouvrir un flux
+  réseau »).
+
+C'est le **fichier d'origine** : qualité d'origine, toutes les pistes audio, sous-titres
+intégrés, aucune conversion sur le serveur. Le lien est **personnel** et privé : signé pour
+toi et ce film, valable 12 h, il ne révèle jamais la vraie source (lien débrid, moteur
+torrent) ; un membre exclu de la salle perd le sien.
+
+Pendant ce temps, ta page devient une **télécommande** : lecture, pause et déplacements
+pilotent toujours la salle (selon tes droits), et la salle **ne t'attend plus** quand elle
+charge (ta pastille est en pointillés, « lecteur externe »). Ton lecteur, lui, ne suit pas
+les pauses et les sauts des autres : **Recaler** le rouvre au bon moment (Android, `.m3u`)
+ou t'indique l'heure de la salle. **Revenir au lecteur intégré** reprend la lecture dans la
+page.
+
+Dans l'Activité Discord, les autres applis ne peuvent pas s'ouvrir (Discord n'ouvre que des
+liens web). Le premier choix y est donc **Ouvrir sur le site** (aussi dans **Paramètres →
+Salle → Continuer dans le navigateur**) : un lien à usage unique, valable 5 minutes, ouvre
+le site dans ton navigateur avec **le même compte et la même salle**, sans te reconnecter.
+De là, « Ouvrir dans… » propose VLC & co. L'onglet garde la salle de l'Activité même s'il
+est rechargé ; « Revenir à ma salle » dans les Paramètres le ramène à ta salle perso.
+
+Pense à définir `PUBLIC_URL` : c'est l'adresse donnée aux lecteurs externes et au navigateur.
 
 ### Moteur torrent Huwa
 
@@ -229,6 +273,37 @@ addon → infoHash → Huwa (/{infoHash}/create, puis /{infoHash}/{fichier} en R
 - `GET /api/media/{sid}/health` (connecté) : pairs, débit, progression et verdict (`ok`,
   `slow` si le débit est sous celui de la vidéo, `searching`, `stalled`, `done`), pour
   l'indicateur « risque de coupure » du lecteur.
+
+### Encodeur GPU de l'hôte
+
+Au lieu de faire transcoder le serveur, l'hôte peut lancer l'**Encodeur Watch Party** sur son
+PC : sa carte graphique prépare les qualités (4K, 1080p, 720p, 480p) pour toute la salle.
+
+- **Installation** : sur ordinateur, l'hôte voit une carte « Accélère la salle avec ton
+  GPU » (ou Paramètres → Encodeur GPU). Le fichier téléchargé est **déjà jumelé** à son
+  compte : un `.exe` sous Windows (réglages glissés à la fin du fichier), un `.zip` sous
+  macOS / Linux (réglages dans `watchparty-encoder.json`). Lien à usage unique, 10 min.
+- **Au lancement**, comme Sunshine, il essaie les encodeurs dans l'ordre avec un vrai
+  encodage de test : NVIDIA NVENC, Intel Quick Sync, AMD AMF, Media Foundation (Windows),
+  VideoToolbox (macOS), VA-API (Linux), sinon le processeur (x264, 1080p au plus). Sous
+  Windows, il télécharge ffmpeg la première fois (~100 Mo) ; ailleurs, ffmpeg doit être
+  installé.
+- **Fonctionnement** : il ouvre une connexion WebSocket **sortante** vers le site (aucun port
+  à ouvrir), lit le film par le serveur (`/api/encoder/source`, Range) et renvoie des
+  segments MPEG-TS de 4 s (H.264 + AAC) sur une grille fixe : le segment *n* commence à
+  *n* × 4 s, donc un saut = « repars du segment *n* ». Un seul processus encode toutes les
+  qualités regardées (un seul décodage), 80 s d'avance au plus.
+- **Le serveur** garde ce qui est léger : le torrent, la **copie** quand le navigateur lit
+  déjà la source, et le relais. Les segments reçus restent en RAM (`GPU_CACHE_MB`, 768 par
+  défaut), rien sur le disque.
+- **Repli** : si l'encodeur se ferme ou prend trop de retard, le convertisseur Stremio
+  reprend tout seul et chaque lecteur recharge au même instant ; quand il revient, il reprend
+  le film en cours.
+- **Débit** : l'envoi de la box de l'hôte est la limite (≈ 6 Mb/s en 1080p, 3 en 720p,
+  16 en 4K, seulement pour les qualités regardées).
+- Clés : seule une empreinte est gardée en base ; « Retirer » dans Paramètres coupe le PC.
+- Le `Dockerfile` compile l'encodeur (`encoder/build.sh`, Go) pour Windows, macOS
+  (Apple Silicon et Intel) et Linux ; `ENCODER_DIST_DIR` pour servir d'autres builds.
 
 ### Combien de personnes ?
 
@@ -415,18 +490,28 @@ server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fich
 server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)
 server/src/db.js       SQLite : comptes, progression, historique, bibliothèque, addons perso (testé)
 server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
+server/src/encoder.js  encodeur GPU : clés, playlists sur grille fixe, file de travail, cache des segments (testé)
+server/src/encoderRoutes.js jumelage, téléchargement, socket de l'encodeur, envoi des segments, HLS GPU (testé)
+server/src/external.js lecteurs externes (lien de fichier signé, proxy Range) + « Ouvrir sur le site » (testé)
 client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
 client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres
 client/src/room.ts     bouton Salle, cartes en direct (comptes à rebours, demandes), présence
 client/src/views/queue.ts  panneau Salle : contrôle, file d'attente, votes, membres
 client/src/social.ts   règles côté client (droits, votes) (testé)
 client/src/streams.ts  panneau des sources (filtres, tri, meilleure source, badges MULTI/VF/VOSTFR)
-client/src/subtitles.ts sous-titres externes : choix par spectateur, décalage, affichage
+client/src/subtitles.ts sous-titres externes : choix par spectateur, calage, affichage
+client/src/subsync.ts  synchro auto des sous-titres (corrélation, ratios d'images/s) (testé)
+client/src/speech.ts   niveau des voix pendant la lecture (pour la synchro audio)
+client/src/substyle.ts / subcontrols.ts  style des sous-titres et ses réglages (testé)
+client/src/encoder.ts  Paramètres → Encodeur GPU, suggestion à l'hôte
 client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
+client/src/external.ts liens vers VLC, Infuse, MX Player… (intent Android, schémas iOS, .m3u) (testé)
+client/src/externalPlayer.ts « Ouvrir dans… », télécommande pendant la lecture externe
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
 client/src/format.ts   routes, progression, choix de la meilleure source (testé)
 client/src/lists.ts    tris et filtres (bibliothèque, recherche, Découvrir), épisode suivant (testé)
+encoder/               Encodeur Watch Party (Go) : sonde GPU, ffmpeg, segments (go test)
 client/src/style.css   tous les styles ; couleurs et tailles en variables (thèmes sombre/clair)
 ```
 
