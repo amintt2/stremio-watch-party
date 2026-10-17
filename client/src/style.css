@@ -3623,3 +3623,162 @@ kbd {
     padding-left: 44px;
   }
 }
+
+/* ================================================================ external players
+   "Ouvrir dans…" (VLC, Infuse, MX Player…), "Ouvrir sur le site" and the remote shown
+   while this viewer watches elsewhere (client/src/externalPlayer.ts). Tokens only. */
+
+/* Top-bar shortcut: phones and touch screens (the settings menu has it everywhere). */
+.ext-open {
+  display: none;
+}
+
+.ext-open.active {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .ext-open {
+    display: inline-flex;
+  }
+}
+
+.ext-menu {
+  width: 360px;
+}
+
+.ext-intro,
+.ext-note {
+  margin: 0;
+  padding: 2px 12px 8px;
+  color: var(--on-media-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.ext-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ext-option-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+
+.ext-option-text .menu-row-value {
+  max-width: none;
+  white-space: normal;
+}
+
+.ext-option[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ext-option[disabled]:hover {
+  background: none;
+}
+
+.ext-primary {
+  background: var(--accent-soft);
+}
+
+.ext-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--on-media-soft);
+  color: var(--on-media-muted);
+  font-size: 11px;
+}
+
+/* Watching elsewhere: no picture here, the remote in the middle. */
+.stage.ext-active > .video,
+.stage.ext-active > .overlay,
+.stage.ext-active > .subs {
+  visibility: hidden;
+}
+
+.ext-remote {
+  grid-area: 1 / 1;
+  align-self: center;
+  justify-self: center;
+  z-index: 3;
+  width: min(440px, calc(100% - 32px));
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-lg);
+  background: var(--media-panel);
+  color: var(--on-media);
+  box-shadow: var(--shadow);
+}
+
+.ext-remote[hidden],
+.stage.mode-mini > .ext-remote {
+  display: none;
+}
+
+.ext-remote-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+}
+
+.ext-remote-head .icon {
+  color: var(--accent);
+}
+
+.ext-remote-clock {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.ext-time {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ext-hint {
+  margin: 0;
+  color: var(--on-media-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ext-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ext-outline {
+  border-color: var(--media-panel-border);
+}
+
+/* Member chips: someone watching in an external player (the room doesn't wait for them). */
+.member.external {
+  outline: 2px dashed var(--text-muted);
+  outline-offset: 1px;
+}
+
+.stage .member.external {
+  outline-color: var(--on-media-muted);
+}
+
+@media (max-width: 640px) {
+  .ext-menu {
+    width: auto;
+  }
+  .ext-time {
+    font-size: 24px;
+  }
+}

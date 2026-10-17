@@ -48,6 +48,60 @@ export function publicBase() {
 }
 
 const AFTER_LOGIN_KEY = 'wp-after-login';
+/** Signed pass that keeps a tab opened from the Activity in the Activity's room (this tab only). */
+const ROOM_PASS_KEY = 'wp-room-pass';
+
+function sessionGet(key: string) {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function sessionSet(key: string, value: string | null) {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** "Revenir à ma salle" from a tab continued from the Activity. */
+export function leaveActivityRoom() {
+  sessionSet(ROOM_PASS_KEY, null);
+  location.href = '/';
+}
+
+/**
+ * "Ouvrir sur le site" from the Activity: a one-time link (5 min) that logs this same
+ * account into this same room in the browser, without a new Discord login.
+ */
+export async function continueInBrowser() {
+  const { url } = await api<{ url: string }>('/api/handoff', { method: 'POST' });
+  openExternal(url);
+}
+
+/** ?handoff=CODE (from continueInBrowser): exchanged once for a web session, then removed from the URL. */
+async function redeemHandoff(code: string): Promise<Identity | null> {
+  const url = new URL(location.href);
+  url.searchParams.delete('handoff');
+  history.replaceState(history.state, '', url.toString());
+  try {
+    const res = await api<{ session: string; pass: string; user: User; room: RoomInfo }>('/api/handoff/redeem', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    sessionSet(ROOM_PASS_KEY, res.pass);
+    setSession(res.session);
+    return { user: res.user, mode: 'web', room: res.room };
+  } catch (err) {
+    // Expired or already used: the normal login below (the cookie may still be there).
+    console.warn('handoff refused:', (err as Error).message);
+    return null;
+  }
+}
 
 /** The Discord login comes back to "/": put back the page the link pointed to. */
 function restoreHashAfterLogin() {
@@ -89,11 +143,18 @@ export async function signIn(): Promise<Identity> {
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || undefined;
 
+  const handoff = params.get('handoff');
+  if (handoff) {
+    const id = await redeemHandoff(handoff);
+    if (id) return id;
+  }
+
   // Website: the httpOnly cookie from the Discord login identifies the account.
   try {
     const res = await api<{ session: string; user: User; room: RoomInfo }>('/api/session', {
       method: 'POST',
-      body: JSON.stringify({ room }),
+      // A room link wins over a pass from the Activity.
+      body: JSON.stringify({ room, pass: room ? undefined : sessionGet(ROOM_PASS_KEY) || undefined }),
     });
     setSession(res.session);
     restoreHashAfterLogin();

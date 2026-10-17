@@ -1,6 +1,6 @@
 import { api, type UserAddon } from '../api.ts';
 import type { App, View } from '../app.ts';
-import { localStorageGet, localStorageRemove, localStorageSet } from '../auth.ts';
+import { continueInBrowser, leaveActivityRoom, localStorageGet, localStorageRemove, localStorageSet } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
 import { languageName } from '../format.ts';
 import { avatar, confirmButton, copyText, icon, legalFooter } from '../ui.ts';
@@ -60,7 +60,29 @@ export function settingsView(app: App): View {
   // ---- room
   let roomSection: HTMLElement;
   if (mode === 'discord') {
-    roomSection = section('Salle', h('p', { class: 'muted' }, 'Tu regardes avec les personnes qui ont rejoint cette Activité Discord.'));
+    roomSection = section(
+      'Salle',
+      h('p', { class: 'muted' }, 'Tu regardes avec les personnes qui ont rejoint cette Activité Discord.'),
+      // Not field(): a <label> would forward clicks on its text to the button.
+      h(
+        'div',
+        { class: 'field' },
+        h('span', { class: 'field-label' }, 'Continuer dans le navigateur'),
+        h(
+          'button',
+          { class: 'btn btn-secondary ext-continue', type: 'button', onclick: () => continueInBrowser().catch((err: Error) => toast(err.message)) },
+          icon('external'),
+          'Ouvrir sur le site'
+        ),
+        h('span', { class: 'field-hint' }, 'Même compte, même salle, sans te reconnecter. Pratique sur téléphone, et pour ouvrir le film dans VLC ou Infuse.')
+      )
+    );
+  } else if (room?.activity) {
+    roomSection = section(
+      'Salle',
+      h('p', { class: 'muted' }, 'Tu continues dans le navigateur la salle de ton Activité Discord : tout le monde là-bas voit la même chose que toi.'),
+      h('div', { class: 'room-code' }, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: leaveActivityRoom }, 'Revenir à ma salle'))
+    );
   } else {
     const link = `${location.origin}/?room=${room?.code || ''}`;
     const codeInput = h('input', { class: 'input', placeholder: 'Code de salle', 'aria-label': 'Code de salle', maxlength: 64, autocomplete: 'off' });

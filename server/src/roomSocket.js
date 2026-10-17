@@ -63,6 +63,8 @@ export function handleRoomMessage(room, uid, msg) {
       return isPosition(msg.position) ? room.act(uid, 'seek', msg.position) : false;
     case 'buffering':
       return room.setBuffering(uid, !!msg.value);
+    case 'external':
+      return typeof msg.value === 'boolean' ? room.setExternal(uid, msg.value) : false;
     case 'quality':
       return typeof msg.value === 'string' ? room.setQuality(uid, msg.value) : false;
     case 'presence':

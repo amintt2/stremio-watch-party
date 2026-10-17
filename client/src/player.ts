@@ -63,6 +63,8 @@ export class Player {
   subtitleTrack = -1;
   needsGesture = false;
   error: string | null = null;
+  /** Playing in an external player or on the site (see externalPlayer.ts): nothing plays here. */
+  detached = false;
 
   onChange: () => void = () => {};
 
@@ -150,6 +152,7 @@ export class Player {
   applyState(state: RoomState) {
     const prev = this.state;
     this.state = state;
+    if (this.detached) return;
     if (!state.media) {
       if (this.media) this.unload();
       return;
@@ -190,6 +193,20 @@ export class Player {
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
     this.startHls(start, this.expected());
+  }
+
+  /** Stops (true) or resumes (false) playing here, the room going on either way. */
+  setDetached(on: boolean) {
+    if (on === this.detached) return;
+    this.detached = on;
+    if (on) {
+      this.pendingReady = false;
+      this.reportedStall = false;
+      if (this.media) this.unload();
+    } else if (this.state?.media) {
+      this.load(this.state.media);
+    }
+    this.onChange();
   }
 
   private unload() {

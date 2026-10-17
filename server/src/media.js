@@ -117,6 +117,22 @@ export function chooseFile(stream, info) {
   return files.reduce((best, f, i, all) => ((f.length || 0) > (all[best].length || 0) ? i : best), 0);
 }
 
+function torrentFileName(info, fileIdx) {
+  const f = Array.isArray(info?.files) ? info.files[fileIdx] : null;
+  return f?.name || (typeof f?.path === 'string' ? f.path.split('/').pop() : null) || null;
+}
+
+/** Name of an HTTP source's file: the addon's hint, else the last segment of its URL. */
+export function urlFileName(url, hint) {
+  if (typeof hint === 'string' && hint.trim()) return hint.trim();
+  try {
+    const last = new URL(url).pathname.split('/').filter(Boolean).pop();
+    return last ? decodeURIComponent(last) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Huwa Server's engine (librqbit with streaming priorities, read-ahead, swarm health and
  * automatic recovery) downloads the torrent; the Stremio converter then reads the file from it
@@ -135,7 +151,7 @@ async function resolveTorrentHuwa(stream) {
   const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
   checkFileSize(info, fileIdx);
-  return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx };
+  return { mediaURL: `${config.huwaMediaUrl}/${infoHash}/${fileIdx}`, engine: 'huwa', infoHash, fileIdx, fileName: torrentFileName(info, fileIdx) };
 }
 
 async function resolveTorrent(stream, log) {
@@ -166,7 +182,7 @@ async function resolveTorrentStremio(stream) {
   const fileIdx = chooseFile(stream, info);
   if (typeof fileIdx !== 'number') throw new Error('Aucun fichier vidéo dans ce torrent');
   checkFileSize(info, fileIdx);
-  return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx };
+  return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx, fileName: torrentFileName(info, fileIdx) };
 }
 
 export async function probe(mediaURL) {
@@ -205,6 +221,8 @@ export async function createSession(stream, log) {
     mediaURL,
     info,
     lastUsed: Date.now(),
+    // Shown by external players (see external.js); the URL itself never leaves the server.
+    fileName: torrent ? torrent.fileName : urlFileName(mediaURL, stream.behaviorHints?.filename),
     torrent: torrent && { engine: torrent.engine, infoHash: torrent.infoHash, fileIdx: torrent.fileIdx },
   };
   sessions.set(sid, session);

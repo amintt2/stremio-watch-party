@@ -26,6 +26,8 @@ export interface Member {
   quality: string | null;
   /** loading (load barrier / stall), watching, browsing (player minimised). */
   state?: 'loading' | 'watching' | 'browsing';
+  /** Watches in an external player (VLC...): the room doesn't wait for them. */
+  external?: boolean;
 }
 
 /** A suggestion in the room queue (no stream URL/key: only a label). */
@@ -102,6 +104,8 @@ export interface User {
 export interface RoomInfo {
   code: string;
   personal: boolean;
+  /** The Discord Activity's room, continued on the site ("Ouvrir sur le site"). */
+  activity?: boolean;
 }
 
 export type MetaType = 'movie' | 'series';
