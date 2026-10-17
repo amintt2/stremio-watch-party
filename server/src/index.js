@@ -44,6 +44,7 @@ import {
 import { Rooms, mediaLabel } from './rooms.js';
 import { RateLimiter, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
+import { Handoffs, fileUrl, issueRoomPass, proxyFile, safeFileName, signFileToken, verifyFileToken, verifyRoomPass } from './external.js';
 import { privacyPage, termsPage } from './legal.js';
 import { registerEncoder } from './encoderRoutes.js';
 import { parseGpuPath } from './encoder.js';
@@ -199,13 +200,15 @@ async function runStart(room, { token, by, item }) {
 // ---------------------------------------------------------------- session / auth
 
 const discordConfigured = () => !!(config.discord.clientId && config.discord.clientSecret);
+/** Public address of the site (links opened outside the Discord iframe, external players). */
+const siteBase = (request) => config.publicUrl || `${request.protocol}://${request.host}`;
 
 app.get('/api/config', async (request) => ({
   clientId: config.discord.clientId || null,
   browserMode: config.allowBrowserMode,
   webLogin: discordConfigured(),
   // Public address of this site (links opened outside the Discord iframe).
-  publicUrl: config.publicUrl || `${request.protocol}://${request.host}`,
+  publicUrl: siteBase(request),
 }));
 
 app.post('/api/token', async (request, reply) => {
@@ -284,6 +287,12 @@ app.post('/api/session', async (request, reply) => {
   const web = verifyWebSession(parseCookies(request.headers.cookie)[SESSION_COOKIE]);
   const account = web && store.getUser(web.uid);
   if (!account) return reply.code(401).send({ error: 'Non connecté' });
+  // A tab handed off from the Activity stays in the Activity's room (see /api/handoff).
+  const passRoom = verifyRoomPass(request.body?.pass, account.uid);
+  if (passRoom) {
+    const user = { uid: account.uid, name: account.name, avatar: account.avatar };
+    return { session: issueSession({ ...user, room: passRoom }), user, room: { code: '', personal: false, activity: true } };
+  }
   const own = personalRoomCode(account.uid);
   const asked = request.body?.room;
   if (asked && !normalizeRoomCode(asked)) return reply.code(400).send({ error: 'Code de salle invalide' });
@@ -294,6 +303,48 @@ app.post('/api/session', async (request, reply) => {
     user,
     room: { code, personal: code === own },
   };
+});
+
+// ---------------------------------------------------------------- "Ouvrir sur le site"
+
+// One-time codes, in memory: a restart only invalidates codes nobody used within 5 min.
+const handoffs = new Handoffs();
+const handoffLimit = new RateLimiter({ max: 5, windowMs: 60_000 });
+
+/** Exchanges a handoff code for a web session cookie + a bearer session in the same room. */
+app.post('/api/handoff/redeem', async (request, reply) => {
+  const entry = handoffs.consume(String(request.body?.code || ''));
+  const account = entry && store.getUser(entry.user.uid);
+  if (!account) return reply.code(410).send({ error: 'Lien expiré ou déjà utilisé : rouvre-le depuis Discord' });
+  const user = { uid: account.uid, name: account.name, avatar: account.avatar };
+  reply.header('Set-Cookie', serializeCookie(SESSION_COOKIE, issueWebSession(user), { maxAge: WEB_SESSION_TTL_S, secure: cookieSecure(request) }));
+  return {
+    session: issueSession({ ...user, room: entry.room }),
+    pass: issueRoomPass({ uid: user.uid, room: entry.room }),
+    user,
+    room: { code: '', personal: false, activity: true },
+  };
+});
+
+// ---------------------------------------------------------------- external players
+
+// The token in the path is the credential (players have no cookie): see external.js.
+const fileLimit = new RateLimiter({ max: 240, windowMs: 60_000 });
+app.route({
+  method: ['GET', 'HEAD'],
+  url: '/api/media/:sid/file/:token/:name',
+  handler: async (request, reply) => {
+    const { sid, token } = request.params;
+    const uid = verifyFileToken(sid, token);
+    if (!uid) return reply.code(403).send({ error: 'Lien expiré ou invalide' });
+    const media = getSession(sid);
+    if (!media) return reply.code(404).send({ error: 'Vidéo terminée' });
+    // Someone kicked from the room that plays it loses their link too.
+    for (const room of rooms) if (room.media?.sid === sid && room.status(uid) === 'blocked') return reply.code(403).send({ error: 'Accès retiré' });
+    // VLC seeks with many short range requests: a generous budget, per person.
+    if (!fileLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de requêtes' });
+    return proxyFile(request, reply, media.mediaURL, { name: safeFileName(media.fileName) });
+  },
 });
 
 // ---------------------------------------------------------------- catalog
@@ -386,6 +437,33 @@ app.register(async (api) => {
     if (!media.torrent) return { kind: 'http' };
     const health = await fetchTorrentHealth(media).catch(() => null);
     return health ? { kind: 'torrent', ...health } : { kind: 'torrent', engine: media.torrent.engine, level: 'unknown' };
+  });
+
+  /** Private file URL for an external player (VLC, Infuse...), plus where the room is. */
+  const externalLimit = new RateLimiter({ max: 20, windowMs: 60_000 });
+  api.post('/api/media/:sid/external', async (request, reply) => {
+    const { sid } = request.params;
+    const { uid } = request.session;
+    const room = rooms.peek(request.session.room);
+    if (!room || room.status(uid) !== 'member' || room.media?.sid !== sid) return reply.code(409).send({ error: 'Cette vidéo ne passe plus dans ta salle' });
+    const media = getSession(sid);
+    if (!media) return reply.code(404).send({ error: 'Session inconnue' });
+    if (!externalLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
+    const name = safeFileName(media.fileName);
+    return {
+      url: fileUrl(siteBase(request), sid, signFileToken(sid, uid), name),
+      name,
+      title: mediaLabel(room.media),
+      position: room.currentPosition(),
+    };
+  });
+
+  /** "Ouvrir sur le site": a one-time link that logs the same account into the same room. */
+  api.post('/api/handoff', async (request, reply) => {
+    const { uid, name, avatar, room } = request.session;
+    if (!handoffLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
+    const code = handoffs.create({ uid, name, avatar }, room);
+    return { url: `${siteBase(request)}/?handoff=${code}` };
   });
 
   /** External subtitles of what a media session plays (each viewer picks their own). */

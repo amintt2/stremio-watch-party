@@ -204,6 +204,41 @@ d'Activité, chacun a **sa salle perso**. Pour regarder ensemble, envoie le lien
 l'ouvrent, se connectent, et vous êtes synchronisés. On peut aussi coller un code dans
 **Rejoindre une salle**.
 
+### Lecteur externe (VLC, Infuse, MX Player…) et « Ouvrir sur le site »
+
+Sur téléphone, surtout dans l'app Discord, le lecteur intégré n'est pas idéal. Dans le
+lecteur, **Réglages → Ouvrir dans…** (ou le bouton ↗ en haut, sur téléphone) envoie le film
+dans une vraie appli :
+
+- **Android** : VLC, MX Player (gratuit ou Pro), qui démarrent **au moment où en est la
+  salle**, ou « Autre lecteur… » (le choix d'appli d'Android).
+- **iPhone / iPad** : VLC, Infuse, Outplayer, nPlayer (à recaler à la main).
+- **Ordinateur** : « Ouvrir dans VLC » télécharge une petite playlist `.m3u` qui démarre au
+  bon moment.
+- Partout : **Copier le lien**, à coller dans n'importe quel lecteur (« Ouvrir un flux
+  réseau »).
+
+C'est le **fichier d'origine** : qualité d'origine, toutes les pistes audio, sous-titres
+intégrés, aucune conversion sur le serveur. Le lien est **personnel** et privé : signé pour
+toi et ce film, valable 12 h, il ne révèle jamais la vraie source (lien débrid, moteur
+torrent) ; un membre exclu de la salle perd le sien.
+
+Pendant ce temps, ta page devient une **télécommande** : lecture, pause et déplacements
+pilotent toujours la salle (selon tes droits), et la salle **ne t'attend plus** quand elle
+charge (ta pastille est en pointillés, « lecteur externe »). Ton lecteur, lui, ne suit pas
+les pauses et les sauts des autres : **Recaler** le rouvre au bon moment (Android, `.m3u`)
+ou t'indique l'heure de la salle. **Revenir au lecteur intégré** reprend la lecture dans la
+page.
+
+Dans l'Activité Discord, les autres applis ne peuvent pas s'ouvrir (Discord n'ouvre que des
+liens web). Le premier choix y est donc **Ouvrir sur le site** (aussi dans **Paramètres →
+Salle → Continuer dans le navigateur**) : un lien à usage unique, valable 5 minutes, ouvre
+le site dans ton navigateur avec **le même compte et la même salle**, sans te reconnecter.
+De là, « Ouvrir dans… » propose VLC & co. L'onglet garde la salle de l'Activité même s'il
+est rechargé ; « Revenir à ma salle » dans les Paramètres le ramène à ta salle perso.
+
+Pense à définir `PUBLIC_URL` : c'est l'adresse donnée aux lecteurs externes et au navigateur.
+
 ### Moteur torrent Huwa
 
 Par défaut (docker-compose), les torrents sont téléchargés par le **moteur Huwa**
@@ -415,6 +450,7 @@ server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fich
 server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)
 server/src/db.js       SQLite : comptes, progression, historique, bibliothèque, addons perso (testé)
 server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
+server/src/external.js lecteurs externes (lien de fichier signé, proxy Range) + « Ouvrir sur le site » (testé)
 client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
 client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres
 client/src/room.ts     bouton Salle, cartes en direct (comptes à rebours, demandes), présence
@@ -423,6 +459,8 @@ client/src/social.ts   règles côté client (droits, votes) (testé)
 client/src/streams.ts  panneau des sources (filtres, tri, meilleure source, badges MULTI/VF/VOSTFR)
 client/src/subtitles.ts sous-titres externes : choix par spectateur, décalage, affichage
 client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
+client/src/external.ts liens vers VLC, Infuse, MX Player… (intent Android, schémas iOS, .m3u) (testé)
+client/src/externalPlayer.ts « Ouvrir dans… », télécommande pendant la lecture externe
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
 client/src/format.ts   routes, progression, choix de la meilleure source (testé)

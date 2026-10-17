@@ -188,6 +188,17 @@ export function chooseFile(stream, info) {
   return files.reduce((best, f, i, all) => ((f.length || 0) > (all[best].length || 0) ? i : best), 0);
 }
 
+/** Name of an HTTP source's file: the addon's hint, else the last segment of its URL. */
+export function urlFileName(url, hint) {
+  if (typeof hint === 'string' && hint.trim()) return hint.trim();
+  try {
+    const last = new URL(url).pathname.split('/').filter(Boolean).pop();
+    return last ? decodeURIComponent(last) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Huwa Server's engine (librqbit with streaming priorities, read-ahead, swarm health and
  * automatic recovery) downloads the torrent; the Stremio converter then reads the file from it
@@ -280,6 +291,8 @@ export async function createSession(stream, log) {
     lastUsed: Date.now(),
     // Name / size / OpenSubtitles hash of the played file: finds subtitles timed for it.
     file: { name: torrent?.file.name || hint.name, size: torrent?.file.size || hint.size, hash: hint.hash },
+    // Shown by external players (see external.js); the URL itself never leaves the server.
+    fileName: torrent?.file.name || hint.name || urlFileName(mediaURL, stream.behaviorHints?.filename),
     torrent: torrent && { engine: torrent.engine, infoHash: torrent.infoHash, fileIdx: torrent.fileIdx },
   };
   sessions.set(sid, session);

@@ -47,6 +47,7 @@ test('votes: strict majority, at least 2', () => {
 test('labels and times', () => {
   assert.equal(memberStateLabel({ state: 'browsing' }), 'parcourt le catalogue');
   assert.equal(memberStateLabel({ state: 'loading' }), 'en chargement');
+  assert.equal(memberStateLabel({ state: 'watching', external: true }), 'lecteur externe');
   assert.equal(parseTime('42:10'), 2530);
   assert.equal(parseTime('1:02:05'), 3725);
   assert.equal(parseTime('90'), 90);

@@ -55,6 +55,8 @@ export interface StageHost {
   memberClass?: (m: Member) => string;
   /** May this viewer stop the media for everyone? (protected rooms: host / co-pilotes) */
   canStop?: () => boolean;
+  /** Extra row of the settings menu ("Ouvrir dans…", externalPlayer.ts); gets a menu closer. */
+  menuExtra?: (closeMenu: () => void) => HTMLElement | null;
 }
 
 const REMAINING_KEY = 'wp-remaining';
@@ -80,11 +82,11 @@ export function memberChips(s: RoomState | null, meUid: string, label: (id: stri
     h(
       'span',
       {
-        class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.uid === meUid ? ' me' : ''}${memberClass?.(m) || ''}`,
-        title: `${m.name}${m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
+        class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.external ? ' external' : ''}${m.uid === meUid ? ' me' : ''}${memberClass?.(m) || ''}`,
+        title: `${m.name}${m.external ? ' · lecteur externe' : m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
       },
       avatar(m),
-      m.quality && s?.media ? h('span', { class: 'member-q' }, label(m.quality).replace('p', '')) : null
+      m.quality && s?.media && !m.external ? h('span', { class: 'member-q' }, label(m.quality).replace('p', '')) : null
     )
   );
 }
@@ -660,6 +662,7 @@ export function createStage(host: StageHost) {
       hasSubs || subs.loading ? row('Sous-titres', subs.loading ? 'Chargement…' : subtitleLabel(subtitleValue()), 'subs') : h('div', { class: 'menu-item menu-muted' }, 'Pas de sous-titres pour cette vidéo'),
       subs.selected ? row('Synchronisation', subs.syncing ? 'Recherche…' : formatOffset(subs.timing.offset), 'sync') : null,
       hasSubs ? row('Style des sous-titres', '', 'style') : null,
+      host.menuExtra?.(closeMenus) || null,
       h('button', { class: 'menu-row menu-keys', type: 'button', onclick: openHelp }, icon('keyboard', 'icon icon-sm'), h('span', { class: 'menu-row-title' }, 'Raccourcis clavier'), h('kbd', {}, '?'))
     );
     renderVolume();

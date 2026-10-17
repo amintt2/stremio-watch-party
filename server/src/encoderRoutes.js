@@ -4,10 +4,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { Readable } from 'node:stream';
 import { crc32 } from 'node:zlib';
 import { config } from './config.js';
 import { converterParams } from './media.js';
+import { proxyFile } from './external.js';
 import { EncoderHub, masterPlaylist, mediaPlaylist, newKey, parseGpuPath } from './encoder.js';
 
 /** Builds offered for download (encoder/build.sh writes them to ENCODER_DIST_DIR). */
@@ -215,22 +215,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     const key = agentKey(request);
     const job = key && hub.jobs.get(request.params.job);
     if (!job || job.agent.id !== key.id) return reply.code(403).send();
-    const abort = new AbortController();
-    request.raw.on('close', () => abort.abort());
-    const headers = request.headers.range ? { Range: request.headers.range } : {};
-    let upstream;
-    try {
-      upstream = await fetch(job.session.mediaURL, { headers, signal: abort.signal });
-    } catch (err) {
-      if (abort.signal.aborted) return reply;
-      return reply.code(502).send({ error: err.message });
-    }
-    reply.code(upstream.status);
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
-      const v = upstream.headers.get(h);
-      if (v) reply.header(h, v);
-    }
-    return reply.send(upstream.body ? Readable.fromWeb(upstream.body) : null);
+    return proxyFile(request, reply, job.session.mediaURL, { name: job.session.fileName || 'video.mkv' });
   });
 
   app.register(async (uploads) => {
