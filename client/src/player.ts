@@ -158,6 +158,11 @@ export class Player {
       this.load(state.media);
       return;
     }
+    // A GPU encoder took over (or left): same film, reload the stream from where the room is.
+    if ((state.media.encoder?.by || null) !== (this.media.encoder?.by || null)) {
+      this.media = state.media;
+      if (this.quality) this.startHls(this.quality, this.expected());
+    }
     // Someone seeked: jump now, without grace, so our buffering holds the room
     // until everybody has the new position ready.
     if (prev && state.rev !== prev.rev && Math.abs(this.video.currentTime - this.expected()) > SEEK_THRESHOLD) {

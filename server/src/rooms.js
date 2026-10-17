@@ -541,6 +541,14 @@ export class Room {
     return this.#changed();
   }
 
+  /** The media's GPU encoder came or went (encoder.js): everyone reloads their stream. */
+  setEncoder(sid, encoder) {
+    if (this.media?.sid !== sid) return false;
+    if (JSON.stringify(this.media.encoder || null) === JSON.stringify(encoder || null)) return false;
+    this.media = { ...this.media, encoder: encoder || null };
+    return this.#changed();
+  }
+
   /** A viewer stalled (true) or is ready/playing again (false). */
   setBuffering(uid, buffering) {
     if (!this.media || !this.members.has(uid)) return false;

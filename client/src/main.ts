@@ -14,6 +14,7 @@ import { clear, h, toast } from './dom.ts';
 import { parseRoute, routeHref, type Route } from './format.ts';
 import { Player } from './player.ts';
 import { createStage, memberChips } from './stage.ts';
+import { suggestEncoder } from './encoder.ts';
 import { RoomSocial } from './room.ts';
 import { avatar, icon } from './ui.ts';
 import { detailView } from './views/detail.ts';
@@ -166,6 +167,8 @@ function start({ user: me, mode, room }: Identity) {
   });
 
   clear(root, rail, topbar, content, stage.el, social.el, h('div', { id: 'toasts', class: 'toasts' }));
+  // The host is offered the GPU encoder app (computers only, see encoder.ts).
+  void suggestEncoder(() => !!state && state.host === me.uid, root);
 
   // ------------------------------------------------------------ app api for views
   const app: App = {
@@ -416,6 +419,11 @@ function start({ user: me, mode, room }: Identity) {
       else if (src.hdr && !copied) toast('Source HDR transcodée : les couleurs peuvent être ternes.');
     }
     if (!sid && route.name === 'player') closePlayer();
+    const enc = s.media?.encoder;
+    if (sid && sid === lastMediaSid && enc && enc.by !== prev?.media?.encoder?.by) {
+      const who = s.members.find((m) => m.uid === enc.by)?.name || 'un membre';
+      toast(enc.by === me.uid ? `Ton GPU prépare les qualités (${enc.encoder})` : `Le GPU de ${who} prépare les qualités`);
+    }
     lastMediaSid = sid;
   };
   conn.onNotice = toast;

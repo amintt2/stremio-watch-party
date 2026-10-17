@@ -5,6 +5,7 @@ import { clear, h, toast } from '../dom.ts';
 import { languageName } from '../format.ts';
 import { subtitlePreview, subtitleStyleControls } from '../subcontrols.ts';
 import { resetSubtitleStyle } from '../substyle.ts';
+import { encoderSection } from '../encoder.ts';
 import { avatar, confirmButton, copyText, icon, legalFooter } from '../ui.ts';
 
 export type Theme = 'dark' | 'light' | 'auto';
@@ -346,6 +347,7 @@ export function settingsView(app: App): View {
       subtitlePreview(),
       subtitleStyleControls()
     ),
+    section('Encodeur GPU', encoderSection()),
     section(
       'Mes addons de sources',
       h(

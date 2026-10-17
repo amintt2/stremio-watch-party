@@ -3835,3 +3835,72 @@ kbd {
     padding-left: 44px;
   }
 }
+
+/* ---------------------------------------------------------------- GPU encoder (encoder.ts) */
+
+.encoder-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+}
+
+.encoder-status .muted {
+  grid-column: 2;
+}
+
+.encoder-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.encoder-status.online .encoder-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 25%, transparent);
+}
+
+.encoder-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.encoder-suggest {
+  position: fixed;
+  z-index: 40;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  gap: 12px;
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+
+.encoder-suggest-text {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.encoder-suggest-text strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.encoder-suggest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

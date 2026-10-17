@@ -15,6 +15,8 @@ export interface RoomMedia {
   meta: { id: string; type: 'movie' | 'series'; videoId: string } | null;
   source: { codec: string; width: number; height: number; hdr: boolean; dolbyVision: boolean; fps?: number | null };
   qualities: Quality[];
+  /** A member's GPU encoder app prepares the transcoded qualities (encoder.ts). */
+  encoder?: { by: string; encoder: string | null; device: string | null } | null;
   /** Next episode (series), for the auto-next countdown. */
   next?: { videoId: string; subtitle: string } | null;
 }

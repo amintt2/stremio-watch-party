@@ -45,6 +45,8 @@ import { Rooms, mediaLabel } from './rooms.js';
 import { RateLimiter, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
 import { privacyPage, termsPage } from './legal.js';
+import { registerEncoder } from './encoderRoutes.js';
+import { parseGpuPath } from './encoder.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -117,6 +119,9 @@ setInterval(() => {
   for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
 
+// Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
+const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
+
 // Coarse flood guard per person on the socket; the room has finer per-action limits.
 const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
 
@@ -150,6 +155,7 @@ async function startMedia(room, { token, stream, title, subtitle, poster, meta, 
     { startAt: Number(startAt) || 0 }
   );
   publish(room);
+  encoders.attach(room, session);
   findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
   return true;
 }
@@ -615,9 +621,11 @@ app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
   const rest = request.params['*'];
   const session = getSession(sid);
   if (!session) return reply.code(404).send({ error: 'Session inconnue' });
-  if (!isAllowedHlsPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
+  if (!isAllowedHlsPath(rest) && !parseGpuPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
 
   const parsed = parseProfile(profile);
+  // Qualities the host's GPU encoder makes come from it; the rest from the converter.
+  if (parsed && (await encoders.hls(request, reply, session, parsed, rest))) return reply;
   const params = parsed && hlsParams(sid, session.info, parsed.quality, parsed.caps, rest);
   if (!params) return reply.code(400).send({ error: 'Qualité invalide' });
 

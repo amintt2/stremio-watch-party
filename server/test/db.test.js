@@ -27,7 +27,7 @@ test('migrations are idempotent across restarts', () => {
     const b = openStore(dir);
     b.migrate();
     assert.equal(b.history('u').length, 1);
-    assert.equal(b.db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(b.db.prepare('PRAGMA user_version').get().user_version, 3);
     b.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -157,7 +157,7 @@ test('migration 2 upgrades a version-1 database in place', () => {
   try {
     const a = openStore(dir);
     // Simulate a database created before migration 2.
-    a.db.exec(`DROP TABLE progress; DROP TABLE library;
+    a.db.exec(`DROP TABLE progress; DROP TABLE library; DROP TABLE encoder_keys;
       CREATE TABLE progress (user_id TEXT NOT NULL, video_id TEXT NOT NULL, meta_id TEXT NOT NULL, meta_type TEXT NOT NULL,
         name TEXT NOT NULL, poster TEXT, episode TEXT, position REAL NOT NULL, duration REAL, watched INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, video_id));

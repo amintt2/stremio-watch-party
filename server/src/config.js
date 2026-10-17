@@ -78,6 +78,11 @@ export const config = {
     ? Math.round(Number(process.env.STREMIO_CACHE_GB) * 1024 ** 3)
     : null,
 
+  // GPU encoder app (encoder/): built binaries offered for download, and the memory kept
+  // for the segments they send (MB, least recently used dropped first).
+  encoderDistDir: process.env.ENCODER_DIST_DIR || new URL('../../encoder/dist/', import.meta.url).pathname,
+  gpuCacheBytes: (Number(process.env.GPU_CACHE_MB) > 0 ? Number(process.env.GPU_CACHE_MB) : 768) * 1024 ** 2,
+
   // Catalog/metadata addon (search + movie/series details).
   metaAddon: addonBase(process.env.META_ADDON_URL || 'https://v3-cinemeta.strem.io/manifest.json'),
   // Stream addons (e.g. your Torrentio configuration URL). These URLs can contain
