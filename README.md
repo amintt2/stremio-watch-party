@@ -287,6 +287,37 @@ addon → infoHash → Huwa (/{infoHash}/create, puis /{infoHash}/{fichier} en R
   `slow` si le débit est sous celui de la vidéo, `searching`, `stalled`, `done`), pour
   l'indicateur « risque de coupure » du lecteur.
 
+### Serveur de streaming pour tes apps Stremio
+
+Le même conteneur sert aussi de **serveur de streaming Stremio** pour tes propres apps (Stremio
+Web, PC, Android, TV). Les torrents passent par le moteur Huwa (démarrage plus rapide, lecture
+anticipée, reprise quand le swarm cale). La conversion (MKV, HEVC…), les sous-titres et le
+casting passent par le serveur Stremio privé, qui lit le fichier chez Huwa. Si Huwa ne
+répond pas, le torrent part sur le moteur Stremio.
+
+Il est actif par défaut, sur le port **11471** du service `watch-party`, sans clé.
+
+1. Coolify → service **watch-party** → *Domains* : ajoute un 2e domaine avec ce port, séparé
+   par une virgule : `https://watch.mciut.fr:3001,https://stremio.mciut.fr:11471`. Si
+   `stremio.mciut.fr` sert déjà ton ancien serveur Stremio, enlève-le d'abord de cette
+   ressource (ou prends un autre nom). Redéploie.
+2. Dans Stremio → **Paramètres → Streaming → URL du serveur de streaming** : ajoute
+   `https://stremio.mciut.fr` et sélectionne-la. Il faut un domaine à lui : Stremio
+   construit ses adresses depuis la racine, donc `https://watch.mciut.fr/quelque-chose` ne
+   marcherait pas.
+
+Ce qu'il refuse, puisqu'il n'y a pas de clé : changer ses réglages depuis Stremio (le cache
+et la conversion restent ceux de Watch Party), les routes que Stremio n'utilise pas, et toute
+adresse du réseau privé (le convertisseur ne peut pas servir à joindre les autres conteneurs).
+Les lectures Stremio partagent les `HUWA_STREAMS` (6) torrents simultanés avec les salles.
+`STREMIO_GATEWAY_PORT=0` le coupe.
+
+```
+App Stremio ──https──▶ stremio.mciut.fr (port 11471 de watch-party)
+   /{infoHash}/create, /{infoHash}/{fichier} ──▶ Huwa (repli : moteur Stremio)
+   /hlsv2, /settings, /subtitles.vtt, … ──▶ serveur Stremio privé ──lit──▶ Huwa
+```
+
 ### Encodeur GPU de l'hôte
 
 Au lieu de faire transcoder le serveur, l'hôte peut lancer l'**Encodeur Watch Party** sur son
@@ -507,6 +538,7 @@ server/src/db.js       SQLite : comptes, progression, historique, bibliothèque,
 server/src/webauth.js  connexion Discord sur le site : state, cookies, codes de salle (testé)
 server/src/encoder.js  encodeur GPU : clés, playlists sur grille fixe, file de travail, cache des segments (testé)
 server/src/encoderRoutes.js jumelage, téléchargement, socket de l'encodeur, envoi des segments, HLS GPU (testé)
+server/src/gateway.js  serveur de streaming pour les apps Stremio : torrents vers Huwa, le reste vers Stremio (testé)
 server/src/external.js lecteurs externes (lien de fichier signé, proxy Range) + « Ouvrir sur le site » (testé)
 client/src/main.ts     coquille : navigation, routes, lecteur plein écran / mini-lecteur
 client/src/views/      Accueil, Découvrir, Fiche, Bibliothèque, Historique, Recherche, Paramètres

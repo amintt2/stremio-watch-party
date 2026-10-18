@@ -50,6 +50,7 @@ import { privacyPage, termsPage } from './legal.js';
 import { registerEncoder } from './encoderRoutes.js';
 import { HuwaProbes, chooseSources } from './race.js';
 import { parseGpuPath } from './encoder.js';
+import { startGateway } from './gateway.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -864,3 +865,16 @@ watchStremioServer(app.log);
 // Give the Stremio container a moment to start, then log what is reachable.
 setTimeout(() => logDiagnostics(app.log).catch((err) => app.log.warn({ err: err.message }, 'diag failed')), 15_000).unref();
 await app.listen({ port: config.port, host: config.host });
+if (config.gatewayPort > 0) {
+  startGateway(
+    {
+      huwaUrl: config.huwaUrl,
+      huwaMediaUrl: config.huwaMediaUrl,
+      stremioUrl: config.stremioServerUrl,
+      stremioSelfUrl: config.stremioSelfUrl,
+      engine: config.torrentEngine,
+      log: app.log,
+    },
+    { port: config.gatewayPort, host: config.host },
+  );
+}
