@@ -50,7 +50,7 @@ import { privacyPage, termsPage } from './legal.js';
 import { registerEncoder } from './encoderRoutes.js';
 import { HuwaProbes, chooseSources } from './race.js';
 import { parseGpuPath } from './encoder.js';
-import { startGateway } from './gateway.js';
+import { createGateway, routeOf } from './gateway.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
@@ -59,6 +59,24 @@ const app = Fastify({
   trustProxy: true,
 });
 assertConfig(app.log);
+
+// Stremio apps can use this site as their streaming server (Settings → Streaming): its routes
+// live at the root, next to the site's (the client only uses #/ routes, the API is /api/).
+if (config.stremioGateway) {
+  const gateway = createGateway({
+    huwaUrl: config.huwaUrl,
+    huwaMediaUrl: config.huwaMediaUrl,
+    stremioUrl: config.stremioServerUrl,
+    stremioSelfUrl: config.stremioSelfUrl,
+    engine: config.torrentEngine,
+    log: app.log,
+  });
+  app.addHook('onRequest', (request, reply, done) => {
+    if (!routeOf(request.url.split('?')[0])) return done();
+    reply.hijack();
+    gateway(request.raw, reply.raw);
+  });
+}
 
 await app.register(fastifyWebsocket, { options: { maxPayload: 16 * 1024 } });
 
@@ -865,16 +883,3 @@ watchStremioServer(app.log);
 // Give the Stremio container a moment to start, then log what is reachable.
 setTimeout(() => logDiagnostics(app.log).catch((err) => app.log.warn({ err: err.message }, 'diag failed')), 15_000).unref();
 await app.listen({ port: config.port, host: config.host });
-if (config.gatewayPort > 0) {
-  startGateway(
-    {
-      huwaUrl: config.huwaUrl,
-      huwaMediaUrl: config.huwaMediaUrl,
-      stremioUrl: config.stremioServerUrl,
-      stremioSelfUrl: config.stremioSelfUrl,
-      engine: config.torrentEngine,
-      log: app.log,
-    },
-    { port: config.gatewayPort, host: config.host },
-  );
-}

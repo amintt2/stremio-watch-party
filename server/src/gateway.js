@@ -1,8 +1,7 @@
 // Stremio-compatible streaming server for the Stremio apps themselves (Stremio Web, desktop,
-// Android, TV: Settings → Streaming → streaming server URL). It listens on its own port
-// (STREMIO_GATEWAY_PORT, 11471) so it can sit at the root of its own domain:
-// stremio-video builds absolute paths ("/hlsv2/…", "/<infoHash>/<fileIdx>"), so a sub-path
-// of the site would not work.
+// Android, TV: Settings → Streaming → streaming server URL = the site's address). Its routes
+// sit at the root of the site's domain (index.js hands them over): stremio-video builds
+// absolute paths ("/hlsv2/…", "/<infoHash>/<fileIdx>"), so a sub-path would not work.
 //
 // Torrents go to the Huwa engine (faster start, read-ahead, recovery), with the Stremio
 // server's engine as fallback; everything else (HLS conversion, probe, subtitles, casting)
@@ -206,9 +205,6 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
       if (!['GET', 'HEAD', 'POST'].includes(req.method)) return send(res, 405, { error: 'method not allowed' });
       const url = new URL(req.url, 'http://gateway');
       const origin = publicOrigin(req.headers);
-      if (url.pathname === '/' && req.method !== 'POST') {
-        return send(res, 200, { name: 'Watch Party', streamingServer: true, engine });
-      }
       const route = routeOf(url.pathname);
       if (!route) return send(res, 404, { error: 'not found' });
       if (url.pathname === '/settings') return await settings(req, res, origin);
@@ -225,14 +221,4 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
 function send(res, status, data) {
   res.writeHead(status, { ...CORS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(data));
-}
-
-/** Starts the gateway on its own port (STREMIO_GATEWAY_PORT, 0 = off). */
-export function startGateway(options, { port, host }) {
-  const server = http.createServer(createGateway(options));
-  server.keepAliveTimeout = 65_000;
-  // A busy port must not take the site down with it.
-  server.on('error', (err) => options.log?.warn?.({ err: err.message, port }, 'Stremio-compatible streaming server not started'));
-  server.listen(port, host, () => options.log?.info?.({ port }, 'Stremio-compatible streaming server listening'));
-  return server;
 }
