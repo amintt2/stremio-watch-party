@@ -77,6 +77,8 @@ services:
       HUWA_P2P_GATEWAY: "0"
       HUWA_RELAY: "0"
       HUWA_TRANSCODE: "0"
+      # Service privé : seul Watch Party l'appelle (course des sources), pas de limite par adresse.
+      HUWA_SESSIONS_PER_IP: "0"
     volumes:
       - huwa-cache:/cache
       - huwa-data:/data

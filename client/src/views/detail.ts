@@ -60,17 +60,31 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   };
   let useResume = true;
 
-  const start = async (pick: () => Promise<StreamOption | null>, startAt: number, button: HTMLButtonElement) => {
+  /** `pick`: one source (chosen by hand), or null for the automatic choice (fastest source). */
+  const start = async (pick: (() => Promise<StreamOption | null>) | null, startAt: number, button: HTMLButtonElement) => {
     button.disabled = true;
     button.classList.add('busy');
+    const label = button.lastChild?.textContent;
     try {
-      const s = await pick();
-      if (!s) {
-        toast('Aucune source disponible pour ce titre.');
-        return;
+      let chosen: { streamKey?: string; candidates?: string[] };
+      if (pick) {
+        const s = await pick();
+        if (!s) {
+          toast('Aucune source disponible pour ce titre.');
+          return;
+        }
+        chosen = { streamKey: s.key };
+      } else {
+        const keys = await panel.candidates();
+        if (!keys.length) {
+          toast('Aucune source disponible pour ce titre.');
+          return;
+        }
+        if (button.lastChild) button.lastChild.textContent = 'Recherche de la source la plus rapide…';
+        chosen = { candidates: keys };
       }
       await app.play({
-        streamKey: s.key,
+        ...chosen,
         meta: { id: meta.id, type: meta.type, name: meta.name, poster: meta.poster },
         videoId: videoId(),
         subtitle: subtitle(),
@@ -81,6 +95,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
     } finally {
       button.disabled = false;
       button.classList.remove('busy');
+      if (button.lastChild && label) button.lastChild.textContent = label;
     }
   };
   // A source clicked in the panel is started now, or proposed to the room (queue).
@@ -131,8 +146,8 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       {
         class: `btn ${at ? 'btn-secondary' : 'btn-primary'} btn-lg`,
         type: 'button',
-        title: 'Lance la meilleure source pour tout le salon',
-        onclick: () => start(() => panel.best(), 0, watchBtn),
+        title: 'Teste les sources en parallèle et lance la plus rapide pour tout le salon',
+        onclick: () => start(null, 0, watchBtn),
       },
       icon('users'),
       at ? 'Depuis le début' : 'Regarder ensemble'
@@ -140,7 +155,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
     const resumeBtn: HTMLButtonElement | null = at
       ? h(
           'button',
-          { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => start(() => panel.best(), at, resumeBtn!) },
+          { class: 'btn btn-primary btn-lg', type: 'button', onclick: () => start(null, at, resumeBtn!) },
           icon('play'),
           `Reprendre à ${formatTime(at)}`
         )

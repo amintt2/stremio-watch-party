@@ -119,6 +119,11 @@ export class StreamPanel {
     return pickBest((await this.ready).filter((s) => !s.tooBig));
   }
 
+  /** Every usable source, for the automatic choice (the server tests them). */
+  async candidates() {
+    return (await this.ready).filter((s) => !s.tooBig).map((s) => s.key);
+  }
+
   private render() {
     const visible = this.list.filter((s) => this.filter === 'Tous' || s.quality === this.filter);
     if (this.sort === 'seeders') visible.sort((a, b) => (b.seeders ?? -1) - (a.seeders ?? -1));

@@ -36,10 +36,16 @@ directement sur le site, dans un navigateur.
   marquée d'un coup. Les
   sources sont dans le panneau de droite, avec les mêmes infos qu'avant (qualité,
   👤 sources, taille, HDR/DV/HEVC, ⚡ débrid, filtres et tri).
-  - **Regarder ensemble** lance la meilleure source (**MULTI** d'abord, pour que chacun
-    choisisse VF ou VO, puis débrid, puis 1080p, puis le plus de sources) **pour tout le
-    salon**. Tu peux aussi cliquer une source précise. Les badges **MULTI**, **VF** et
-    **VOSTFR** sont lus dans le nom de la release.
+  - **Regarder ensemble** choisit la source **tout seul**, comme Huwa : les sources sont
+    classées (ta langue — VF ou VO selon ton choix audio, **MULTI** toujours bien placé —,
+    puis débrid instantané, puis 1080p, puis le plus de sources), puis les meilleurs
+    torrents sont **testés en parallèle** par le moteur Huwa (métadonnées et pairs qui
+    répondent, sans rien télécharger) : le premier essaim en bonne santé gagne, en ~2 s au
+    plus. Les liens débrid sont vérifiés d'un octet. Si la source gagnante ne s'ouvre pas, la
+    suivante est essayée toute seule (les torrents morts en dernier). Le lecteur affiche
+    « Source : 1080p · MULTI (la plus rapide parmi 5 testées) ». Tu peux toujours cliquer une
+    source précise dans le panneau. Les badges **MULTI**, **VF** et **VOSTFR** sont lus
+    dans le nom de la release.
   - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
   - **Proposer** ajoute le titre à la file d'attente de la salle (votes). Si tu n'es ni
     hôte ni co-pilote, « Regarder ensemble » propose au lieu de lancer.
@@ -247,6 +253,13 @@ De là, « Ouvrir dans… » propose VLC & co. L'onglet garde la salle de l'Acti
 est rechargé ; « Revenir à ma salle » dans les Paramètres le ramène à ta salle perso.
 
 Pense à définir `PUBLIC_URL` : c'est l'adresse donnée aux lecteurs externes et au navigateur.
+
+### Piste audio et sous-titres en un geste
+
+Dans la barre du lecteur, deux pastilles comme sur Huwa : **🎧 VF** (un toucher = piste
+audio suivante, « Audio : English ») et **CC** (un toucher = sous-titres oui / non, en
+reprenant les derniers ou ta langue). La petite flèche ouvre la liste complète. Touches
+**A** (audio) et **C** (sous-titres).
 
 ### Moteur torrent Huwa
 
@@ -475,8 +488,9 @@ démarrage.
   activité regardent ensemble. Sur le site, c'est la salle perso de quelqu'un (ou celle
   qu'on a rejointe avec un code). L'hôte et les co-pilotes pilotent la lecture (voir
   « Regarder ensemble »).
-- « Regarder ensemble » choisit une source tout seul ; si elle ne convient pas, choisis-en
-  une autre dans le panneau. Pour reprendre, il faut relancer une source (les liens des
+- « Regarder ensemble » choisit et teste la source tout seul (course des torrents par le
+  moteur Huwa, `TORRENT_ENGINE=huwa`) ; avec le moteur Stremio, pas de test, seulement le
+  classement. Si elle ne convient pas, choisis-en une autre dans le panneau. Pour reprendre, il faut relancer une source (les liens des
   addons expirent), la position, elle, est gardée.
 
 ## Structure
@@ -485,6 +499,7 @@ démarrage.
 server/src/index.js    routes HTTP + WebSocket, relais HLS, proxy d'images
 server/src/rooms.js    état de lecture autoritaire + hôte, demandes, votes, file, salle d'attente (testé)
 server/src/roomSocket.js  messages de la salle : validation, limites (testé)
+server/src/race.js     choix automatique de la source : classement, course des torrents (sondes Huwa), liens directs (testé)
 server/src/media.js    torrent (moteur Huwa ou Stremio)/débrid → session, profils de qualité, santé, playlists (testé)
 server/src/addons.js   protocole des addons Stremio (catalogues, recherche, fiches, sources, langues) (testé)
 server/src/subtitles.js sous-titres OpenSubtitles : liste, SRT/VTT → texte, clés opaques (testé)

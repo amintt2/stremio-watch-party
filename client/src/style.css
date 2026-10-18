@@ -4062,6 +4062,8 @@ kbd {
   .ext-time {
     font-size: 24px;
   }
+}
+
 /* ================================================================ phones: shell
    Safe areas (viewport-fit=cover), a top bar that never clips, finger-sized targets.
    Everything below only adds to the rules above; colours come from the tokens. */
@@ -4577,5 +4579,86 @@ kbd {
   .row-items > .card {
     width: auto;
     flex: 0 0 calc((100% - 20px) / 3.2);
+  }
+}
+
+/* ---------------------------------------------------------------- audio / subtitle chips (stage.ts)
+   One tap on the chip = next audio track / subtitles on-off; the arrow opens the full list. */
+
+.player-chip {
+  display: inline-flex;
+  align-items: stretch;
+  height: 36px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-pill);
+  background: var(--on-media-soft);
+  color: var(--on-media);
+  overflow: hidden;
+}
+
+.player-chip[hidden] {
+  display: none;
+}
+
+.player-chip button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 600 13px/1 var(--font);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.player-chip .chip-main {
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.player-chip .chip-more {
+  padding: 0 8px 0 6px;
+  border-left: 1px solid var(--media-panel-border);
+}
+
+.player-chip button:hover,
+.player-chip button:focus-visible {
+  background: var(--on-media-soft);
+}
+
+.player-chip-cc .chip-main {
+  min-width: 64px;
+  justify-content: center;
+}
+
+.player-chip.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  .player-chip {
+    height: 44px;
+  }
+  .player-chip .chip-more {
+    padding: 0 10px 0 8px;
+  }
+}
+
+/* Narrow phones: one line of controls. The list stays in ⚙ (and long lists in the arrow on
+   wider screens); the audio chip keeps only its label. */
+@media (max-width: 480px) {
+  .player-chip .chip-more {
+    display: none;
+  }
+  .player-chip .chip-main {
+    padding: 0 12px;
+  }
+  .player-chip:not(.player-chip-cc) .chip-main .icon {
+    display: none;
+  }
+  .player-chip-cc .chip-main {
+    min-width: 0;
   }
 }

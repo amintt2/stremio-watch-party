@@ -195,6 +195,9 @@ function start({ user: me, mode, room }: Identity) {
         method: 'POST',
         body: JSON.stringify({
           streamKey: req.streamKey,
+          candidates: req.candidates,
+          // The language the starter listens in ranks the sources (VF, VO).
+          lang: player.audioPref,
           title: req.meta.name,
           subtitle: req.subtitle,
           poster: req.meta.poster,
@@ -421,6 +424,11 @@ function start({ user: me, mode, room }: Identity) {
       const src = s.media!.source;
       const decodable: Record<string, boolean> = { h264: true, ...player.caps };
       const copied = decodable[src.codec];
+      const pick = s.media!.pick;
+      if (pick && pick.why !== 'rank') {
+        const how = pick.why === 'fallback' ? 'la première ne s’ouvrait pas' : pick.tested > 1 ? `la plus rapide parmi ${pick.tested} testées` : 'testée et prête';
+        toast(`Source : ${pick.label} (${how})`);
+      }
       if (src.dolbyVision && !copied) toast('Source Dolby Vision transcodée : les couleurs peuvent être fausses.');
       else if (src.hdr && !copied) toast('Source HDR transcodée : les couleurs peuvent être ternes.');
     }

@@ -4,7 +4,10 @@ import type { Player } from './player.ts';
 export type Mode = 'discord' | 'web' | 'guest';
 
 export interface PlayRequest {
-  streamKey: string;
+  /** A source chosen by hand… */
+  streamKey?: string;
+  /** …or every source found: the server races them and keeps the fastest (race.js). */
+  candidates?: string[];
   meta: { id: string; type: MetaType; name: string; poster: string | null };
   videoId: string;
   /** "S1E02 · Pilot" for an episode, empty for a movie. */
@@ -25,7 +28,7 @@ export interface App {
   /** Starts a source for the whole room (proposes it instead when only the host may). */
   play(req: PlayRequest): Promise<void>;
   /** Adds a title/episode to the room queue, with an optional chosen source. */
-  propose(req: Omit<PlayRequest, 'streamKey' | 'startAt'> & { streamKey?: string }): Promise<void>;
+  propose(req: Omit<PlayRequest, 'streamKey' | 'startAt' | 'candidates'> & { streamKey?: string }): Promise<void>;
 }
 
 export interface View {

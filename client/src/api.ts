@@ -17,6 +17,8 @@ export interface RoomMedia {
   qualities: Quality[];
   /** A member's GPU encoder app prepares the transcoded qualities (encoder.ts). */
   encoder?: { by: string; encoder: string | null; device: string | null } | null;
+  /** How the source was chosen automatically ("http" / "healthy" / "best" / "fallback" / "rank"). */
+  pick?: { label: string; why: string; tested: number } | null;
   /** Next episode (series), for the auto-next countdown. */
   next?: { videoId: string; subtitle: string } | null;
 }
