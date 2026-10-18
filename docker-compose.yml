@@ -33,11 +33,11 @@ services:
       # Affichés sur /conditions et /confidentialite.
       LEGAL_OPERATOR: ${LEGAL_OPERATOR:-}
       LEGAL_CONTACT: ${LEGAL_CONTACT:-}
+      # Serveur de streaming pour les apps Stremio (torrents par Huwa). 0 = désactivé.
+      STREMIO_GATEWAY_PORT: ${STREMIO_GATEWAY_PORT:-11471}
     volumes:
       # Comptes, progression, bibliothèque (SQLite).
       - watch-party-data:/app/data
-      # Serveur de streaming pour les apps Stremio (torrents par Huwa). 0 = désactivé.
-      STREMIO_GATEWAY_PORT: ${STREMIO_GATEWAY_PORT:-11471}
     expose:
       - "3001"
       - "11471"
