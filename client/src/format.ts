@@ -159,6 +159,26 @@ export interface AudioTrackLike {
   name?: string;
 }
 
+const NAME_CODES: [RegExp, string][] = [
+  [/fran[cç]ais|french|\bvf/i, 'fr'],
+  [/english|anglais/i, 'en'],
+  [/japan|japonais/i, 'ja'],
+  [/espa[nñ]ol|spanish|espagnol/i, 'es'],
+  [/deutsch|german|allemand/i, 'de'],
+  [/italian|italien/i, 'it'],
+];
+
+/**
+ * Short label of an audio track for the player's chip: "VF" for French, else the language
+ * code ("EN", "JA"), else "A1", "A2"…
+ */
+export function audioChipLabel(track: { lang?: string | null; name?: string | null }, index: number) {
+  let code = langCode(track.lang);
+  if (!/^[a-z]{2,3}$/.test(code) || code === 'und') code = NAME_CODES.find(([re]) => re.test(track.name || ''))?.[1] || '';
+  if (code === 'fr') return 'VF';
+  return code ? code.slice(0, 3).toUpperCase() : `A${index + 1}`;
+}
+
 /**
  * Track for this viewer's audio preference: "fr" → the French track, "vo" → the
  * first non-French one (the original). null when nothing matches or no preference.

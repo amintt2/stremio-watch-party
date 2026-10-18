@@ -4,7 +4,7 @@ import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
-import { pickAudioTrack } from './format.ts';
+import { pickAudioTrack, audioChipLabel } from './format.ts';
 import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
 
 const TICK_MS = 250;
@@ -42,6 +42,8 @@ export function profileSegment(quality: string, caps: Caps) {
 export interface Track {
   id: number;
   label: string;
+  /** Short chip label ("VF", "EN"), audio tracks only. */
+  short?: string;
 }
 
 /**
@@ -276,7 +278,7 @@ export class Player {
       if (next) this.switchQuality(next);
     });
     const updateTracks = () => {
-      this.audioTracks = hls.audioTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Piste ${i + 1}` }));
+      this.audioTracks = hls.audioTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Piste ${i + 1}`, short: audioChipLabel(t, i) }));
       // First time this media's tracks are known: apply the viewer's VF / VO choice.
       if (!this.audioPicked && hls.audioTracks.length) {
         this.audioPicked = true;

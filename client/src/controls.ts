@@ -117,6 +117,7 @@ export type ShortcutAction =
   | 'mute'
   | 'fullscreen'
   | 'subtitles'
+  | 'audio'
   | 'subs-earlier'
   | 'subs-later'
   | 'help'
@@ -163,6 +164,8 @@ export function shortcutAction(e: KeyLike): ShortcutAction | null {
       return 'fullscreen';
     case 'c':
       return 'subtitles';
+    case 'a':
+      return 'audio';
     case 'g':
       return 'subs-earlier';
     case 'h':
@@ -180,6 +183,7 @@ export const SHORTCUTS: [string, string][] = [
   ['M', 'Couper le son'],
   ['F', 'Plein écran'],
   ['C', 'Changer de sous-titres'],
+  ['A', 'Piste audio suivante'],
   ['G / H', 'Sous-titres 0,1 s plus tôt / plus tard'],
   ['?', 'Afficher les raccourcis'],
   ['Échap', 'Fermer / réduire le lecteur'],

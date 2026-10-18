@@ -26,6 +26,7 @@ import { clear, h, toast } from './dom.ts';
 import { HEALTH_LABEL, lowerQuality, sourceDetail, sourceProblem, type Health, type SourceHealth } from './health.ts';
 import { roomPlayback, type Playback } from './playback.ts';
 import type { Player } from './player.ts';
+import { langCode } from './format.ts';
 import { SpeechMeter } from './speech.ts';
 import { subtitleStyleControls } from './subcontrols.ts';
 import { applyStyleVars, onSubtitleStyle, pictureHeight, styleVars, subtitleStyle } from './substyle.ts';
@@ -150,6 +151,14 @@ export function createStage(host: StageHost) {
   const volInline = volSlider();
   const volLabel = h('span', { class: 'volume-pct' });
   const volGroup = h('span', { class: 'volume-group' }, muteBtn, volInline, volLabel);
+  // Audio and subtitles in one tap, like Huwa: tap = next audio track / subtitles on-off,
+  // the small arrow = the full list.
+  const audioMain = h('button', { class: 'chip-main', type: 'button', title: 'Piste audio suivante (A)' }, icon('audio', 'icon icon-sm'), h('span', { class: 'chip-text' }));
+  const audioMore = h('button', { class: 'chip-more', type: 'button', 'aria-label': 'Toutes les pistes audio', title: 'Toutes les pistes audio' }, icon('caret-down', 'icon icon-sm'));
+  const audioChip = h('div', { class: 'player-chip', hidden: true }, audioMain, audioMore);
+  const ccMain = h('button', { class: 'chip-main', type: 'button', title: 'Sous-titres oui / non (C)' }, icon('cc', 'icon icon-sm'), h('span', { class: 'chip-text' }));
+  const ccMore = h('button', { class: 'chip-more', type: 'button', 'aria-label': 'Tous les sous-titres', title: 'Tous les sous-titres' }, icon('caret-down', 'icon icon-sm'));
+  const ccChip = h('div', { class: 'player-chip player-chip-cc', hidden: true }, ccMain, ccMore);
   const healthBtn = h('button', { class: 'health', type: 'button', 'aria-label': 'Qualité de la connexion' }, h('span', { class: 'health-dot' }));
   const pipBtn = iconBtn('pip', 'Image dans l’image', 'pip-btn');
   const gearBtn = iconBtn('settings', 'Réglages', 'gear-btn');
@@ -159,7 +168,7 @@ export function createStage(host: StageHost) {
     'div',
     { class: 'controls' },
     h('div', { class: 'seek-row' }, timeCur, seekWrap, timeDur),
-    h('div', { class: 'controls-row' }, playBtn, volGroup, healthBtn, h('div', { class: 'controls-right' }, pipBtn, gearBtn, fsBtn))
+    h('div', { class: 'controls-row' }, playBtn, volGroup, healthBtn, h('div', { class: 'controls-right' }, audioChip, ccChip, pipBtn, gearBtn, fsBtn))
   );
 
   // ------------------------------------------------------------ layers
@@ -459,8 +468,59 @@ export function createStage(host: StageHost) {
     showFlash(h('span', { class: 'flash-text' }, `Sous-titres : ${subtitleLabel(next)}`));
   }
 
+  // ---- one-tap chips
+  /** Last subtitle shown, for the CC chip's "on" (else the viewer's language, else the first). */
+  let lastSubtitle: string | null = null;
+  function toggleSubtitles() {
+    const current = subtitleValue();
+    if (current !== 'off') {
+      lastSubtitle = current;
+      setSubtitle('off');
+      showFlash(h('span', { class: 'flash-text' }, 'Sous-titres : désactivés'));
+      return;
+    }
+    const values = subtitleValues().filter((v) => v !== 'off');
+    const preferred = subs.options.find((o) => langCode(o.lang) === subs.lang);
+    const next = (lastSubtitle && values.includes(lastSubtitle) && lastSubtitle) || (preferred && `x:${preferred.key}`) || values[0];
+    if (!next) {
+      showFlash(h('span', { class: 'flash-text' }, 'Aucun sous-titre'));
+      return;
+    }
+    setSubtitle(next);
+    showFlash(h('span', { class: 'flash-text' }, `Sous-titres : ${subtitleLabel(next)}`));
+  }
+  function nextAudio() {
+    const tracks = player.audioTracks;
+    if (tracks.length < 2) return;
+    const i = tracks.findIndex((t) => t.id === player.audioTrack);
+    const next = tracks[(i + 1) % tracks.length];
+    player.setAudioTrack(next.id);
+    showFlash(h('span', { class: 'flash-text' }, `Audio : ${next.label}`));
+  }
+  function renderChips() {
+    const tracks = player.audioTracks;
+    audioChip.hidden = tracks.length < 2;
+    const cur = tracks.find((t) => t.id === player.audioTrack);
+    audioChip.querySelector('.chip-text')!.textContent = cur?.short || '';
+    audioMain.setAttribute('aria-label', `Audio : ${cur?.label || ''}, toucher pour la piste suivante`);
+    const hasSubs = player.subtitleTracks.length > 0 || subs.options.length > 0;
+    ccChip.hidden = !hasSubs;
+    const value = subtitleValue();
+    const on = value !== 'off';
+    ccChip.classList.toggle('on', on);
+    const o = subs.options.find((x) => `x:${x.key}` === value);
+    ccChip.querySelector('.chip-text')!.textContent = on ? (o ? langCode(o.lang).toUpperCase().slice(0, 2) : 'ON') : '';
+    ccMain.setAttribute('aria-pressed', String(on));
+    ccMain.setAttribute('aria-label', on ? `Sous-titres : ${subtitleLabel(value)}, toucher pour couper` : 'Sous-titres désactivés, toucher pour les afficher');
+  }
+  audioMain.addEventListener('click', nextAudio);
+  audioMore.addEventListener('click', () => openMenu('audio'));
+  ccMain.addEventListener('click', toggleSubtitles);
+  ccMore.addEventListener('click', () => openMenu('subs'));
+
   let subsError: string | null = null;
   subs.onChange = () => {
+    renderChips();
     renderMenu();
     if (subs.error && subs.error !== subsError) toast(`Sous-titres : ${subs.error}`);
     subsError = subs.error;
@@ -892,6 +952,9 @@ export function createStage(host: StageHost) {
       case 'subtitles':
         cycleSubtitles();
         break;
+      case 'audio':
+        nextAudio();
+        break;
       case 'subs-earlier':
       case 'subs-later':
         if (!subs.selected) {
@@ -1092,6 +1155,7 @@ export function createStage(host: StageHost) {
   }, 100);
 
   player.onChange = () => {
+    renderChips();
     renderMenu();
     overlayKey = '\u0000';
     renderOverlay();

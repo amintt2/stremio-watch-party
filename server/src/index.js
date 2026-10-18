@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { LogController } from 'fastify';
 import fastifyStatic from '@fastify/static';
@@ -47,6 +48,7 @@ import { diagnostics, logDiagnostics } from './diag.js';
 import { Handoffs, fileUrl, issueRoomPass, proxyFile, safeFileName, signFileToken, verifyFileToken, verifyRoomPass } from './external.js';
 import { privacyPage, termsPage } from './legal.js';
 import { registerEncoder } from './encoderRoutes.js';
+import { HuwaProbes, chooseSources } from './race.js';
 import { parseGpuPath } from './encoder.js';
 
 const app = Fastify({
@@ -120,6 +122,19 @@ setInterval(() => {
   for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
 
+// Automatic source choice (race.js): torrents are raced by the Huwa engine's probes.
+const probes = config.torrentEngine === 'huwa' ? new HuwaProbes(config.huwaUrl, { file: join(config.dataDir, 'huwa-session.json') }) : null;
+/** Episode number of a series video id ("tt0903747:1:5" → 5), for season packs. */
+const episodeOf = (videoId) => Number(/:\d+:(\d+)$/.exec(String(videoId || ''))?.[1]) || null;
+
+/** Sources to try, best first: the race winner, then the rest of the ranking. */
+async function orderedSources(keys, { want, meta, log }) {
+  const t0 = Date.now();
+  const res = await chooseSources(keys, { want, probes, episode: episodeOf(meta?.videoId), log });
+  log.info({ why: res.why, tested: res.tested, candidates: res.order.length, ms: Date.now() - t0 }, 'source chosen');
+  return { streams: res.order.map((x) => x.stream), pick: res.order[0] ? { label: addons.sourceLabel(res.order[0].stream), why: res.why, tested: res.tested } : null };
+}
+
 // Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
 const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
 
@@ -130,10 +145,24 @@ const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
  * Resolves a stream into a media session and loads it for the room, unless a newer
  * start replaced this one meanwhile. Throws on failure (after telling the room).
  */
-async function startMedia(room, { token, stream, title, subtitle, poster, meta, startAt = 0, startedBy, starterUid, log }) {
+async function startMedia(room, { token, stream, streams, pick = null, title, subtitle, poster, meta, startAt = 0, startedBy, starterUid, log }) {
   let session;
   try {
-    session = await createSession(stream, log);
+    // Automatic choice: when a source doesn't open, the next one (at most 3 tries).
+    const list = (streams || [stream]).slice(0, 3);
+    let lastErr = null;
+    for (const [i, s] of list.entries()) {
+      try {
+        session = await createSession(s, log);
+        if (i > 0 && pick) pick = { ...pick, label: addons.sourceLabel(s), why: 'fallback' };
+        break;
+      } catch (err) {
+        lastErr = err;
+        log.warn({ err: err.message, attempt: i + 1 }, 'source failed to open');
+        if (!room.isCurrentStart(token)) return false;
+      }
+    }
+    if (!session) throw lastErr || new Error('Aucune source utilisable');
   } catch (err) {
     log.warn({ err: err.message }, 'stream resolution failed');
     if (room.failStart(token)) publish(room);
@@ -152,6 +181,8 @@ async function startMedia(room, { token, stream, title, subtitle, poster, meta, 
       startedBy: startedBy || 'la salle',
       startedByUid: starterUid || null,
       meta: session.meta,
+      // How the source was chosen (automatic choice): shown in the player.
+      pick,
     },
     { startAt: Number(startAt) || 0 }
   );
@@ -178,19 +209,23 @@ async function runStart(room, { token, by, item }) {
   const log = app.log;
   try {
     // The proposer's chosen source if still valid, else the best one with their addons.
-    let stream = item.streamKey ? addons.lookupStream(item.streamKey) : null;
-    if (!stream) {
+    const chosen = item.streamKey ? addons.lookupStream(item.streamKey) : null;
+    let streams = chosen ? [chosen] : [];
+    let pick = null;
+    if (!chosen) {
+      // Nobody picked a source: the fastest one, like a start from the film's page.
       const own = item.uid ? store.addonUrls(item.uid).map(addonBase) : [];
-      stream = await addons.bestStream(item.meta.type, item.meta.videoId, log, own);
+      const { streams: list } = await addons.streams(item.meta.type, item.meta.videoId, log, own);
+      ({ streams, pick } = await orderedSources(list.map((x) => x.key), { want: null, meta: item.meta, log }));
     }
     if (!room.isCurrentStart(token)) return;
-    if (!stream) {
+    if (!streams.length) {
       if (room.failStart(token)) publish(room);
       notice(room.id, `Aucune source trouvée pour « ${mediaLabel(item)} »`);
       return;
     }
     const startedBy = (by && room.members.get(by)?.name) || 'la salle';
-    await startMedia(room, { token, stream, ...item, startedBy, starterUid: item.uid, log });
+    await startMedia(room, { token, streams, pick, ...item, startedBy, starterUid: item.uid, log });
   } catch (err) {
     log.warn({ err: err.message }, 'room start failed');
     if (room.failStart(token)) publish(room);
@@ -382,10 +417,13 @@ app.register(async (api) => {
 
   /** Starts a stream for the whole room. */
   api.post('/api/room/play', async (request, reply) => {
-    const { streamKey, title, subtitle, poster, startAt, meta } = request.body || {};
-    const stream = addons.lookupStream(streamKey);
-    if (!stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
-    if (addons.describeStream(stream, '').tooBig) {
+    const { streamKey, candidates, lang, title, subtitle, poster, startAt, meta } = request.body || {};
+    // Automatic choice: the client sends every source it got, the server races them.
+    const auto = Array.isArray(candidates) && candidates.length > 0;
+    const keys = auto ? candidates.filter((k) => typeof k === 'string').slice(0, 80) : [];
+    const stream = auto ? null : addons.lookupStream(streamKey);
+    if (auto ? !keys.some((k) => addons.lookupStream(k)) : !stream) return reply.code(410).send({ error: 'Source expirée, relance la recherche' });
+    if (!auto && addons.describeStream(stream, '').tooBig) {
       return reply.code(413).send({ error: `Trop gros pour le stockage du serveur (max ${formatGb(config.maxTorrentBytes)} Go) : choisis une source plus légère` });
     }
 
@@ -401,9 +439,22 @@ app.register(async (api) => {
     }
     publish(room);
     try {
-      const loaded = await startMedia(room, { token, stream, title, subtitle, poster, meta, startAt, startedBy: name, starterUid: uid, log: request.log });
+      let streams = [stream];
+      let pick = null;
+      if (auto) {
+        const want = lang === 'fr' || lang === 'vo' ? lang : null;
+        ({ streams, pick } = await orderedSources(keys, { want, meta, log: request.log }));
+        if (!streams.length) throw new Error('Aucune source utilisable (toutes trop grosses pour le serveur ?)');
+        if (!room.isCurrentStart(token)) return { ok: true, superseded: true };
+      }
+      const loaded = await startMedia(room, { token, streams, pick, title, subtitle, poster, meta, startAt, startedBy: name, starterUid: uid, log: request.log });
       return { ok: true, superseded: !loaded };
     } catch (err) {
+      // Failed before a source was even tried (startMedia tells the room itself otherwise).
+      if (room.failStart(token)) {
+        publish(room);
+        notice(room.id, `Impossible de lancer « ${label} » : ${err.message}`);
+      }
       return reply.code(502).send({ error: err.message });
     }
   });

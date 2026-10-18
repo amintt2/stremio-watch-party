@@ -105,3 +105,12 @@ test('audio preference: VF or VO per viewer', () => {
   assert.equal(pickAudioTrack([tracks[1]], 'fr'), null, 'single track: nothing to choose');
   assert.equal(pickAudioTrack([{ lang: 'eng' }, { lang: 'jpn' }], 'fr'), null);
 });
+
+test('audio chip labels: VF, language codes, else A1/A2', async () => {
+  const { audioChipLabel } = await import('./format.ts');
+  assert.equal(audioChipLabel({ lang: 'fre', name: 'Français' }, 0), 'VF');
+  assert.equal(audioChipLabel({ lang: 'eng' }, 1), 'EN');
+  assert.equal(audioChipLabel({ lang: 'und', name: 'Japanese 5.1' }, 1), 'JA');
+  assert.equal(audioChipLabel({ name: 'VFF AC3' }, 0), 'VF');
+  assert.equal(audioChipLabel({}, 2), 'A3');
+});
