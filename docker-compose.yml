@@ -3,9 +3,8 @@
 #
 # Coolify : les variables ${...} apparaissent dans l'onglet "Environment Variables",
 # et le domaine se met sur le service "watch-party" avec le port 3001
-# (ex. https://watch.mciut.fr:3001). Seul ce service est exposé. Pour s'en servir aussi
-# comme serveur de streaming dans les apps Stremio, ajoute un 2e domaine sur le port 11471
-# (ex. https://watch.mciut.fr:3001,https://stremio.mciut.fr:11471).
+# (ex. https://watch.mciut.fr:3001). Seul ce service est exposé. La même adresse sert aussi
+# de serveur de streaming dans les apps Stremio (voir README).
 services:
   watch-party:
     build: .
@@ -33,14 +32,14 @@ services:
       # Affichés sur /conditions et /confidentialite.
       LEGAL_OPERATOR: ${LEGAL_OPERATOR:-}
       LEGAL_CONTACT: ${LEGAL_CONTACT:-}
-      # Serveur de streaming pour les apps Stremio (torrents par Huwa). 0 = désactivé.
-      STREMIO_GATEWAY_PORT: ${STREMIO_GATEWAY_PORT:-11471}
+      # Serveur de streaming pour les apps Stremio, sur la même adresse (torrents par Huwa).
+      # 0 = désactivé.
+      STREMIO_GATEWAY: ${STREMIO_GATEWAY:-1}
     volumes:
       # Comptes, progression, bibliothèque (SQLite).
       - watch-party-data:/app/data
     expose:
       - "3001"
-      - "11471"
     depends_on:
       - stremio
       - huwa

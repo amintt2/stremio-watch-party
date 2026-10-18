@@ -29,5 +29,5 @@ COPY --from=encoder /out ./encoder/dist
 ENV DATA_DIR=/app/data
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
-EXPOSE 3001 11471
+EXPOSE 3001
 CMD ["node", "server/src/index.js"]

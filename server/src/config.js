@@ -68,9 +68,9 @@ export const config = {
   huwaUrl: trimSlash(process.env.HUWA_ENGINE_URL || 'http://127.0.0.1:8080'),
   // Where the Stremio converter reads torrent files from Huwa (default: HUWA_ENGINE_URL).
   huwaMediaUrl: trimSlash(process.env.HUWA_MEDIA_URL || process.env.HUWA_ENGINE_URL || 'http://127.0.0.1:8080'),
-  // Stremio-compatible streaming server for the Stremio apps (gateway.js), on its own port so
-  // it can have its own domain. STREMIO_GATEWAY_PORT=0 turns it off.
-  gatewayPort: Number(process.env.STREMIO_GATEWAY_PORT ?? 11471),
+  // Stremio-compatible streaming server for the Stremio apps (gateway.js), at the root of the
+  // site's own domain. STREMIO_GATEWAY=0 turns it off.
+  stremioGateway: process.env.STREMIO_GATEWAY !== '0',
   // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
   stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
   stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 8),
