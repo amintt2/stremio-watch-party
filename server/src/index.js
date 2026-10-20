@@ -49,6 +49,7 @@ import { Handoffs, fileUrl, issueRoomPass, proxyFile, safeFileName, signFileToke
 import { privacyPage, termsPage } from './legal.js';
 import { registerEncoder } from './encoderRoutes.js';
 import { HuwaProbes, chooseSources } from './race.js';
+import { Prewarms } from './prewarm.js';
 import { parseGpuPath } from './encoder.js';
 import { createGateway, routeOf } from './gateway.js';
 
@@ -154,6 +155,12 @@ async function orderedSources(keys, { want, meta, log }) {
   return { streams: res.order.map((x) => x.stream), pick: res.order[0] ? { label: addons.sourceLabel(res.order[0].stream), why: res.why, tested: res.tested } : null };
 }
 
+// Sources raced and opened while the film's page is shown, before "Lire" (prewarm.js).
+const prewarms = new Prewarms({
+  race: (keys, { want, meta, log }) => orderedSources(keys, { want, meta, log }),
+  open: (stream) => createSession(stream, app.log),
+});
+
 // Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
 const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
 
@@ -164,15 +171,17 @@ const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
  * Resolves a stream into a media session and loads it for the room, unless a newer
  * start replaced this one meanwhile. Throws on failure (after telling the room).
  */
-async function startMedia(room, { token, stream, streams, pick = null, title, subtitle, poster, meta, startAt = 0, startedBy, starterUid, log }) {
+async function startMedia(room, { token, stream, streams, opened = null, pick = null, title, subtitle, poster, meta, startAt = 0, startedBy, starterUid, log }) {
   let session;
+  const t0 = Date.now();
   try {
     // Automatic choice: when a source doesn't open, the next one (at most 3 tries).
     const list = (streams || [stream]).slice(0, 3);
     let lastErr = null;
     for (const [i, s] of list.entries()) {
       try {
-        session = await createSession(s, log);
+        // The first one may already be open (prepared while the page was shown).
+        session = (i === 0 && opened ? await opened : null) || (await createSession(s, log));
         if (i > 0 && pick) pick = { ...pick, label: addons.sourceLabel(s), why: 'fallback' };
         break;
       } catch (err) {
@@ -189,6 +198,7 @@ async function startMedia(room, { token, stream, streams, pick = null, title, su
     throw err;
   }
   if (!room.isCurrentStart(token)) return false;
+  log.info({ ms: Date.now() - t0, prepared: !!opened }, 'source opened');
   // What everyone's progress is saved against (see the "progress" socket message).
   session.meta = cleanMeta(meta, { title, subtitle, poster });
   room.load(
@@ -460,13 +470,19 @@ app.register(async (api) => {
     try {
       let streams = [stream];
       let pick = null;
+      let opened = null;
       if (auto) {
         const want = lang === 'fr' || lang === 'vo' ? lang : null;
-        ({ streams, pick } = await orderedSources(keys, { want, meta, log: request.log }));
+        // Prepared while the page was shown (prewarm), else raced now.
+        const t0 = Date.now();
+        const prepared = prewarms.take(keys, { want, meta, log: request.log });
+        ({ streams, pick } = await prepared.result);
+        opened = prepared.opened;
+        request.log.info({ reused: prepared.reused, ms: Date.now() - t0 }, 'automatic choice ready');
         if (!streams.length) throw new Error('Aucune source utilisable (toutes trop grosses pour le serveur ?)');
         if (!room.isCurrentStart(token)) return { ok: true, superseded: true };
       }
-      const loaded = await startMedia(room, { token, streams, pick, title, subtitle, poster, meta, startAt, startedBy: name, starterUid: uid, log: request.log });
+      const loaded = await startMedia(room, { token, streams, opened, pick, title, subtitle, poster, meta, startAt, startedBy: name, starterUid: uid, log: request.log });
       return { ok: true, superseded: !loaded };
     } catch (err) {
       // Failed before a source was even tried (startMedia tells the room itself otherwise).
@@ -476,6 +492,21 @@ app.register(async (api) => {
       }
       return reply.code(502).send({ error: err.message });
     }
+  });
+
+  /**
+   * The film's page shows its sources: race them and open the winner now, so "Lire" starts
+   * at once (Huwa does the same). Answers right away; the work goes on in the background.
+   */
+  const prewarmLimit = new RateLimiter({ max: 8, windowMs: 60_000 });
+  api.post('/api/prewarm', async (request, reply) => {
+    const { candidates, lang, meta } = request.body || {};
+    const keys = Array.isArray(candidates) ? candidates.filter((k) => typeof k === 'string').slice(0, 80) : [];
+    if (!keys.some((k) => addons.lookupStream(k))) return reply.code(410).send({ error: 'Sources expirées' });
+    if (!prewarmLimit.allow(request.session.uid)) return reply.code(429).send({ error: 'Trop de demandes' });
+    const want = lang === 'fr' || lang === 'vo' ? lang : null;
+    prewarms.start(keys, { want, meta, log: request.log });
+    return { ok: true };
   });
 
   /** Suggests a title/episode to the room (optionally with the source the proposer chose). */

@@ -29,6 +29,8 @@
 
 export const WAIT_TIMEOUT_MS = 10_000;
 export const LOAD_TIMEOUT_MS = 20_000;
+/** Once most of a room (3+ people) is ready, the last ones get at most this long. */
+export const STRAGGLER_WAIT_MS = 8_000;
 /** Requests ("Demander une pause") expire after this. */
 export const REQUEST_TTL_MS = 20_000;
 /** Votes to pause/skip expire after this. */
@@ -585,7 +587,22 @@ export class Room {
     if (!this.waiting.has(uid)) return false;
     this.#settle();
     this.waiting.delete(uid);
+    this.#hurryStragglers();
     return this.#changed();
+  }
+
+  /**
+   * In a group, one slow device must not hold everyone for the full wait: when more than
+   * half of the watchers are ready, the others get STRAGGLER_WAIT_MS more at most (then
+   * they catch up on their own, as after any wait).
+   */
+  #hurryStragglers() {
+    const watchers = [...this.members.values()].filter((m) => !m.external).length;
+    if (watchers < 3 || !this.waiting.size) return;
+    const ready = watchers - this.waiting.size;
+    if (ready * 2 <= watchers) return;
+    const cap = this.now() + STRAGGLER_WAIT_MS;
+    for (const [uid, deadline] of this.waiting) if (deadline > cap) this.waiting.set(uid, cap);
   }
 
   /**

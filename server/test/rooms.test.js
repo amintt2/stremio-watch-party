@@ -133,3 +133,27 @@ test('ten viewers: playback starts once all ten are ready', () => {
   assert.equal(room.running, true);
   assert.equal(room.snapshot().members.length, 10);
 });
+
+test('a group does not wait the full time for its slowest device', async () => {
+  const { STRAGGLER_WAIT_MS } = await import('../src/rooms.js');
+  let t = 1_000_000;
+  const room = new Room('r', { now: () => t });
+  for (const uid of ['a', 'b', 'c', 'd', 'e', 'f']) room.join({ uid, name: uid.toUpperCase() });
+  room.load(media);
+  for (const uid of ['a', 'b', 'c']) room.setBuffering(uid, false);
+  t += STRAGGLER_WAIT_MS + 1;
+  room.tick();
+  assert.equal(room.running, false, 'half ready: everyone still waits');
+  room.setBuffering('d', false);
+  t += STRAGGLER_WAIT_MS + 1;
+  room.tick();
+  assert.equal(room.running, true, 'most ready: the last two get 8 s, not 20');
+
+  // Two people: still the full wait for the friend.
+  const { room: duo, clock } = setup();
+  duo.load(media);
+  duo.setBuffering('a', false);
+  clock.advance(STRAGGLER_WAIT_MS + 1);
+  duo.tick();
+  assert.equal(duo.running, false);
+});

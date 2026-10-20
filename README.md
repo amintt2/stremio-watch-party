@@ -36,19 +36,24 @@ directement sur le site, dans un navigateur.
   marquée d'un coup. Les
   sources sont dans le panneau de droite, avec les mêmes infos qu'avant (qualité,
   👤 sources, taille, HDR/DV/HEVC, ⚡ débrid, filtres et tri).
-  - **Regarder ensemble** choisit la source **tout seul**, comme Huwa : les sources sont
+  - **Lire** (en haut de la fiche, ou le gros bouton du panneau ; un clic sur un épisode fait
+    pareil) choisit la source **tout seul**, comme Huwa : les sources sont
     classées (ta langue — VF ou VO selon ton choix audio, **MULTI** toujours bien placé —,
     puis débrid instantané, puis 1080p, puis le plus de sources), puis les meilleurs
     torrents sont **testés en parallèle** par le moteur Huwa (métadonnées et pairs qui
     répondent, sans rien télécharger) : le premier essaim en bonne santé gagne, en ~2 s au
     plus. Les liens débrid sont vérifiés d'un octet. Si la source gagnante ne s'ouvre pas, la
     suivante est essayée toute seule (les torrents morts en dernier). Le lecteur affiche
-    « Source : 1080p · MULTI (la plus rapide parmi 5 testées) ». Tu peux toujours cliquer une
-    source précise dans le panneau. Les badges **MULTI**, **VF** et **VOSTFR** sont lus
-    dans le nom de la release.
+    « Source : 1080p · MULTI (la plus rapide parmi 5 testées) ». La liste des sources est
+    repliée sous « Choisir une source moi-même », pour qui veut en choisir une précise. Les
+    badges **MULTI**, **VF** et **VOSTFR** sont lus dans le nom de la release.
+  - **Préparé avant le clic** : dès que la fiche (ou l'épisode sélectionné) reste affichée
+    1,5 s, le serveur fait déjà la course et ouvre la source gagnante (torrent, analyse du
+    fichier) ; « Lire » trouve le travail fait et démarre tout de suite. Préparation gardée
+    3 min, une course par jeu de sources.
   - **Reprendre à 42:10** relance là où *tu* t'étais arrêté, pour tout le salon.
   - **Proposer** ajoute le titre à la file d'attente de la salle (votes). Si tu n'es ni
-    hôte ni co-pilote, « Regarder ensemble » propose au lieu de lancer.
+    hôte ni co-pilote, « Lire » propose au lieu de lancer.
   - **Ajouter à la bibliothèque**.
 - **Bibliothèque** : tes titres, filtrables (tout / films / séries, avec le nombre de
   chaque), triables (ajout récent, dernière lecture, A → Z, année, note) et une recherche
@@ -85,7 +90,9 @@ les personnes présentes (👑 hôte, co-pilotes, et l'état de chacun : *en tra
 
 - **Personne n'est indispensable.** Celui qui a lancé l'Activité ou le film peut partir :
   le film continue pour les autres (s'il était le seul à charger, la salle ne l'attend
-  plus). S'il revient, il retrouve le film à la bonne position. Si tout le monde part, le
+  plus). S'il revient, il retrouve le film à la bonne position. À 3 ou plus, dès que la
+  majorité est prête, les derniers ont 8 s au plus (au lieu de 20) : un appareil lent ne
+  bloque plus tout le monde, il rattrape tout seul. Si tout le monde part, le
   film est mis en pause et reprend quand quelqu'un revient (la salle est gardée 10 min).
 - **Salle protégée par défaut.** Seuls l'**hôte** (le premier arrivé) et les
   **co-pilotes** qu'il nomme mettent en pause, avancent, arrêtent ou lancent un titre. Les

@@ -1197,6 +1197,43 @@ input[type='range'] {
   display: none;
 }
 
+.streams-auto {
+  width: 100%;
+  justify-content: center;
+}
+
+.streams-auto-hint {
+  margin-top: -6px;
+  text-align: center;
+}
+
+.streams-manual {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.streams-manual[open] {
+  gap: 12px;
+}
+
+.streams-manual > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  list-style-position: inside;
+}
+
+.streams-manual:not([open]) > :not(summary) {
+  display: none;
+}
+
+.episode-main.busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 .source-list {
   display: grid;
   gap: 6px;
