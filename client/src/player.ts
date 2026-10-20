@@ -4,7 +4,7 @@ import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
-import { pickAudioTrack, audioChipLabel } from './format.ts';
+import { pickAudioTrack, audioChipLabel, langCode } from './format.ts';
 import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
 import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
 
@@ -15,9 +15,13 @@ const STALL_REPORT_MS = 800;
 const PREF_KEY = 'wp-quality';
 /** "fr" (VF) or "vo": this viewer's audio language, applied to every new media. */
 const AUDIO_KEY = 'wp-audio';
+/** The exact language of the last audio track chosen ("en"), tried before fr / vo. */
+const AUDIO_LANG_KEY = 'wp-audio-lang';
 
 /** Seconds the time may run without a single new picture before we call it a black screen. */
 const NO_PICTURE_S = 4;
+/** No video at all after this long: reload (then a lower quality). */
+const LOAD_RETRY_MS = 30_000;
 const NO_PICTURE = "La vidéo ne s'affiche pas sur cet appareil. Essaie une qualité plus basse ou une autre source.";
 
 
@@ -31,6 +35,8 @@ export interface Track {
   label: string;
   /** Short chip label ("VF", "EN"), audio tracks only. */
   short?: string;
+  /** Language code from the file ("fr", "en"), when it says. */
+  lang?: string;
 }
 
 /**
@@ -71,6 +77,9 @@ export class Player {
   private graceUntil = 0;
   private hasPlayed = false;
   private fatalCount = 0;
+  private lastFatalAt = 0;
+  /** Since when nothing can be shown (readyState < 2), for the loading overlay. */
+  private notReadySince = 0;
   /** EWMA of segment download speed / media bitrate, on the current quality. */
   private ratio: number | null = null;
   /** Catch-up jump in progress: when it started, and whether we wait for the room there. */
@@ -88,6 +97,10 @@ export class Player {
   loadStartedAt = 0;
   /** Set when the picture failed and we switched to H.264 (shown in the statistics). */
   fallback: string | null = null;
+  /** When the viewer's audio track was put back after hls.js switched away from it. */
+  private audioRestores: number[] = [];
+  /** Automatic reloads of this media because nothing came (see watchLoading). */
+  private loadRetries = 0;
 
   constructor(video: HTMLVideoElement, conn: Connection) {
     this.video = video;
@@ -206,9 +219,10 @@ export class Player {
       return;
     }
     // A GPU encoder took over (or left): same film, reload the stream from where the room is.
+    // Only viewers who get a conversion: a copy of the source does not go through the GPU.
     if ((state.media.encoder?.by || null) !== (this.media.encoder?.by || null)) {
       this.media = state.media;
-      if (this.quality) this.startHls(this.quality, this.expected());
+      if (this.quality && this.output()?.mode === 'transcode') this.startHls(this.quality, this.expected());
     }
     // Someone seeked: jump now, without grace, so our buffering holds the room
     // until everybody has the new position ready.
@@ -238,6 +252,9 @@ export class Player {
     this.reportedStall = false;
     this.audioTrack = 0;
     this.audioPicked = false;
+    this.loadRetries = 0;
+    this.fatalCount = 0;
+    this.fallback = null;
     this.subtitleTrack = -1;
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
@@ -277,6 +294,7 @@ export class Player {
     this.quality = quality;
     this.frames = -1;
     this.loadStartedAt = Date.now();
+    this.notReadySince = this.loadStartedAt;
     this.conn.send({ t: 'quality', value: quality });
 
     const url = `/api/hls/${media.sid}/${profileSegment(quality, this.caps)}/master.m3u8`;
@@ -326,22 +344,44 @@ export class Player {
       // First time this media's tracks are known: apply the viewer's VF / VO choice.
       if (!this.audioPicked && hls.audioTracks.length) {
         this.audioPicked = true;
-        const wanted = pickAudioTrack(hls.audioTracks, this.audioPref);
+        const wanted = pickAudioTrack(hls.audioTracks, this.audioPref, localStorageGet(AUDIO_LANG_KEY));
         if (wanted !== null && wanted !== this.audioTrack) {
           this.audioTrack = wanted;
           hls.audioTrack = wanted;
         }
       }
-      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}` }));
+      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}`, lang: t.lang || undefined }));
       this.onChange();
     };
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      this.fatalCount = 0;
+      // Cues load into a hidden track: the stage draws them in the viewer's style.
+      hls.subtitleDisplay = false;
       updateTracks();
-      if (this.audioTrack > 0 && this.audioTrack < hls.audioTracks.length) hls.audioTrack = this.audioTrack;
+      // A reload (quality, retry) keeps the viewer's track, the first one too: the file may
+      // mark another track as default.
+      if (this.audioTrack >= 0 && this.audioTrack < hls.audioTracks.length && hls.audioTrack !== this.audioTrack) hls.audioTrack = this.audioTrack;
       if (this.subtitleTrack >= 0) hls.subtitleTrack = this.subtitleTrack;
     });
     hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, updateTracks);
+    // hls.js changes track by itself when the chosen one fails to load for a moment: go
+    // back to the viewer's (a few times a minute at most, then accept and say so).
+    hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => {
+      if (this.hls !== hls || data.id === this.audioTrack || this.audioTrack >= hls.audioTracks.length) return;
+      const now = Date.now();
+      this.audioRestores = this.audioRestores.filter((t) => now - t < 60_000);
+      if (this.audioRestores.length < 3) {
+        this.audioRestores.push(now);
+        const wanted = this.audioTrack;
+        setTimeout(() => {
+          if (this.hls === hls && this.audioTrack === wanted && hls.audioTrack !== wanted) hls.audioTrack = wanted;
+        }, 2000);
+      } else {
+        const lost = this.audioTracks[this.audioTrack]?.label;
+        this.audioTrack = data.id;
+        this.fallback = `Piste audio « ${lost || '?'} » indisponible : passage en « ${this.audioTracks[data.id]?.label || '?'} »`;
+        this.onChange();
+      }
+    });
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, updateTracks);
     hls.on(Hls.Events.ERROR, (_e, data) => {
       // A copied HEVC/AV1/VP9 the device can't take: H.264 right away, no retry loop. Only
@@ -352,6 +392,10 @@ export class Player {
           (data.sourceBufferName === 'video' || data.sourceBufferName === 'audiovideo'));
       if (videoRefused && this.pictureFailed('vidéo refusée par le décodeur')) return;
       if (!data.fatal) return;
+      // Counted over a minute: a film that hiccups once an hour must not end in an error.
+      const now = Date.now();
+      if (now - this.lastFatalAt > 60_000) this.fatalCount = 0;
+      this.lastFatalAt = now;
       this.fatalCount++;
       if (this.fatalCount > 4) {
         this.error = `La lecture a échoué (${data.details}). Essaie une qualité plus basse ou une autre source.`;
@@ -386,7 +430,8 @@ export class Player {
       this.onChange();
     } else {
       this.abr = null;
-      this.switchQuality(pref);
+      // The closest quality this film has (4K asked, 1080p at most here).
+      this.switchQuality(this.initialQuality());
     }
   }
 
@@ -397,8 +442,14 @@ export class Player {
       // Remember the choice as a language, so the next film starts in it too.
       const tracks = this.hls.audioTracks;
       if (tracks.length > 1) {
-        this.audioPref = pickAudioTrack(tracks, 'fr') === id ? 'fr' : 'vo';
-        localStorageSet(AUDIO_KEY, this.audioPref);
+        // VF / VO only says something when the film has a French track to choose against.
+        const french = pickAudioTrack(tracks, 'fr');
+        if (french !== null) {
+          this.audioPref = french === id ? 'fr' : 'vo';
+          localStorageSet(AUDIO_KEY, this.audioPref);
+        }
+        const lang = langCode(tracks[id]?.lang);
+        localStorageSet(AUDIO_LANG_KEY, lang || '');
       }
     }
     this.onChange();
@@ -421,13 +472,46 @@ export class Player {
     this.onChange();
   }
 
+  /** Seconds this stream has been loading without anything to show, or null. */
+  loadingFor(now = Date.now()) {
+    if (!this.media || this.detached || this.error || this.video.readyState >= 2) return null;
+    return (now - (this.notReadySince || this.loadStartedAt)) / 1000;
+  }
+
+  /** Reloads the stream now (the "Réessayer" button). */
+  reload() {
+    if (!this.media || !this.quality) return;
+    this.error = null;
+    this.fatalCount = 0;
+    this.startHls(this.quality, this.expected());
+  }
+
+  /**
+   * Nothing arrives at all (the room runs, the screen stays black): reload once after
+   * 30 s, then go one quality down (lighter for the server to prepare) after 30 s more.
+   */
+  private watchLoading(v: HTMLVideoElement, now: number) {
+    if (!this.state?.running || v.readyState >= 1 || !this.quality || now - this.loadStartedAt < LOAD_RETRY_MS) return;
+    this.loadRetries++;
+    const lower = this.ladder[this.ladder.indexOf(this.quality) + 1];
+    if (this.loadRetries >= 2 && lower) {
+      this.fallback = `Rien n'arrivait en ${this.quality === '2160' ? '4K' : `${this.quality}p`} : passage en ${lower === '2160' ? '4K' : `${lower}p`}`;
+      // Auto quality starts again from there (it would climb straight back otherwise).
+      if (this.abr) this.abr = new AutoQuality(this.ladder, lower, now);
+      this.switchQuality(lower);
+    } else {
+      this.startHls(this.quality, this.expected());
+    }
+  }
+
   /** Black screen: the time runs but no picture is decoded. */
   private watchPicture(v: HTMLVideoElement) {
     if (v.error?.code === MediaError.MEDIA_ERR_DECODE) {
       if (this.pictureFailed('erreur de décodage')) return;
     }
     const frames = this.decodedFrames();
-    if (frames === null || v.paused || v.seeking) {
+    // A tab in the background decodes no pictures on purpose: not a black screen.
+    if (frames === null || v.paused || v.seeking || document.hidden) {
       this.frames = -1;
       return;
     }
@@ -460,6 +544,10 @@ export class Player {
     if (!s?.media || !this.media) return;
     const now = Date.now();
     const expected = this.expected();
+    if (v.readyState >= 2) this.notReadySince = 0;
+    else if (!this.notReadySince) this.notReadySince = now;
+    // The end of the film: stay on the last picture (playing again would loop on it).
+    const atEnd = v.ended || (!!s.media.duration && expected >= s.media.duration - 0.5);
 
     // Load barrier: tell the room we can play at the expected position.
     if (this.pendingReady && v.readyState >= 3 && !v.seeking) {
@@ -484,7 +572,9 @@ export class Player {
       }
     }
 
-    if (s.running && !(this.holding && v.paused)) {
+    if (s.running && atEnd) {
+      if (v.playbackRate !== 1) v.playbackRate = 1;
+    } else if (s.running && !(this.holding && v.paused)) {
       if (v.paused && !this.needsGesture && v.readyState >= 2) {
         v.play().catch((err: DOMException) => {
           if (err.name === 'NotAllowedError') {
@@ -539,6 +629,7 @@ export class Player {
     }
 
     this.watchPicture(v);
+    this.watchLoading(v, now);
 
     if (this.reportedStall && v.readyState >= 3 && !v.seeking) {
       this.reportedStall = false;

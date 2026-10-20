@@ -142,5 +142,7 @@ func hostOf(server string) string {
 // fatal: only for command-line misuse; everything else is shown in the window.
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "\nErreur : %v\n", err)
+	// Windows: no console to read it in; a message box says it.
+	showFatal(fmt.Sprintf("L'encodeur Watch Party s'est arrêté :\n\n%v", err))
 	os.Exit(1)
 }

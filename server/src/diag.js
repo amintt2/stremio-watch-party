@@ -29,7 +29,7 @@ async function timed(fn) {
     const value = await fn();
     return { ok: true, ms: Date.now() - t0, ...value };
   } catch (err) {
-    return { ok: false, ms: Date.now() - t0, error: err.message };
+    return { ok: false, ms: Date.now() - t0, error: publicError(err.message) };
   }
 }
 
@@ -61,8 +61,25 @@ async function checkAddon(base, probe) {
   return result;
 }
 
-export async function diagnostics() {
-  if (cached && cached.expires > Date.now()) return cached.value;
+let running = null;
+
+/** Public page: the kind of error, without internal addresses or links (keys can be in them). */
+function publicError(message) {
+  return String(message || '')
+    .replace(/https?:\/\/\S+/g, '[lien]')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[adresse]')
+    .replace(/\[[0-9a-f:]+\](?::\d+)?/gi, '[adresse]')
+    .slice(0, 200);
+}
+
+/** One check at a time: callers that come during it share its result. */
+export function diagnostics() {
+  if (cached && cached.expires > Date.now()) return Promise.resolve(cached.value);
+  running ||= runDiagnostics().finally(() => (running = null));
+  return running;
+}
+
+async function runDiagnostics() {
   const [stremioServer, metaAddon, streamAddons] = await Promise.all([
     checkStremio(),
     checkAddon(config.metaAddon, {

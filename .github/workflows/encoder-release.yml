@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   release:
+    # Only main publishes (a manual run from another branch must not ship its build).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,10 +41,13 @@ jobs:
         run: sh encoder/build.sh "$PWD/out"
       - name: Publish
         if: steps.version.outputs.exists != 'true'
+        # Draft first, files attached, then published: apps never see a release without its files.
         run: |
-          gh release create "encoder-v${{ steps.version.outputs.version }}" \
+          tag="encoder-v${{ steps.version.outputs.version }}"
+          gh release create "$tag" --draft --target "$GITHUB_SHA" \
             --title "Encodeur GPU ${{ steps.version.outputs.version }}" \
             --notes "Encodeur GPU de Watch Party. Les apps réglées sur « GitHub » s'y mettent à jour toutes seules." \
             out/watchparty-encoder-* out/SHA256SUMS
+          gh release edit "$tag" --draft=false
         env:
           GH_TOKEN: ${{ github.token }}

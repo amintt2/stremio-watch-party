@@ -47,6 +47,19 @@ directement sur le site, dans un navigateur.
     « Source : 1080p · MULTI (la plus rapide parmi 5 testées) ». La liste des sources est
     repliée sous « Choisir une source moi-même », pour qui veut en choisir une précise. Les
     badges **MULTI**, **VF** et **VOSTFR** sont lus dans le nom de la release.
+  - **Obligations sous « Lire »** : des pastilles à cocher (**VF + VO**, **VF**, **ST FR**,
+    **1080p+**, **4K**, **⚡ Débrid**). « Lire » ne met en course que les sources qui les
+    remplissent toutes ; s'il n'y en a aucune, il le dit et propose de décocher. Gardées
+    d'une fiche à l'autre, sur cet appareil. Les sources qui ne les remplissent pas sont
+    grisées dans la liste.
+  - **Tes réglages par défaut** : tes derniers choix dans le lecteur (VF ou VO, langue des
+    sous-titres, y compris une piste du fichier, qualité) s'appliquent tout seuls au film
+    suivant ; la ligne « Pour toi : VO · sous-titres français · 1080p » sous « Lire » les
+    rappelle. Une piste de sous-titres du fichier dans ta langue passe avant OpenSubtitles.
+  - **Écran qui reste noir** : le lecteur affiche « Chargement de la vidéo… N s » avec ce qui
+    se passe, « Réessayer » et « Statistiques » ; sans rien reçu au bout de 30 s il recharge,
+    puis passe à la qualité en dessous. Au changement de film, le serveur arrête les
+    conversions de l'ancien (elles prenaient le processeur du nouveau).
   - **Préparé avant le clic** : dès que la fiche (ou l'épisode sélectionné) reste affichée
     1,5 s, le serveur fait déjà la course et ouvre la source gagnante (torrent, analyse du
     fichier) ; « Lire » trouve le travail fait et démarre tout de suite. Préparation gardée
@@ -334,7 +347,8 @@ racine, à côté de celles du site : le site n'utilise que `/api/…` et des li
 elles ne se gênent pas. Ce qu'il refuse, puisqu'il n'y a pas de clé : changer ses réglages
 depuis Stremio (le cache et la conversion restent ceux de Watch Party), les routes que Stremio
 n'utilise pas, et toute adresse du réseau privé (le convertisseur ne peut pas servir à joindre
-les autres conteneurs). Les lectures Stremio partagent les `HUWA_STREAMS` (6) torrents
+les autres conteneurs). Il ne donne pas accès aux conversions des salles (`/hlsv2/status`,
+`/hlsv2/wp-…`, `destroy`) : elles restent réservées au site. Les lectures Stremio partagent les `HUWA_STREAMS` (6) torrents
 simultanés avec les salles. `STREMIO_GATEWAY=0` le coupe.
 
 ```
@@ -373,6 +387,14 @@ PC : sa carte graphique prépare les qualités (4K, 1080p, 720p, 480p) pour tout
   `127.0.0.1:47470`, ouverte dans le navigateur) montre la connexion, la carte graphique, le
   film en cours (segment, images/s, pipeline GPU ou processeur), le journal, et les options.
   Sous Windows, une icône près de l'horloge la rouvre. Une seule copie tourne à la fois.
+  La page ne s'ouvre que par le lien à usage unique que l'app donne au navigateur : un autre
+  programme ou un site ne peut ni la lire ni appuyer sur ses boutons.
+- **Sécurité de l'app** : la clé n'apparaît pas dans la ligne de commande de ffmpeg (le
+  serveur donne pour chaque film un lien à jeton, `?t=…`) ; ce que le serveur envoie (film,
+  qualités, pistes) est vérifié avant de servir ; ffmpeg s'arrête avec l'app même tuée
+  (objet job Windows, signal Linux) ; l'adresse du serveur doit être en `https` (sauf
+  `localhost`). Une clé déjà utilisée sur un autre PC : l'app attend 5 min et réessaie,
+  sans se croire retirée.
 - **Lancement avec l'ordinateur** (activé au premier lancement, désactivable) : clé `Run` de
   Windows, LaunchAgent sur macOS, autostart XDG sur Linux. Il démarre sans fenêtre.
 - **Mises à jour automatiques**, entre deux films : depuis le **site** (par défaut : toujours
@@ -435,6 +457,11 @@ peut en plus ajouter les siens dans **Paramètres**.
 - `DATA_DIR` : dossier de la base SQLite (`./data` par défaut, `/app/data` dans Docker).
 - `PUBLIC_URL` (facultatif) : `https://watch.mciut.fr`. Sert à construire l'URL de retour
   de la connexion Discord ; sans elle, elle est déduite de la requête.
+- `ALLOW_PRIVATE_SOURCES` (facultatif, `1`) : par défaut, les liens venus de l'extérieur
+  (addons ajoutés dans Paramètres, liens de stream, redirections) ne peuvent pas viser une
+  adresse privée (autres conteneurs, box, `localhost`) : le serveur vérifie l'adresse
+  résolue à chaque redirection. Les addons de `STREAM_ADDON_URLS` restent permis où qu'ils
+  soient. Mets `1` seulement si tes sources sont sur ton réseau local.
 
 ### 3. Lancer
 

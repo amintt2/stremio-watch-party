@@ -29,6 +29,10 @@ export function outputOf(source: { codec: string; width: number }, maxWidth: num
 
 const KEY = 'wp-codecs-v1';
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+/** A test that ran out of time (tab in the background, busy device) is redone sooner. */
+const TIMEOUT_AGE_MS = 3600 * 1000;
+/** A codec that failed during a film is tried again the next day (driver update, one bad file). */
+const BROKEN_MS = 24 * 3600 * 1000;
 const EXPECTED: [number, number, number] = [200, 60, 120];
 
 /** Type strings: the sample's own, and the one a real film needs (4K, 10-bit). */
@@ -46,9 +50,13 @@ interface Stored {
   ua: string;
   at: number;
   caps: Caps;
-  /** Codecs that failed during a real film (black picture): off until the browser changes. */
+  /** Codecs that failed during a real film (black picture): off for a day. */
   broken: Codec[];
+  brokenAt?: number;
 }
+
+/** Last result in memory too, for when the storage is blocked (private mode, Discord). */
+let memory: Stored | null = null;
 
 function mediaSourceClass(): typeof MediaSource | undefined {
   return window.MediaSource || (window as unknown as { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource;
@@ -57,13 +65,18 @@ function mediaSourceClass(): typeof MediaSource | undefined {
 function read(): Stored | null {
   try {
     const s = JSON.parse(localStorageGet(KEY) || 'null') as Stored | null;
-    return s && s.ua === navigator.userAgent ? s : null;
+    if (s && s.ua === navigator.userAgent && s.caps && typeof s.at === 'number') {
+      if (!Array.isArray(s.broken) || !s.brokenAt || Date.now() - s.brokenAt > BROKEN_MS) s.broken = [];
+      return s;
+    }
   } catch {
-    return null;
+    // Unreadable: the copy in memory, if any.
   }
+  return memory;
 }
 
 function write(s: Stored) {
+  memory = s;
   localStorageSet(KEY, JSON.stringify(s));
 }
 
@@ -80,6 +93,7 @@ export function cachedCaps(): Caps {
 export function markBroken(codec: Codec) {
   const s = read() || { ua: navigator.userAgent, at: Date.now(), caps: { ...NO_CAPS }, broken: [] };
   if (!s.broken.includes(codec)) s.broken.push(codec);
+  s.brokenAt = Date.now();
   write(s);
 }
 
@@ -88,15 +102,20 @@ export async function probeCaps(): Promise<Caps> {
   const s = read();
   if (s && Date.now() - s.at < MAX_AGE_MS) return cachedCaps();
   const caps = { ...NO_CAPS };
+  let timedOut = false;
   for (const codec of Object.keys(SAMPLES) as Codec[]) {
-    caps[codec] = await probeCodec(codec).catch(() => false);
+    const result = await probeCodec(codec).catch(() => false as const);
+    caps[codec] = result === true;
+    if (result === null) timedOut = true;
   }
-  write({ ua: navigator.userAgent, at: Date.now(), caps, broken: s?.broken || [] });
+  // A test cut short by time proves nothing: kept for an hour only.
+  const at = timedOut ? Date.now() - MAX_AGE_MS + TIMEOUT_AGE_MS : Date.now();
+  write({ ua: navigator.userAgent, at, caps, broken: s?.broken || [], brokenAt: s?.brokenAt });
   return cachedCaps();
 }
 
-/** Plays one sample in a hidden video and checks its colour. */
-export async function probeCodec(codec: Codec, timeoutMs = 4000): Promise<boolean> {
+/** Plays one sample in a hidden video and checks its colour (null: no answer in time). */
+export async function probeCodec(codec: Codec, timeoutMs = 4000): Promise<boolean | null> {
   const MS = mediaSourceClass();
   const spec = SAMPLES[codec];
   if (!MS || !MS.isTypeSupported(spec.sample) || !spec.film.some((t) => MS.isTypeSupported(t))) return false;
@@ -114,8 +133,8 @@ export async function probeCodec(codec: Codec, timeoutMs = 4000): Promise<boolea
   let timer = 0;
   let poll = 0;
   try {
-    return await new Promise<boolean>((resolve) => {
-      timer = window.setTimeout(() => resolve(false), timeoutMs);
+    return await new Promise<boolean | null>((resolve) => {
+      timer = window.setTimeout(() => resolve(null), timeoutMs);
       // Events come in different orders across browsers: look a few times a frame, until
       // the right colour shows up (or the time runs out).
       const look = () => {

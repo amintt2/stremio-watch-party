@@ -5,6 +5,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
+import { guardedFetch } from './addons.js';
 
 const SESSION_IDLE_MS = 6 * 60 * 60 * 1000;
 
@@ -48,11 +49,13 @@ async function stremio(path, init) {
 async function resolveRedirects(url) {
   let current = url;
   for (let i = 0; i < 5; i++) {
-    const res = await fetch(current, {
-      method: 'GET',
-      redirect: 'manual',
-      headers: { Range: 'bytes=0-0' },
-      signal: AbortSignal.timeout(20000),
+    // Each hop checked: a link must not lead into the private network.
+    const res = await guardedFetch(
+      current,
+      { method: 'GET', headers: { Range: 'bytes=0-0' }, signal: AbortSignal.timeout(20000) },
+      { maxRedirects: 0 }
+    ).catch((err) => {
+      throw err.code === 'PRIVATE_ADDRESS' ? new Error('Lien refusé (adresse privée)') : err;
     });
     res.body?.cancel().catch(() => {});
     const location = res.headers.get('location');
@@ -251,10 +254,15 @@ async function resolveTorrentStremio(stream) {
   return { mediaURL: `${config.stremioSelfUrl}/${infoHash}/${fileIdx}`, engine: 'stremio', infoHash, fileIdx, file: fileFromInfo(info, fileIdx) };
 }
 
+/** An error for the room / the browser: never a link (a debrid one carries its key). */
+export function publicMessage(message) {
+  return String(message || 'Erreur').replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[lien]').slice(0, 300);
+}
+
 export async function probe(mediaURL) {
   const res = await stremio(`/hlsv2/probe?${new URLSearchParams({ mediaURL })}`);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body?.error?.message || `Analyse du fichier impossible (${res.status})`);
+  if (!res.ok) throw new Error(publicMessage(body?.error?.message || `Analyse du fichier impossible (${res.status})`));
   const video = body.streams.find((s) => s.track === 'video');
   return {
     duration: body.format?.duration || null,
@@ -327,6 +335,24 @@ export async function fetchTorrentHealth(session) {
   return { engine: t.engine, ...torrentHealth(await res.json().catch(() => null), session.info.bitrate) };
 }
 
+/**
+ * Stops the Stremio converters (one ffmpeg each) of films no room plays anymore: after a
+ * change of film they kept running until pushed out, taking the CPU the new film needs.
+ * `activeSids`: the media sessions rooms play now. Returns the ids stopped.
+ */
+export async function sweepConverters(activeSids) {
+  const res = await stremio('/hlsv2/status', { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return [];
+  const all = Object.keys((await res.json().catch(() => null)) || {});
+  const live = typeof activeSids === 'function' ? activeSids() : activeSids;
+  const stale = all.filter((id) => {
+    const m = /^wp-(.+)-(?:c-[a-z0-9]+|t-\d+|a\d+)$/.exec(id);
+    return m && !live.has(m[1]);
+  });
+  await Promise.all(stale.map((id) => stremio(`/hlsv2/${encodeURIComponent(id)}/destroy`, { signal: AbortSignal.timeout(5000) }).catch(() => null)));
+  return stale;
+}
+
 export function getSession(sid) {
   const s = sessions.get(sid);
   if (s) s.lastUsed = Date.now();
@@ -391,7 +417,8 @@ export function converterParams(sid, info, quality, caps = {}) {
  */
 export function audioConverterParams(sid, info, track) {
   const n = Number(track);
-  if (!Number.isInteger(n) || n < 0 || n > 31) return null;
+  // Only tracks the file has: each one is a converter (an ffmpeg) on the server.
+  if (!Number.isInteger(n) || n < 0 || n >= (info.audio?.length || 0)) return null;
   const query = new URLSearchParams();
   // Only audio is ever requested from it; the video codec is just the source's (no work).
   query.append('videoCodecs', info.video.codec);

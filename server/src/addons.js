@@ -3,6 +3,33 @@
 
 import { randomBytes } from 'node:crypto';
 import { addonBase, config } from './config.js';
+import { normalizeHost, safeFetch } from './netguard.js';
+
+/** Hosts of the addons the operator configured: trusted (they may be on the private network). */
+function trustedHosts() {
+  const hosts = new Set();
+  for (const base of [config.metaAddon, ...config.streamAddons, ...(config.subtitleAddons || [])]) {
+    try {
+      hosts.add(normalizeHost(new URL(base).hostname));
+    } catch {}
+  }
+  return hosts;
+}
+let trusted = null;
+
+/**
+ * fetch for addresses that come from addons and stream links: only the internet (each
+ * redirect checked), except the operator's own addons (or everything with ALLOW_PRIVATE_SOURCES).
+ */
+export function guardedFetch(url, init = {}, extra = {}) {
+  trusted ||= trustedHosts();
+  return safeFetch(url, init, { trustedHosts: trusted, allowPrivate: config.allowPrivateSources, ...extra });
+}
+
+/** At most this much JSON from an addon (a few thousand streams already fit). */
+const MAX_JSON_BYTES = 5 * 1024 * 1024;
+/** Streams kept per addon answer (a list longer than this is noise, and memory). */
+const MAX_STREAMS_PER_ADDON = 300;
 
 const STREAM_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -17,11 +44,13 @@ export function describeFetchError(err, timeoutMs) {
 export async function getJson(url, timeoutMs = 15000) {
   let res;
   try {
-    res = await fetch(url, {
+    res = await guardedFetch(url, {
       headers: { Accept: 'application/json', 'User-Agent': 'WatchParty/0.1 (Stremio addon client)' },
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
+    // A private address: the same message whatever is there (no port scan through addons).
+    if (err.code === 'PRIVATE_ADDRESS') throw new Error('adresse privée refusée');
     throw new Error(describeFetchError(err, timeoutMs));
   }
   if (!res.ok) {
@@ -29,11 +58,35 @@ export async function getJson(url, timeoutMs = 15000) {
     const server = res.headers.get('server');
     throw new Error(`HTTP ${res.status}${server ? ` (${server})` : ''}`);
   }
+  const declared = Number(res.headers.get('content-length'));
+  if (declared > MAX_JSON_BYTES) {
+    res.body?.cancel().catch(() => {});
+    throw new Error('réponse trop grosse');
+  }
+  const text = await readLimited(res, MAX_JSON_BYTES);
   try {
-    return await res.json();
+    return JSON.parse(text);
   } catch {
     throw new Error('réponse invalide (pas du JSON)');
   }
+}
+
+async function readLimited(res, max) {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      reader.cancel().catch(() => {});
+      throw new Error('réponse trop grosse');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 // ---------------------------------------------------------------- catalog / meta
@@ -238,9 +291,13 @@ export async function inspectStreamAddon(url, { allowHttp = false } = {}) {
 /** Full stream objects (may contain debrid URLs/keys) stay server-side, keyed by an opaque id. */
 const streamCache = new Map();
 
+const MAX_CACHED_STREAMS = 20_000;
+
 function remember(stream) {
   const key = randomBytes(12).toString('base64url');
   streamCache.set(key, { stream, expires: Date.now() + STREAM_CACHE_TTL_MS });
+  // Oldest first: a key that old has expired or will soon.
+  while (streamCache.size > MAX_CACHED_STREAMS) streamCache.delete(streamCache.keys().next().value);
   return key;
 }
 
@@ -325,7 +382,8 @@ export function describeStream(stream, addon) {
 }
 
 function isPlayable(stream) {
-  if (stream.infoHash && /^[a-f0-9]{40}$/i.test(stream.infoHash)) return true;
+  // An infoHash goes into engine URLs: exactly 40 hex characters or the stream is dropped.
+  if (stream.infoHash) return typeof stream.infoHash === 'string' && /^[a-f0-9]{40}$/i.test(stream.infoHash);
   return typeof stream.url === 'string' && /^https?:\/\//i.test(stream.url);
 }
 
@@ -338,7 +396,7 @@ export async function streams(type, id, log, extraBases = []) {
         addonName(base),
         getJson(`${base}/stream/${type}/${encodeURIComponent(id)}.json`, 20000),
       ]);
-      return (body.streams || []).filter(isPlayable).map((s) => ({
+      return (Array.isArray(body.streams) ? body.streams : []).filter((s) => s && typeof s === 'object' && isPlayable(s)).slice(0, MAX_STREAMS_PER_ADDON).map((s) => ({
         key: remember(s),
         ...describeStream(s, name),
       }));

@@ -51,12 +51,13 @@ func main() {
 	if existing != "" {
 		// Already running: show its window instead of starting a second one.
 		if !*background && !*noWindow {
-			openBrowser(existing)
+			showOther(existing)
 		}
 		fmt.Println("L'encodeur tourne déjà :", existing)
 		return
 	}
 	beforeExit = append(beforeExit, ui.close)
+	go removeOldTemp()
 
 	// First run: start with the computer (the room gets this GPU without anyone thinking of it).
 	if p := currentPrefs(); !p.AutoStartSet && !*noWindow {
@@ -72,10 +73,10 @@ func main() {
 	go agent.main(ctx, ui, flags, *ffmpegFlag, *encoderFlag)
 	go updater(ctx, agent.idle)
 	if !*background && !*noWindow {
-		openBrowser(ui.url)
+		ui.open()
 	}
 	logf("Fenêtre de l'encodeur : %s", ui.url)
-	runTray(ctx, ui.url, stop)
+	runTray(ctx, ui.open, stop)
 	shutdown()
 	logf("Arrêté.")
 }
@@ -130,6 +131,8 @@ func (a *Agent) main(ctx context.Context, ui *UI, flags Settings, ffmpegFlag, en
 			case s := <-ui.pair:
 				delete(refused, s.Key)
 			case <-ui.retry:
+				// "Réessayer": the keys refused before get another chance.
+				clear(refused)
 			}
 			continue
 		}
@@ -143,7 +146,13 @@ func (a *Agent) main(ctx context.Context, ui *UI, flags Settings, ffmpegFlag, en
 			status.connection("refused", "Ce PC a été retiré de ton compte, ou la clé n'est plus valable. Retélécharge l'encodeur depuis Paramètres → Encodeur GPU.")
 			logf("Clé refusée par le serveur.")
 			// Wait for a new pairing (or a retry) instead of hammering the server.
-			wait(10 * time.Minute)
+			select {
+			case <-ctx.Done():
+			case <-ui.pair:
+			case <-ui.retry:
+				clear(refused)
+			case <-time.After(10 * time.Minute):
+			}
 		}
 	}
 }
@@ -172,6 +181,17 @@ func (a *Agent) run(ctx context.Context) error {
 			a.stopAll()
 			return err
 		}
+		if errors.Is(err, errReplaced) {
+			// The same key connected from another PC: let that one work, try again later.
+			status.connection("connecting", "Cette clé est utilisée sur un autre PC. Nouvel essai dans 5 min.")
+			logf("Clé utilisée sur un autre PC ; nouvel essai dans 5 min.")
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Minute):
+			}
+			backoff = time.Second
+			continue
+		}
 		if time.Since(started) > time.Minute {
 			backoff = time.Second
 		}
@@ -187,7 +207,10 @@ func (a *Agent) run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-var errUnauthorized = errors.New("unauthorized")
+var (
+	errUnauthorized = errors.New("unauthorized")
+	errReplaced     = errors.New("replaced")
+)
 
 func (a *Agent) session(ctx context.Context) error {
 	u, err := url.Parse(a.settings.Server)
@@ -208,8 +231,10 @@ func (a *Agent) session(ctx context.Context) error {
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + a.settings.Key}},
 	})
 	if err != nil {
-		if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
-			return errUnauthorized
+		// The server refuses a key by closing with 4001 once connected; an HTTP 401/403 here
+		// comes from a proxy or a deploy in progress: retried like a network error.
+		if resp != nil {
+			return fmt.Errorf("%w (HTTP %d)", err, resp.StatusCode)
 		}
 		return err
 	}
@@ -240,6 +265,9 @@ func (a *Agent) session(ctx context.Context) error {
 			if errors.As(err, &ce) && ce.Code == 4001 {
 				return errUnauthorized
 			}
+			if errors.As(err, &ce) && ce.Code == 4000 {
+				return errReplaced
+			}
 			return err
 		}
 		var msg ServerMessage
@@ -267,7 +295,7 @@ func (a *Agent) handle(ctx context.Context, msg ServerMessage) {
 	switch msg.Type {
 	case "job":
 		var spec JobSpec
-		if json.Unmarshal(msg.Job, &spec) != nil || spec.ID == "" {
+		if json.Unmarshal(msg.Job, &spec) != nil || !validSpec(spec) {
 			return
 		}
 		a.mu.Lock()
@@ -300,6 +328,9 @@ func (a *Agent) handle(ctx context.Context, msg ServerMessage) {
 		}
 		switch msg.Type {
 		case "want":
+			if !validWant(msg) {
+				return
+			}
 			job.want(ctx, msg.Start, msg.Until, msg.Video, msg.Audio)
 		case "extend":
 			job.extend(msg.Until)

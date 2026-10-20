@@ -4,7 +4,8 @@ import { openExternal, publicBase } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
 import { canResume, episodeCode, progressRatio, routeHref } from '../format.ts';
 import { defaultEpisode, isUpcoming, nextEpisode } from '../lists.ts';
-import { StreamPanel } from '../streams.ts';
+import { getMusts, mustsLabel, onMustsChange } from '../musts.ts';
+import { mustRow, StreamPanel } from '../streams.ts';
 import { formatTime } from '../sync.ts';
 import { copyText, emptyState, icon, posterCard, progressBar, row, skeletonDetail } from '../ui.ts';
 
@@ -15,6 +16,7 @@ const STATUS: Record<string, string> = { Continuing: 'En cours', Ended: 'Termin�
 export function detailView(app: App, params: Record<string, string>): View {
   const el = h('div', { class: 'page page-detail' }, skeletonDetail());
   let disposed = false;
+  let cleanup = () => {};
 
   const load = () =>
     Promise.all([
@@ -22,7 +24,7 @@ export function detailView(app: App, params: Record<string, string>): View {
       api<{ items: Progress[]; inLibrary: boolean }>(`/api/progress/${encodeURIComponent(params.id)}`).catch(() => ({ items: [], inLibrary: false })),
     ])
       .then(([{ meta }, progress]) => {
-        if (!disposed) render(app, el, meta, progress.items, progress.inLibrary, params.video);
+        if (!disposed) cleanup = render(app, el, meta, progress.items, progress.inLibrary, params.video);
       })
       .catch((err: Error) => {
         if (disposed) return;
@@ -42,7 +44,13 @@ export function detailView(app: App, params: Record<string, string>): View {
       });
   load();
 
-  return { el, dispose: () => (disposed = true) };
+  return {
+    el,
+    dispose: () => {
+      disposed = true;
+      cleanup();
+    },
+  };
 }
 
 function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[], inLibrary: boolean, wantedVideo?: string) {
@@ -61,7 +69,14 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   let useResume = true;
 
   /** `pick`: one source (chosen by hand), or null for the automatic choice (fastest source). */
+  let starting = false;
   const start = async (pick: (() => Promise<StreamOption | null>) | null, startAt: number, button: HTMLButtonElement) => {
+    // One start at a time (a second click, another episode meanwhile), for the video shown at the click.
+    if (starting) return;
+    starting = true;
+    const id = videoId();
+    const sub = subtitle();
+    const sources = pick ? null : panel.candidates();
     button.disabled = true;
     button.classList.add('busy');
     // Starting now: a preparation still waiting would only duplicate the work.
@@ -79,9 +94,10 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
         }
         chosen = { streamKey: s.key };
       } else {
-        const keys = await panel.candidates();
+        const keys = await sources!;
         if (!keys.length) {
-          toast('Aucune source disponible pour ce titre.');
+          const musts = getMusts();
+          toast(musts.length ? `Aucune source avec : ${mustsLabel(musts)}. Décoche un critère sous « Lire ».` : 'Aucune source disponible pour ce titre.');
           return;
         }
         if (textual && button.lastChild) button.lastChild.textContent = 'Recherche de la source la plus rapide…';
@@ -91,13 +107,14 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       await app.play({
         ...chosen,
         meta: { id: meta.id, type: meta.type, name: meta.name, poster: meta.poster },
-        videoId: videoId(),
-        subtitle: subtitle(),
+        videoId: id,
+        subtitle: sub,
         startAt,
       });
     } catch (err) {
       toast((err as Error).message);
     } finally {
+      starting = false;
       button.disabled = false;
       button.classList.remove('busy');
       if (button.lastChild && label) button.lastChild.textContent = label;
@@ -122,6 +139,10 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   // Like Huwa: once the sources of what is shown are known (and the page stays a moment),
   // the server races them and opens the winner, so "Lire" starts right away.
   let prewarmFor = '';
+  const offMusts = onMustsChange(() => {
+    if (!el.isConnected) return offMusts();
+    prewarm(Promise.resolve());
+  });
   const prewarm = (sources: Promise<unknown>) => {
     const id = videoId();
     prewarmFor = id;
@@ -375,6 +396,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       !meta.director.length && meta.writers?.length ? h('p', { class: 'credits' }, h('span', { class: 'faint' }, 'Création '), personLinks(meta.writers)) : null,
       meta.awards ? h('p', { class: 'credits faint small' }, meta.awards) : null,
       actions,
+      mustRow(),
       more,
       isSeries ? episodeLine : null
     )
@@ -511,4 +533,8 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   renderActions();
   renderEpisodes?.(true);
   prewarm(video ? panel.load('series', video.id, subtitle()) : panel.load('movie', meta.id, 'Sources'));
+  return () => {
+    prewarmFor = '';
+    offMusts();
+  };
 }

@@ -7,19 +7,32 @@
 // server's engine as fallback; everything else (HLS conversion, probe, subtitles, casting)
 // goes to the private Stremio server, which reads Huwa's files over the internal network.
 // No key: the owner asked for an open personal server. What it refuses instead: routes a
-// Stremio client never calls, POST /settings, and URLs pointing into the private network
-// (so the converter cannot be used to reach the other containers).
+// Stremio client doesn't need (and the ones that would show or stop the rooms' own
+// conversions), POST /settings, URLs pointing into the private network (checked on the
+// resolved addresses), and too many torrents or conversions from one address.
 import http from 'node:http';
 import https from 'node:https';
-import { isIP } from 'node:net';
+import { assertPublicUrl, isPublicHost } from './netguard.js';
+
+export { isPublicHost };
 
 const HASH = '[0-9a-fA-F]{40}';
 const TORRENT_RE = new RegExp(`^/(${HASH})/(?:create|remove|stats\\.json|[^/]+(?:/stats\\.json)?)$`);
+// What the Stremio apps call for playback. Not here on purpose: /hlsv2/status and
+// /hlsv2/…/destroy (they list and stop every conversion, the rooms' included), the rooms'
+// conversions themselves ("wp-…"), archives / ftp / tracks (URLs hidden in paths and bodies).
 const STREMIO_RE = new RegExp(
-  '^/(?:settings|stats\\.json|network-info|device-info|hwaccel-profiler|heartbeat|casting(?:/[^?]*)?' +
-    '|hlsv2/[^?]+|subtitles\\.vtt|subtitlesTracks|opensubHash|subtitleSignature|embedded-ass[^?]*' +
-    '|tracks/[^?]+|proxy/[^?]+|yt/[^?]+|ftp/[^?]+|(?:rar|zip|7zip|tgz|tar|nzb)/[^?]+)$',
+  '^/(?:settings|subtitles\\.vtt|subtitlesTracks|opensubHash|subtitleSignature|proxy/[^?]+' +
+    '|hlsv2/probe|hlsv2/(?!wp-|status$|destroy)[A-Za-z0-9_-]{1,80}/(?!destroy$)[A-Za-z0-9_./-]{1,120})$',
 );
+/** Answered here with nothing in them: Stremio asks, but they only describe our containers. */
+const STUBS = {
+  '/network-info': { availableInterfaces: [] },
+  '/device-info': { availableHardwareAccelerations: [] },
+  '/casting': [],
+  '/stats.json': {},
+  '/heartbeat': { success: true },
+};
 const HOP = new Set([
   'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'host',
   'access-control-allow-origin', 'access-control-allow-headers', 'access-control-allow-methods',
@@ -35,25 +48,12 @@ const CORS = {
 
 /** Which upstream answers a path: torrent routes (with their info hash), Stremio, or none. */
 export function routeOf(pathname) {
+  if (Object.hasOwn(STUBS, pathname)) return { to: 'stub' };
   if (pathname === '/create') return { to: 'torrent', hash: null };
   const t = TORRENT_RE.exec(pathname);
   if (t) return { to: 'torrent', hash: t[1].toLowerCase() };
   if (STREMIO_RE.test(pathname)) return { to: 'stremio' };
   return null;
-}
-
-/** A host on the internet (not loopback, private, link-local, or a bare container name). */
-export function isPublicHost(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
-  const v = isIP(host);
-  if (v === 4) {
-    const [a, b] = host.split('.').map(Number);
-    return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224);
-  }
-  if (v === 6) return !(host === '::' || host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith('::ffff:'));
-  return host.includes('.');
 }
 
 /** Origin the client reached us at (behind Coolify's proxy: X-Forwarded-*). */
@@ -64,7 +64,23 @@ export function publicOrigin(headers) {
   return `${proto === 'https' ? 'https' : 'http'}://${host}`;
 }
 
-export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUrl, engine = 'huwa', log = console }) {
+/** Requests per address and minute: torrents opened, conversions / probes started. */
+const LIMITS = { torrent: 30, convert: 120 };
+
+export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUrl, engine = 'huwa', log = console, resolve, now = Date.now }) {
+  const counters = new Map();
+  /** Not more than LIMITS[kind] a minute from one address (behind the proxy: X-Forwarded-For). */
+  const allow = (req, kind) => {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const key = `${kind}:${ip}`;
+    const t = now();
+    const list = (counters.get(key) || []).filter((x) => t - x < 60_000);
+    if (list.length >= LIMITS[kind]) return false;
+    list.push(t);
+    counters.set(key, list);
+    if (counters.size > 5000) counters.delete(counters.keys().next().value);
+    return true;
+  };
   /** Info hash → engine that holds it, for torrents opened through the gateway. */
   const engines = new Map();
   const engineOf = (hash) => engines.get(hash) || engine;
@@ -80,14 +96,14 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
    * A URL the client gave Stremio's converter (mediaURL, proxy target…): ours become the
    * internal address of the engine that holds the file; private-network ones are refused.
    */
-  function rewriteTarget(value, origin) {
+  async function rewriteTarget(value, origin) {
     let u;
     try {
-      u = new URL(value);
+      u = new URL(value.trim());
     } catch {
       return value;
     }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return value;
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw Object.assign(new Error('scheme refused'), { status: 403 });
     if (u.origin === origin) {
       const m = /^\/([0-9a-fA-F]{40})\/\d+$/.exec(u.pathname);
       const base = m && engineOf(m[1].toLowerCase()) === 'huwa' ? huwaMediaUrl : stremioSelfUrl;
@@ -95,22 +111,22 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
     }
     // The converter's own playlists carry the internal media URL back to the client.
     if (ownMedia.includes(u.origin) && mediaPath.test(u.pathname)) return value;
-    if (!isPublicHost(u.hostname)) throw Object.assign(new Error('private address'), { status: 403 });
-    return value;
+    await assertPublicUrl(u, { resolve });
+    return u.toString();
   }
 
-  function stremioPath(url, origin) {
+  async function stremioPath(url, origin) {
     const parts = url.pathname.split('/');
     // /proxy/<d=origin&h=…>/<path>: the destination is inside the path.
-    if (parts[1] === 'proxy' && parts[2]) {
-      const q = new URLSearchParams(decodeURIComponent(parts[2]));
-      if (q.get('d')) {
-        q.set('d', new URL(rewriteTarget(q.get('d'), origin)).origin);
-        parts[2] = encodeURIComponent(q.toString());
-      }
+    if (parts[1] === 'proxy') {
+      const q = new URLSearchParams(decodeURIComponent(parts[2] || ''));
+      if (!q.get('d')) throw Object.assign(new Error('proxy without destination'), { status: 403 });
+      q.set('d', new URL(await rewriteTarget(q.get('d'), origin)).origin);
+      parts[2] = encodeURIComponent(q.toString());
     }
     const query = new URLSearchParams();
-    for (const [k, v] of url.searchParams) query.append(k, /^https?:\/\//i.test(v) ? rewriteTarget(v, origin) : v);
+    // Anything that looks like a URL (any scheme, spaces around) is checked, not just http(s)://.
+    for (const [k, v] of url.searchParams) query.append(k, /^\s*[a-z][a-z0-9+.-]*:/i.test(v) || v.includes('://') ? await rewriteTarget(v, origin) : v);
     const qs = query.toString();
     return parts.join('/') + (qs ? `?${qs}` : '');
   }
@@ -216,9 +232,15 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
       const origin = publicOrigin(req.headers);
       const route = routeOf(url.pathname);
       if (!route) return send(res, 404, { error: 'not found' });
+      if (route.to === 'stub') return send(res, 200, STUBS[url.pathname]);
       if (url.pathname === '/settings') return await settings(req, res, origin);
-      if (route.to === 'torrent') return await torrent(req, res, url, route.hash);
-      return await forward(req, res, stremioUrl, stremioPath(url, origin));
+      if (route.to === 'torrent') {
+        if (req.method === 'POST' && !allow(req, 'torrent')) return send(res, 429, { error: 'too many torrents' });
+        return await torrent(req, res, url, route.hash);
+      }
+      // A new conversion or probe (not its segments): limited per address.
+      if (/^\/hlsv2\/(?:probe|[^/]+\/master\.m3u8)$/.test(url.pathname) && !allow(req, 'convert')) return send(res, 429, { error: 'too many conversions' });
+      return await forward(req, res, stremioUrl, await stremioPath(url, origin));
     } catch (err) {
       if (res.headersSent) return res.destroy();
       if (!err.status) log.warn?.({ err: err.message, url: req.url?.split('?')[0] }, 'gateway request failed');

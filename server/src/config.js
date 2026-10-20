@@ -44,6 +44,9 @@ export const config = {
 
   // Lets the app run in a normal browser tab (no Discord), for local testing.
   allowBrowserMode: process.env.ALLOW_BROWSER_MODE === '1',
+  // Let personal addons and stream links reach private addresses (a self-hosted test setup).
+  // Off: they may only go to the internet; the addons configured here are trusted as is.
+  allowPrivateSources: process.env.ALLOW_PRIVATE_SOURCES === '1',
 
   // Shown on /conditions and /confidentialite (required by Discord for apps).
   legal: {

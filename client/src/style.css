@@ -1197,6 +1197,44 @@ input[type='range'] {
   display: none;
 }
 
+.must-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detail-actions + .must-row {
+  margin-top: -4px;
+}
+
+.must-chip {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.must-chip:hover {
+  color: var(--text);
+}
+
+.must-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.source-unmet {
+  opacity: 0.5;
+}
+
 .streams-auto {
   width: 100%;
   justify-content: center;
@@ -1205,6 +1243,12 @@ input[type='range'] {
 .streams-auto-hint {
   margin-top: -6px;
   text-align: center;
+}
+
+.streams-prefs {
+  margin-top: -6px;
+  text-align: center;
+  color: var(--text-faint);
 }
 
 .streams-manual {
@@ -1623,6 +1667,16 @@ input[type='range'] {
   justify-items: center;
 }
 
+.overlay-loading .small {
+  opacity: 0.8;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .stage-top,
 .controls {
   z-index: 2;
@@ -2020,6 +2074,11 @@ input[type='range'] {
 /* Status messages over the picture don't swallow clicks/taps on it. */
 .overlay > .overlay-msg {
   pointer-events: none;
+}
+
+.overlay-msg .overlay-actions,
+.overlay-msg button {
+  pointer-events: auto;
 }
 
 /* Toasts above the controls while the player is open. */

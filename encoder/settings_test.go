@@ -29,3 +29,19 @@ func TestReadLinesSkipsPartialLine(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The key travels with every request: in clear only to this PC.
+func TestSettingsRefuseClearTextServer(t *testing.T) {
+	for server, want := range map[string]bool{
+		"https://watch.example":  true,
+		"http://localhost:3001":  true,
+		"http://127.0.0.1:3001":  true,
+		"http://watch.example":   false,
+		"http://192.168.1.2:300": false,
+		"ftp://watch.example":    false,
+	} {
+		if got := (Settings{Server: server, Key: "wpe_x"}).valid(); got != want {
+			t.Errorf("%s: %v", server, got)
+		}
+	}
+}

@@ -317,7 +317,7 @@ export class Room {
 
   /** The host removes someone (member or waiting) and blocks them for this room. */
   kick(uid, target) {
-    if (uid !== this.host || target === uid || !this.members.has(uid)) return false;
+    if (uid !== this.host || target === uid || target === this.owner || !this.members.has(uid)) return false;
     if (!this.members.has(target) && !this.pending.has(target)) return false;
     const name = this.#name(target);
     this.#forget(target);
@@ -358,9 +358,18 @@ export class Room {
   /** A connection opens. Returns true when the room changed. */
   join({ uid, name, avatar }) {
     if (this.status(uid) === 'blocked') return false;
+    // The owner waiting in their own room (it was opened by someone else first): straight in.
+    if (this.owner === uid && this.pending.has(uid)) this.pending.delete(uid);
     const existing = this.members.get(uid) || this.pending.get(uid);
     if (existing) {
       existing.connections++;
+      // Recognised as the owner only now: they take their crown back.
+      if (this.owner === uid && this.members.has(uid) && this.host !== uid) {
+        if (this.host) this.copilots.add(this.host);
+        this.copilots.delete(uid);
+        this.host = uid;
+        return this.#changed();
+      }
       return false;
     }
     const isOwner = !!this.owner && uid === this.owner;
@@ -647,6 +656,9 @@ export class Room {
   /** Stop for everyone (controllers only). */
   stopBy(uid) {
     if (!this.media || !this.canControl(uid) || !this.#allow(uid, 'control')) return false;
+    // A film being opened meanwhile must not appear right after this stop.
+    this.startSeq++;
+    this.starting = null;
     this.stop();
     this.#notice(`${this.#name(uid)} a arrêté la lecture`, { except: uid });
     return true;
@@ -1132,12 +1144,19 @@ export class Rooms {
     this.rooms = new Map();
   }
 
-  /** `init` (lobby, owner) applies when the room is created. */
+  /**
+   * `init` (lobby, owner) applies when the room is created. The owner of a personal room
+   * is also recognised when someone else opened it first (after a restart, or once it had
+   * expired): it stays theirs, nobody there can lock them out.
+   */
   get(id, init = {}) {
     let room = this.rooms.get(id);
     if (!room) {
       room = new Room(id, { ...this.options, ...init });
       this.rooms.set(id, room);
+    } else if (init.owner && room.owner !== init.owner) {
+      room.owner = init.owner;
+      room.blocked.delete(init.owner);
     }
     return room;
   }

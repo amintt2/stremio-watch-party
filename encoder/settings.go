@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,8 +19,23 @@ type Settings struct {
 	Key    string `json:"key"`
 }
 
+// valid: https, or http to this PC only (tests, a local server): the key travels in clear otherwise.
 func (s Settings) valid() bool {
-	return (strings.HasPrefix(s.Server, "http://") || strings.HasPrefix(s.Server, "https://")) && strings.HasPrefix(s.Key, "wpe_")
+	if !strings.HasPrefix(s.Key, "wpe_") {
+		return false
+	}
+	u, err := url.Parse(s.Server)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
 }
 
 const configName = "watchparty-encoder.json"

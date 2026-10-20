@@ -451,7 +451,25 @@ export function createStage(host: StageHost) {
     if (kind === 'f') {
       if (subs.selected) subs.select(null);
       player.setSubtitleTrack(Number(id));
+      // Remembered like an OpenSubtitles choice: the next film starts with this language.
+      const lang = player.subtitleTracks.find((t) => t.id === Number(id))?.lang;
+      if (lang) subs.remember(lang);
     } else subs.select(kind === 'x' ? id : null);
+  }
+
+  // The viewer's subtitle language, applied to every new film: a track of the file in that
+  // language first (made for this video), else the best OpenSubtitles one (subtitles.ts).
+  const fileTrackInPreferredLang = () => (subs.lang ? player.subtitleTracks.find((t) => t.lang && langCode(t.lang) === subs.lang) : undefined);
+  subs.preferFile = () => !!fileTrackInPreferredLang();
+  let fileSubsAppliedFor: string | null = null;
+  function applySubtitlePreference() {
+    const sid = state()?.media?.sid || null;
+    if (!sid || fileSubsAppliedFor === sid || !player.subtitleTracks.length) return;
+    fileSubsAppliedFor = sid;
+    const track = fileTrackInPreferredLang();
+    if (!track || player.subtitleTrack >= 0) return;
+    if (subs.selected) subs.select(null, false);
+    player.setSubtitleTrack(track.id);
   }
   const subtitleLabel = (value: string) => {
     if (value === 'off') return 'Désactivés';
@@ -534,9 +552,12 @@ export function createStage(host: StageHost) {
   let page: Page = 'main';
   const menuOpen = () => !menu.hidden || !help.hidden;
 
+  /** Opened straight on a list (the arrows of the audio / CC chips): a choice closes it. */
+  let menuDirect = false;
   function openMenu(p: Page = 'main') {
     help.hidden = true;
     page = p;
+    menuDirect = p !== 'main';
     menu.hidden = false;
     gearBtn.setAttribute('aria-expanded', 'true');
     el.classList.add('menu-open');
@@ -574,10 +595,19 @@ export function createStage(host: StageHost) {
       h('span', { class: 'menu-row-value' }, value),
       icon('chevron', 'icon icon-sm')
     );
+  // Back to the main settings, or closed when the list was opened from a chip.
+  const backOrClose = () => {
+    if (menuDirect) {
+      closeMenus();
+      return;
+    }
+    page = 'main';
+    renderMenu(true);
+  };
   const choice = (text: string, selected: boolean, onPick: () => void) =>
     h(
       'button',
-      { class: `menu-choice${selected ? ' selected' : ''}`, type: 'button', role: 'menuitemradio', 'aria-checked': String(selected), onclick: () => (onPick(), (page = 'main'), renderMenu(true)) },
+      { class: `menu-choice${selected ? ' selected' : ''}`, type: 'button', role: 'menuitemradio', 'aria-checked': String(selected), onclick: () => (onPick(), backOrClose()) },
       h('span', { class: 'menu-check' }, selected ? icon('check', 'icon icon-sm') : null),
       text
     );
@@ -585,7 +615,7 @@ export function createStage(host: StageHost) {
     [
       h(
         'button',
-        { class: 'menu-row menu-back', type: 'button', onclick: () => ((page = 'main'), renderMenu(true)) },
+        { class: 'menu-row menu-back', type: 'button', onclick: backOrClose },
         icon('back', 'icon icon-sm'),
         h('span', { class: 'menu-row-title' }, title)
       ),
@@ -688,7 +718,7 @@ export function createStage(host: StageHost) {
                     },
                   },
                   h('span', { class: 'menu-line-time' }, lineTime(cue, subs.timing)),
-                  h('span', { class: 'menu-line-text' }, cue.text.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\n/g, ' '))
+                  h('span', { class: 'menu-line-text' }, cue.text.replace(/<[^<>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\n/g, ' '))
                 )
               )
             : [h('div', { class: 'menu-item menu-muted' }, 'Aucune réplique autour de ce moment')])
@@ -920,9 +950,14 @@ export function createStage(host: StageHost) {
     if (!host.isOpen() || !state()?.media) return;
     const t = e.target as HTMLElement;
     if (t.closest?.('input:not([type="range"]), textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
-    if (t.closest?.('.topbar, .rail, .content')) return;
+    if (t.closest?.('.topbar, .rail, .content, .room-layer, .encoder-suggest, #toasts')) return;
     const action = shortcutAction(e);
     if (!action) return;
+    // A held key repeats: fine for seeking and volume, not for on/off keys.
+    if (e.repeat && !['back', 'forward', 'volume-up', 'volume-down', 'subs-earlier', 'subs-later'].includes(action)) {
+      e.preventDefault();
+      return;
+    }
     // Enter/Space on a focused button keeps its own meaning.
     if (action === 'toggle' && e.key === ' ' && t.closest('button') && el.contains(t)) {
       e.preventDefault();
@@ -977,6 +1012,10 @@ export function createStage(host: StageHost) {
         break;
       case 'escape':
         if (closeMenus()) break;
+        if (!statsPanel.hidden) {
+          toggleStats(false);
+          break;
+        }
         if (fsElement()) break; // the browser leaves fullscreen itself
         host.close();
         break;
@@ -996,6 +1035,7 @@ export function createStage(host: StageHost) {
 
   // ------------------------------------------------------------ overlay & notices
   let overlayKey = '';
+  let loadingSecs = 0;
   function renderOverlay() {
     const s = state();
     const media = s?.media;
@@ -1007,7 +1047,18 @@ export function createStage(host: StageHost) {
       content = s ? () => null : msg('Connexion à la salle…');
     } else if (player.error) {
       key = `error:${player.error}`;
-      content = () => h('div', { class: 'overlay-msg' }, h('p', { class: 'auth-error' }, player.error));
+      content = () =>
+        h(
+          'div',
+          { class: 'overlay-msg' },
+          h('p', { class: 'auth-error' }, player.error),
+          h(
+            'div',
+            { class: 'overlay-actions' },
+            h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => player.reload() }, 'Réessayer'),
+            h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', onclick: () => toggleStats(true) }, 'Statistiques')
+          )
+        );
     } else if (player.needsGesture) {
       key = 'gesture';
       content = () =>
@@ -1015,7 +1066,33 @@ export function createStage(host: StageHost) {
     } else {
       const waitingFor = s!.waiting.map((uid) => s!.members.find((m) => m.uid === uid)?.name).filter(Boolean);
       const buffering = s!.running && video.readyState < 3 && !video.paused;
-      if (waitingFor.length) {
+      const loading = player.loadingFor();
+      // Nothing loaded here: that says more than "waiting for <me>" (others wait for us).
+      const imWaited = s!.waiting.includes(me.uid);
+      if (loading !== null && loading > 3 && mode === 'full' && (s!.running || imWaited || !waitingFor.length)) {
+        // Nothing to show yet: say it (a black screen with a running clock says nothing).
+        const secs = Math.round(loading);
+        const detail = sourceDetail(source) || (player.output()?.mode === 'transcode' ? 'Le serveur (ou le GPU) prépare la vidéo.' : 'Le serveur prépare la vidéo.');
+        // The seconds change in place: rebuilding would eat a click on the buttons.
+        key = `loading:${secs >= 12}:${detail}`;
+        loadingSecs = secs;
+        content = () =>
+          h(
+            'div',
+            { class: 'overlay-msg overlay-loading' },
+            h('span', { class: 'spinner' }),
+            h('strong', { class: 'overlay-loading-time' }, `Chargement de la vidéo… ${secs} s`),
+            h('span', { class: 'small' }, detail),
+            secs >= 12
+              ? h(
+                  'div',
+                  { class: 'overlay-actions' },
+                  h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => player.reload() }, 'Réessayer'),
+                  h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', onclick: () => toggleStats(true) }, 'Statistiques')
+                )
+              : null
+          );
+      } else if (waitingFor.length) {
         key = `wait:${waitingFor.join(',')}`;
         content = msg(`On attend ${waitingFor.join(', ')}…`);
       } else if (buffering && mode === 'full') {
@@ -1026,9 +1103,13 @@ export function createStage(host: StageHost) {
         content = () => null;
       }
     }
-    if (key === overlayKey) return;
-    overlayKey = key;
-    clear(overlay, content());
+    if (key !== overlayKey) {
+      overlayKey = key;
+      clear(overlay, content());
+    }
+    const time = overlay.querySelector('.overlay-loading-time');
+    const text = `Chargement de la vidéo… ${loadingSecs} s`;
+    if (time && time.textContent !== text) time.textContent = text;
   }
 
   // "Risque de coupure": the buffer health in the bar, and a notice when it stays red.
@@ -1069,6 +1150,7 @@ export function createStage(host: StageHost) {
 
   // ------------------------------------------------------------ statistics (like Stremio's)
   let waitingSince = 0;
+  let statsKey = '';
   function toggleStats(open = statsPanel.hidden) {
     statsPanel.hidden = !open;
     if (open) void pollSource().then(renderStats);
@@ -1099,6 +1181,9 @@ export function createStage(host: StageHost) {
       error: player.error,
       fallback: player.fallback,
     });
+    const key = JSON.stringify(view);
+    if (key === statsKey && statsPanel.childElementCount) return;
+    statsKey = key;
     clear(
       statsPanel,
       view.top.length ? h('div', { class: 'stats-top' }, ...view.top.map((t) => h('div', { class: 'stats-big' }, h('span', { class: 'stats-label' }, t.label), h('strong', {}, t.value)))) : null,
@@ -1205,6 +1290,7 @@ export function createStage(host: StageHost) {
     renderOverlay();
     renderHealth();
     renderStats();
+    applySubtitlePreference();
   }
   setInterval(tick, 250);
   // External subtitles follow this viewer's own video time.

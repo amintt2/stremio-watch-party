@@ -114,3 +114,11 @@ test('audio chip labels: VF, language codes, else A1/A2', async () => {
   assert.equal(audioChipLabel({ name: 'VFF AC3' }, 0), 'VF');
   assert.equal(audioChipLabel({}, 2), 'A3');
 });
+
+test('the exact language chosen last time wins over "VO" (English, not the first original track)', () => {
+  const tracks = [{ lang: 'hin', name: 'Hindi' }, { lang: 'eng', name: 'English' }, { lang: 'fre', name: 'Français' }];
+  assert.equal(pickAudioTrack(tracks, 'vo'), 0, 'VO alone: the first non-French track');
+  assert.equal(pickAudioTrack(tracks, 'vo', 'en'), 1);
+  assert.equal(pickAudioTrack(tracks, 'fr', 'de'), 2, 'language not in this film: back to VF / VO');
+  assert.equal(pickAudioTrack(tracks, null, null), null);
+});

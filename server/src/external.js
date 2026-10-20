@@ -10,6 +10,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
+import { guardedFetch } from './addons.js';
 
 export const EXTERNAL_TTL_S = 12 * 60 * 60;
 export const HANDOFF_TTL_MS = 5 * 60 * 1000;
@@ -82,7 +83,7 @@ const PASS = ['content-length', 'content-range', 'accept-ranges', 'last-modified
  * forwarded as HEAD, or as a GET whose body is dropped when the upstream refuses HEAD.
  * The upstream request is aborted as soon as the player hangs up.
  */
-export async function proxyFile(request, reply, mediaURL, { name }) {
+export async function proxyFile(request, reply, mediaURL, { name, guard = false }) {
   const head = request.method === 'HEAD';
   const range = request.headers.range;
   const headers = {};
@@ -92,7 +93,9 @@ export async function proxyFile(request, reply, mediaURL, { name }) {
   reply.raw.on('close', () => {
     if (!reply.raw.writableFinished) abort.abort();
   });
-  const call = (method) => fetch(mediaURL, { method, headers, signal: abort.signal });
+  // A link from an addon (guard) may only lead to the internet, redirects included; the
+  // engines' own internal URLs (torrents) are ours.
+  const call = (method) => (guard ? guardedFetch : fetch)(mediaURL, { method, headers, signal: abort.signal });
 
   let upstream;
   try {

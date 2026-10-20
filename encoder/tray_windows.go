@@ -13,7 +13,7 @@ var trayIcon []byte
 
 // runTray: on Windows the app has no console; its icon near the clock opens the window,
 // the site, or quits. Blocks until the app quits.
-func runTray(ctx context.Context, windowURL string, quit func()) {
+func runTray(ctx context.Context, openWindow func(), quit func()) {
 	go func() {
 		<-ctx.Done()
 		systray.Quit()
@@ -30,7 +30,7 @@ func runTray(ctx context.Context, windowURL string, quit func()) {
 			for {
 				select {
 				case <-open.ClickedCh:
-					openBrowser(windowURL)
+					openWindow()
 				case <-site.ClickedCh:
 					if s := currentSettings(); s.valid() {
 						openBrowser(s.Server)

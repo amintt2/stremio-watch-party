@@ -47,6 +47,12 @@ export class Prewarms {
     if (this.entries.has(k)) return this.entries.get(k);
     const entry = this.#make(keys, opts);
     this.entries.set(k, entry);
+    // A failed preparation is not kept: "Lire" tries again instead of getting the failure.
+    entry.result.then(
+      ({ streams }) => !streams.length && this.entries.get(k) === entry && this.entries.delete(k),
+      () => this.entries.get(k) === entry && this.entries.delete(k)
+    );
+    entry.opened.catch(() => this.entries.get(k) === entry && this.entries.delete(k));
     return entry;
   }
 

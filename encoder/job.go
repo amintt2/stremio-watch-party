@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,34 @@ type JobSpec struct {
 	Audio int `json:"audio"`
 }
 
+var (
+	jobIDRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	sourceRe    = regexp.MustCompile(`^/api/encoder/source/[A-Za-z0-9_-]{1,64}(\?t=[A-Za-z0-9_-]{1,128})?$`)
+	renditionRe = regexp.MustCompile(`^\d{3,4}$`)
+)
+
+// validSpec: what the server sends goes into file names and ffmpeg's command line.
+func validSpec(s JobSpec) bool {
+	return jobIDRe.MatchString(s.ID) && sourceRe.MatchString(s.Source) && s.Duration >= 0 && s.Segment >= 0 && s.Segment <= 60
+}
+
+func validWant(m ServerMessage) bool {
+	if m.Start < 0 || m.Until < m.Start || len(m.Video) > 8 || len(m.Audio) > 16 {
+		return false
+	}
+	for _, v := range m.Video {
+		if !renditionRe.MatchString(v.ID) || v.Width <= 0 || v.Width > 8192 || v.Height <= 0 || v.Height > 8192 || v.Bitrate <= 0 || v.Bitrate > 200_000_000 {
+			return false
+		}
+	}
+	for _, a := range m.Audio {
+		if a < 0 || a > 63 {
+			return false
+		}
+	}
+	return true
+}
+
 // Rendition is one video quality to make.
 type Rendition struct {
 	ID      string `json:"id"`
@@ -50,16 +79,20 @@ type Job struct {
 	mu  sync.Mutex
 	run *run
 	// The full GPU pipeline failed once on this film: decode/scale on the CPU instead.
-	hybrid bool
+	// Atomic: set by the encoding goroutine while want/stop hold mu waiting for it.
+	hybrid atomic.Bool
 }
 
 type run struct {
 	cancel context.CancelFunc
 	done   chan struct{}
-	start  int
-	until  atomic.Int64
-	video  []Rendition
-	audio  []int
+	// First segment of the current ffmpeg process (moves on when it restarts further).
+	start atomic.Int64
+	until atomic.Int64
+	// The viewers got closer (extend): an ffmpeg stopped for being far enough ahead resumes.
+	wake  chan struct{}
+	video []Rendition
+	audio []int
 	// Highest segment sent, per rendition.
 	sent sync.Map
 }
@@ -76,13 +109,14 @@ func (j *Job) want(ctx context.Context, start, until int, video []Rendition, aud
 	defer j.mu.Unlock()
 	if r := j.run; r != nil && sameSet(r, video, audio) {
 		// Already on it: just go further.
-		if next := r.next(); start >= r.start && start <= next+2 {
-			r.until.Store(int64(max(int(r.until.Load()), until)))
+		if next := r.next(); start >= int(r.start.Load()) && start <= next+2 {
+			r.raise(until)
 			return
 		}
 	}
 	j.stopLocked()
-	r := &run{start: start, video: video, audio: audio, done: make(chan struct{})}
+	r := &run{video: video, audio: audio, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	r.start.Store(int64(start))
 	r.until.Store(int64(until))
 	names := make([]string, 0, len(video))
 	for _, v := range video {
@@ -102,7 +136,16 @@ func (j *Job) extend(until int) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.run != nil {
-		j.run.until.Store(int64(max(int(j.run.until.Load()), until)))
+		j.run.raise(until)
+	}
+}
+
+// raise: encode up to `until` now (and wake the run if it was waiting for it).
+func (r *run) raise(until int) {
+	r.until.Store(int64(max(int(r.until.Load()), until)))
+	select {
+	case r.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -143,7 +186,7 @@ func (r *run) next() int {
 	lowest := math.MaxInt
 	for _, name := range r.names() {
 		v, ok := r.sent.Load(name)
-		n := r.start
+		n := int(r.start.Load())
 		if ok {
 			n = v.(int) + 1
 		}
@@ -165,25 +208,61 @@ func (r *run) names() []string {
 
 func (j *Job) execute(ctx context.Context, r *run) {
 	defer close(r.done)
+	last := int(math.Ceil(j.spec.Duration/j.spec.Segment)) - 1
+	for ctx.Err() == nil {
+		produced, ok := j.encodeOnce(ctx, r)
+		if !ok || ctx.Err() != nil {
+			return
+		}
+		next := r.next()
+		if next > last || produced == 0 {
+			return // the end of the film (or ffmpeg has nothing more to give)
+		}
+		// Stopped far enough ahead of the viewers: wait for them to get closer (the server
+		// raises `until`), then go on from where it stopped, in a new ffmpeg.
+		for next > int(r.until.Load()) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.wake:
+			}
+		}
+		r.start.Store(int64(next))
+	}
+}
+
+// encodeOnce runs ffmpeg once (falling back to CPU decoding if the full GPU pipeline
+// can't take this file). ok=false: an error the server was told about.
+func (j *Job) encodeOnce(ctx context.Context, r *run) (int, bool) {
 	for attempt := 0; attempt < 2; attempt++ {
-		hybrid := j.hybrid || j.agent.enc.Scale == nil || j.spec.Video.HDR
+		hybrid := j.hybrid.Load() || j.agent.enc.Scale == nil || j.spec.Video.HDR
 		produced, err := j.encode(ctx, r, hybrid)
 		if ctx.Err() != nil || err == nil {
-			return
+			return produced, true
 		}
 		if !hybrid && produced == 0 {
 			// Same as Sunshine falling back: the GPU-only pipeline isn't supported for this
 			// file (decoder, pixel format); decode and scale on the CPU, encode on the GPU.
 			logf("Pipeline GPU complet impossible pour ce fichier (%v) : décodage sur le processeur.", err)
-			j.mu.Lock()
-			j.hybrid = true
-			j.mu.Unlock()
+			j.hybrid.Store(true)
 			continue
 		}
 		logf("Erreur d'encodage : %v", err)
 		status.job(j.spec.ID, func(js *JobStatus) { js.Error = err.Error() })
 		j.agent.send(map[string]any{"type": "error", "job": j.spec.ID, "message": err.Error()})
-		return
+		return produced, false
+	}
+	return 0, false
+}
+
+// removeOldTemp: segment folders left by an app that was killed (only this copy runs,
+// so anything older than an hour is nobody's).
+func removeOldTemp() {
+	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "watchparty-encoder-*"))
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() && time.Since(fi.ModTime()) > time.Hour {
+			_ = os.RemoveAll(d)
+		}
 	}
 }
 
@@ -204,6 +283,7 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	defer kill()
 	cmd := exec.CommandContext(ffCtx, j.agent.ffmpeg, args...)
 	hideWindow(cmd)
+	own(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, _ := cmd.StdoutPipe()
@@ -213,10 +293,11 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	}
 	pipeline := map[bool]string{true: "décodage sur le processeur", false: "tout sur le GPU"}[hybrid]
 	status.job(j.spec.ID, func(js *JobStatus) { js.Pipeline = pipeline })
-	logf("Encodage %s à partir de %s (%s)", strings.Join(label, " + "), clock(float64(r.start)*j.spec.Segment), pipeline)
+	logf("Encodage %s à partir de %s (%s)", strings.Join(label, " + "), clock(float64(r.start.Load())*j.spec.Segment), pipeline)
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
+	adopt(cmd)
 	go j.readProgress(stdout)
 
 	var sentCount atomic.Int64
@@ -345,7 +426,7 @@ func (j *Job) readProgress(stdout interface{ Read([]byte) (int, error) }) {
 func (j *Job) args(r *run, dir string, hybrid bool) []string {
 	enc := j.agent.enc
 	seg := j.spec.Segment
-	startTime := float64(r.start) * seg
+	startTime := float64(r.start.Load()) * seg
 	fps := j.spec.Video.Fps
 	if fps <= 0 || fps > 120 {
 		fps = 24
@@ -362,12 +443,12 @@ func (j *Job) args(r *run, dir string, hybrid bool) []string {
 	if startTime > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", startTime))
 	}
-	src := j.agent.settings.Server + j.spec.Source
-	if strings.HasPrefix(src, "http") {
-		args = append(args,
-			"-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10", "-rw_timeout", "60000000",
-			"-headers", "Authorization: Bearer "+j.agent.settings.Key+"\r\n")
-	}
+	// The source URL carries a token for this film only (?t=): the pairing key never goes on
+	// ffmpeg's command line, where other programs on the PC could read it.
+	src := strings.TrimSuffix(j.agent.settings.Server, "/") + j.spec.Source
+	args = append(args,
+		"-protocol_whitelist", "http,https,tcp,tls,crypto",
+		"-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10", "-rw_timeout", "60000000")
 	args = append(args, "-i", src)
 
 	// Video: one decode, split into every rendition.
@@ -399,7 +480,7 @@ func (j *Job) args(r *run, dir string, hybrid bool) []string {
 		return []string{
 			"-output_ts_offset", fmt.Sprintf("%.3f", startTime),
 			"-f", "segment", "-segment_format", "mpegts", "-segment_time", fmt.Sprintf("%g", seg),
-			"-segment_start_number", strconv.Itoa(r.start),
+			"-segment_start_number", strconv.Itoa(int(r.start.Load())),
 			"-segment_list", filepath.Join(dir, name+".csv"), "-segment_list_type", "csv",
 			filepath.Join(dir, name, "%d.ts"),
 		}

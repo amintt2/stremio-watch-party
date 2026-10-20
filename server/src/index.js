@@ -32,6 +32,8 @@ import {
   watchStremioServer,
   hlsParams,
   createSession,
+  sweepConverters,
+  publicMessage,
   ensureFileHash,
   fetchHls,
   getSession,
@@ -90,9 +92,11 @@ const sockets = new Map();
 
 /** What one socket may see: the room state, or only the waiting-room status. */
 function stateFor(room, uid, snapshot) {
-  if (room.status(uid) === 'pending') {
+  const status = room.status(uid);
+  // Only members see the room (its film's session id is a key to the stream).
+  if (status !== 'member') {
     const host = room.members.get(room.host)?.name || null;
-    return JSON.stringify({ t: 'lobby', host, members: room.members.size });
+    return JSON.stringify({ t: 'lobby', host, members: room.members.size, full: status === 'none' });
   }
   return snapshot;
 }
@@ -161,11 +165,30 @@ const prewarms = new Prewarms({
   open: (stream) => createSession(stream, app.log),
 });
 
+// Converters of films no room plays anymore are stopped (a change of film, a stop, a room
+// that emptied): they would keep the server's CPU busy for nothing.
+function sweepStaleConverters(log = app.log) {
+  // Asked after Stremio's list arrives: a film started meanwhile is not swept.
+  const active = () => {
+    const sids = new Set();
+    for (const room of rooms) if (room.media?.sid) sids.add(room.media.sid);
+    return sids;
+  };
+  sweepConverters(active)
+    .then((ids) => ids.length && log.info({ count: ids.length }, 'stale converters stopped'))
+    .catch((err) => log.debug({ err: err.message }, 'converter sweep failed'));
+}
+setInterval(sweepStaleConverters, 60_000).unref();
+
 // Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
 const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
 
 // Coarse flood guard per person on the socket; the room has finer per-action limits.
 const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
+// Clock pings (a few a second at most) and progress saves (one every few seconds is plenty):
+// both are cheap, but not free (progress writes to SQLite).
+const pingLimit = new RateLimiter({ max: 30, windowMs: 10_000 });
+const progressLimit = new RateLimiter({ max: 4, windowMs: 10_000 });
 
 /**
  * Resolves a stream into a media session and loads it for the room, unless a newer
@@ -194,19 +217,20 @@ async function startMedia(room, { token, stream, streams, opened = null, pick = 
   } catch (err) {
     log.warn({ err: err.message }, 'stream resolution failed');
     if (room.failStart(token)) publish(room);
-    notice(room.id, `Impossible de lancer « ${mediaLabel({ title, subtitle })} » : ${err.message}`);
+    notice(room.id, `Impossible de lancer « ${mediaLabel({ title, subtitle })} » : ${publicMessage(err.message)}`);
     throw err;
   }
   if (!room.isCurrentStart(token)) return false;
   log.info({ ms: Date.now() - t0, prepared: !!opened }, 'source opened');
   // What everyone's progress is saved against (see the "progress" socket message).
   session.meta = cleanMeta(meta, { title, subtitle, poster });
+  const previousSid = room.media?.sid || null;
   room.load(
     {
       ...publicMedia(session),
       title: String(title || '').slice(0, 200),
       subtitle: String(subtitle || '').slice(0, 200),
-      poster: typeof poster === 'string' ? poster : null,
+      poster: typeof poster === 'string' && /^https:\/\//.test(poster) ? poster.slice(0, 500) : null,
       startedBy: startedBy || 'la salle',
       startedByUid: starterUid || null,
       meta: session.meta,
@@ -216,7 +240,14 @@ async function startMedia(room, { token, stream, streams, opened = null, pick = 
     { startAt: Number(startAt) || 0 }
   );
   publish(room);
+  // The previous film's GPU job ends now (not 15 s later), unless another room plays it.
+  if (previousSid && previousSid !== session.sid && ![...rooms].some((r) => r.media?.sid === previousSid)) {
+    const old = getSession(previousSid);
+    if (old) encoders.hub.release(old);
+  }
   encoders.attach(room, session);
+  // The previous film's converters go now, not when the server pushes them out.
+  setTimeout(() => sweepStaleConverters(log), 1000).unref();
   findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
   return true;
 }
@@ -347,10 +378,13 @@ app.post('/api/auth/logout', async (request, reply) => {
 });
 
 /** Web cookie → bearer session for the API/socket, in the personal room or a joined one. */
+const sessionLimit = new RateLimiter({ max: 30, windowMs: 60_000 });
 app.post('/api/session', async (request, reply) => {
   const web = verifyWebSession(parseCookies(request.headers.cookie)[SESSION_COOKIE]);
   const account = web && store.getUser(web.uid);
   if (!account) return reply.code(401).send({ error: 'Non connecté' });
+  // Each session can open a room: no one makes thousands of them.
+  if (!sessionLimit.allow(account.uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
   // A tab handed off from the Activity stays in the Activity's room (see /api/handoff).
   const passRoom = verifyRoomPass(request.body?.pass, account.uid);
   if (passRoom) {
@@ -407,7 +441,7 @@ app.route({
     for (const room of rooms) if (room.media?.sid === sid && room.status(uid) === 'blocked') return reply.code(403).send({ error: 'Accès retiré' });
     // VLC seeks with many short range requests: a generous budget, per person.
     if (!fileLimit.allow(uid)) return reply.code(429).send({ error: 'Trop de requêtes' });
-    return proxyFile(request, reply, media.mediaURL, { name: safeFileName(media.fileName) });
+    return proxyFile(request, reply, media.mediaURL, { name: safeFileName(media.fileName), guard: !media.torrent });
   },
 });
 
@@ -488,9 +522,9 @@ app.register(async (api) => {
       // Failed before a source was even tried (startMedia tells the room itself otherwise).
       if (room.failStart(token)) {
         publish(room);
-        notice(room.id, `Impossible de lancer « ${label} » : ${err.message}`);
+        notice(room.id, `Impossible de lancer « ${label} » : ${publicMessage(err.message)}`);
       }
-      return reply.code(502).send({ error: err.message });
+      return reply.code(502).send({ error: publicMessage(err.message) });
     }
   });
 
@@ -504,6 +538,8 @@ app.register(async (api) => {
     const keys = Array.isArray(candidates) ? candidates.filter((k) => typeof k === 'string').slice(0, 80) : [];
     if (!keys.some((k) => addons.lookupStream(k))) return reply.code(410).send({ error: 'Sources expirées' });
     if (!prewarmLimit.allow(request.session.uid)) return reply.code(429).send({ error: 'Trop de demandes' });
+    // Only someone who could start it now (a member of a room) has it prepared.
+    if (rooms.peek(request.session.room)?.status(request.session.uid) !== 'member') return reply.code(409).send({ error: 'Tu n’es pas dans la salle' });
     const want = lang === 'fr' || lang === 'vo' ? lang : null;
     prewarms.start(keys, { want, meta, log: request.log });
     return { ok: true };
@@ -611,6 +647,7 @@ app.register(async (api) => {
     if (!room?.media) return { ok: true };
     const stopped = room.stopBy(request.session.uid);
     publish(room);
+    if (stopped) setTimeout(() => sweepStaleConverters(request.log), 1000).unref();
     if (!stopped) return reply.code(403).send({ error: 'Seuls l’hôte et les co-pilotes peuvent arrêter la lecture' });
     return { ok: true };
   });
@@ -755,12 +792,13 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
     }
     switch (msg?.t) {
       case 'ping':
-        ws.send(JSON.stringify({ t: 'pong', c: msg.c, s: Date.now() }));
+        if (pingLimit.allow(session.uid)) ws.send(JSON.stringify({ t: 'pong', c: typeof msg.c === 'number' ? msg.c : 0, s: Date.now() }));
         return;
       case 'progress': {
         // This viewer's own position in a media session they were handed.
+        if (!progressLimit.allow(session.uid) || room.status(session.uid) !== 'member') return;
         const media = typeof msg.sid === 'string' ? getSession(msg.sid) : null;
-        if (!media?.meta) return;
+        if (!media?.meta || !Number.isFinite(msg.position)) return;
         const m = media.meta;
         store.saveProgress(session.uid, {
           videoId: m.videoId,
@@ -843,7 +881,12 @@ app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
 // ---------------------------------------------------------------- image proxy
 
 // The Activity iframe can only load from its own origin, so posters/avatars go through here.
+// Raster images only: an SVG served from this site's origin could run script with its cookie.
+const IMAGE_TYPES = /^image\/(?:png|jpeg|webp|gif|avif)(?:;|$)/i;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const imageLimit = new RateLimiter({ max: 300, windowMs: 60_000 });
 app.get('/api/img', async (request, reply) => {
+  if (!imageLimit.allow(request.ip)) return reply.code(429).send();
   let url;
   try {
     url = new URL(String(request.query.u || ''));
@@ -864,11 +907,28 @@ app.get('/api/img', async (request, reply) => {
     upstream = null;
   }
   const type = upstream?.headers.get('content-type') || '';
-  if (!upstream?.ok || !type.startsWith('image/')) return reply.code(502).send();
-  const length = Number(upstream.headers.get('content-length') || 0);
-  if (length > 10 * 1024 * 1024) return reply.code(413).send();
-  reply.type(type).header('Cache-Control', 'public, max-age=86400');
-  return reply.send(Buffer.from(await upstream.arrayBuffer()));
+  if (!upstream?.ok || !IMAGE_TYPES.test(type)) {
+    upstream?.body?.cancel().catch(() => {});
+    return reply.code(502).send();
+  }
+  if (Number(upstream.headers.get('content-length') || 0) > MAX_IMAGE_BYTES) {
+    upstream.body?.cancel().catch(() => {});
+    return reply.code(413).send();
+  }
+  // Read with a cap: a chunked answer has no length to check first.
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of upstream.body) {
+    size += chunk.length;
+    if (size > MAX_IMAGE_BYTES) return reply.code(413).send();
+    chunks.push(chunk);
+  }
+  reply
+    .type(type)
+    .header('Cache-Control', 'public, max-age=86400')
+    .header('X-Content-Type-Options', 'nosniff')
+    .header('Content-Security-Policy', "default-src 'none'; sandbox");
+  return reply.send(Buffer.concat(chunks));
 });
 
 app.get('/api/health', async () => ({ ok: true }));

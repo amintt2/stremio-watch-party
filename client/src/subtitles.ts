@@ -81,6 +81,14 @@ export class ExternalSubtitles {
     return localStorageGet(LANG_KEY) || '';
   }
 
+  /** The viewer chose subtitles of this language elsewhere (a track of the file): next films too. */
+  remember(lang: string) {
+    localStorageSet(LANG_KEY, langCode(lang));
+  }
+
+  /** True when the file itself has subtitles in the viewer's language (better timed): no OpenSubtitles pick then. */
+  preferFile: () => boolean = () => false;
+
   get auto() {
     return localStorageGet(AUTO_KEY) !== '0';
   }
@@ -113,7 +121,7 @@ export class ExternalSubtitles {
       const wanted = this.lang;
       // Best one of the viewer's language: the server puts files made for this video first.
       const match = wanted ? items.find((s) => langCode(s.lang) === wanted) : null;
-      if (match) await this.select(match.key, false);
+      if (match && !this.preferFile()) await this.select(match.key, false);
     } catch (err) {
       if (seq === this.seq) this.error = (err as Error).message;
     }
@@ -355,7 +363,7 @@ export function lineTime(cue: TimedCue, timing: Timing) {
 export function cleanVttText(text: string) {
   return text
     .replace(/<(\/?)([ibu])(?:\.[^>\s]*)?\s*>/gi, (_, slash, tag) => `\u0001${slash}${tag.toLowerCase()}\u0002`)
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^<>]*>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
