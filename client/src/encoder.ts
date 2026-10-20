@@ -65,7 +65,7 @@ export function encoderSection() {
         'p',
         { class: 'muted' },
         'Lance l’Encodeur Watch Party sur ton PC : ta carte graphique prépare les qualités (4K, 1080p, 720p…) pour toute la salle à la place du serveur. ',
-        'Il se connecte tout seul au site (aucun port à ouvrir) ; laisse sa fenêtre réduite pendant la séance.'
+        'Il se connecte tout seul au site (aucun port à ouvrir), démarre avec l’ordinateur, se met à jour seul et vit près de l’horloge de Windows : rien à garder ouvert.'
       ),
       h(
         'div',

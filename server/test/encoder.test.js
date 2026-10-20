@@ -168,3 +168,37 @@ test('download packaging: settings after the .exe, zip with the executable bit',
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a failing app gets the film back later, and the statistics say why', () => {
+  let t = 1_000_000;
+  const hub = new EncoderHub({ keys: () => null, now: () => t });
+  const sent = [];
+  const agent = hub.connect({ id: 'k1', uid: 'alice', label: 'PC' }, (m) => sent.push(m), () => {});
+  hub.message(agent, { type: 'hello', version: '1', os: 'windows', encoder: 'NVENC', device: 'RTX 4070', maxHeight: 2160 });
+  const session = { sid: 's1', info: { duration: 600, video: { width: 3840, height: 2160, codec: 'hevc' }, audio: [{}] } };
+  const job = hub.attach(session, ['alice']);
+  assert.ok(job);
+  assert.equal(hub.state(session, ['alice']).status, 'ready');
+  hub.served(job);
+  assert.deepEqual(
+    { status: hub.state(session, ['alice']).status, device: hub.state(session, ['alice']).device },
+    { status: 'working', device: 'RTX 4070' }
+  );
+
+  // Three failures: taken back, told why, and not given back at once.
+  hub.message(agent, { type: 'error', job: job.id, message: 'ffmpeg a quitté' });
+  hub.message(agent, { type: 'error', job: job.id, message: 'ffmpeg a quitté' });
+  hub.message(agent, { type: 'error', job: job.id, message: 'ffmpeg a quitté' });
+  assert.equal(session.gpu, null);
+  const stop = sent.find((m) => m.type === 'stop');
+  assert.equal(stop.reason, 'ffmpeg a quitté');
+  assert.equal(stop.retryIn, 60);
+  assert.deepEqual(
+    (({ status, error, retryIn }) => ({ status, error, retryIn }))(hub.state(session, ['alice'])),
+    { status: 'retry', error: 'ffmpeg a quitté', retryIn: 60 }
+  );
+  assert.equal(hub.attach(session, ['alice']), null);
+  t += 61_000;
+  assert.ok(hub.attach(session, ['alice']), 'back to the app after the wait');
+  assert.equal(hub.state({ sid: 'x', info: {} }, ['bob']), null, 'nobody with an app: nothing to show');
+});

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encodeur GPU · Watch Party</title>
+<style>
+  :root {
+    --bg: #0f0d18; --panel: #1a1726; --panel-2: #231f33; --text: #f2f0f7; --muted: #a39fb3;
+    --accent: #8b5cf6; --good: #3ecf8e; --warn: #f5a524; --bad: #ff6b6b; --border: rgba(255,255,255,.08);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f4f9; --panel: #fff; --panel-2: #f0eef6; --text: #1b1825; --muted: #6b6680; --border: rgba(0,0,0,.08); color-scheme: light; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 40px; display: grid; gap: 14px; }
+  header { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 40px; height: 40px; border-radius: 12px; background: var(--accent); display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 20px; }
+  h1 { font-size: 18px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .state { display: flex; align-items: center; gap: 12px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.good { background: var(--good); box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 25%, transparent); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .state strong { font-size: 17px; display: block; }
+  .grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+  .grid dt { color: var(--muted); }
+  .grid dd { margin: 0; overflow-wrap: anywhere; }
+  .bar { height: 6px; border-radius: 99px; background: var(--panel-2); overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .job { padding: 10px 12px; background: var(--panel-2); border-radius: 12px; margin-top: 8px; }
+  .job b { font-weight: 600; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+  .row + .row { border-top: 1px solid var(--border); }
+  button, select, input { font: inherit; color: inherit; }
+  button { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input[type=text] { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; min-width: 0; }
+  .switch { position: relative; width: 42px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: absolute; z-index: 1; }
+  .switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--border); transition: .2s; }
+  .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: .2s; }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { left: 21px; background: #fff; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  pre { margin: 0; max-height: 220px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); white-space: pre-wrap; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  .err { color: var(--bad); }
+  .pair { display: grid; gap: 8px; margin-top: 10px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  [hidden] { display: none !important; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; gap: 0; } .grid dd { margin-bottom: 6px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">W</div>
+    <div>
+      <h1>Encodeur GPU</h1>
+      <div class="sub">Watch Party · version <span id="version">…</span></div>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="state">
+      <span class="dot" id="dot"></span>
+      <div>
+        <strong id="title">Démarrage…</strong>
+        <span class="sub" id="detail"></span>
+      </div>
+    </div>
+    <div class="bar" id="dlbar" hidden><i></i></div>
+    <div class="actions" style="margin-top:12px">
+      <button id="retry" hidden>Réessayer</button>
+      <button id="site">Ouvrir Watch Party</button>
+    </div>
+    <div id="pairbox" hidden>
+      <p class="hint">Le plus simple : sur Watch Party, va dans <b>Paramètres → Encodeur GPU</b> et retélécharge l'encodeur, il est déjà jumelé à ton compte. Sinon, colle l'adresse du site et une clé ci-dessous.</p>
+      <div class="pair">
+        <input type="text" id="pairServer" placeholder="https://watch.example.com" autocomplete="off">
+        <input type="text" id="pairKey" placeholder="wpe_…" autocomplete="off">
+        <div class="actions"><button class="primary" id="pairBtn">Se connecter</button><span class="err" id="pairErr"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Ta carte graphique</h2>
+    <dl class="grid">
+      <dt>Encodeur</dt><dd id="enc">…</dd>
+      <dt>Carte</dt><dd id="device">…</dd>
+      <dt>Qualité max.</dt><dd id="maxh">…</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>Activité</h2>
+    <div id="activity" class="sub">…</div>
+    <div id="jobs"></div>
+  </section>
+
+  <section class="card">
+    <h2>Options</h2>
+    <div class="row">
+      <div><div>Lancer avec l'ordinateur</div><div class="hint">Toujours prêt pour les séances, sans y penser.</div></div>
+      <label class="switch"><input type="checkbox" id="autostart"><span></span></label>
+    </div>
+    <div class="row">
+      <div><div>Mises à jour automatiques</div><div class="hint">Installées entre deux films, jamais pendant.</div></div>
+      <label class="switch"><input type="checkbox" id="autoupdate"><span></span></label>
+    </div>
+    <div class="row">
+      <div><div>Source des mises à jour</div><div class="hint" id="srcHint"></div></div>
+      <select id="source">
+        <option value="server">Le site Watch Party</option>
+        <option value="github">GitHub (releases)</option>
+      </select>
+    </div>
+    <div class="row" id="repoRow" hidden>
+      <div>Dépôt GitHub</div>
+      <div class="actions"><input type="text" id="repo" size="28"><button id="repoSave">OK</button></div>
+    </div>
+    <div class="row">
+      <div><div id="updTitle">Mises à jour</div><div class="hint" id="updDetail"></div><div class="bar" id="updbar" hidden><i></i></div></div>
+      <div class="actions"><button id="check">Vérifier</button><button class="primary" id="install" hidden>Installer</button></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Journal</summary>
+      <pre id="logs"></pre>
+    </details>
+  </section>
+
+  <div class="actions" style="justify-content:flex-end">
+    <button id="quit">Quitter l'encodeur</button>
+  </div>
+</main>
+<script>
+const TOKEN = '__TOKEN__';
+const $ = (id) => document.getElementById(id);
+const post = async (path, body) => {
+  const r = await fetch(path, { method: 'POST', headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : '{}' });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Erreur');
+  return data;
+};
+const time = (s) => { s = Math.floor(s); return `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}`; };
+const ago = (t) => { const d = Math.round(Date.now() / 1000 - t); return d < 60 ? `il y a ${d} s` : `il y a ${Math.round(d / 60)} min`; };
+
+const STATES = {
+  starting: ['', 'Démarrage…'],
+  setup: ['warn', 'Pas encore jumelé'],
+  ffmpeg: ['warn', 'Téléchargement de ffmpeg (une seule fois)…'],
+  probing: ['warn', 'Recherche de ta carte graphique…'],
+  connecting: ['warn', 'Connexion au site…'],
+  connected: ['good', 'Connecté, prêt'],
+  refused: ['bad', 'Clé refusée par le site'],
+  error: ['bad', 'Problème'],
+};
+
+let last = null;
+let editingRepo = false;
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+  } catch {
+    $('dot').className = 'dot bad';
+    $('title').textContent = 'Encodeur arrêté';
+    $('detail').textContent = 'Relance-le pour continuer à aider ta salle.';
+    return;
+  }
+  last = s;
+  $('version').textContent = s.version;
+  const [tone, title] = STATES[s.connection] || ['', s.connection];
+  const working = s.jobs.some((j) => j.active);
+  $('dot').className = `dot ${working ? 'good' : tone}`;
+  $('title').textContent = s.connection === 'connected' ? (working ? 'Connecté, encode en ce moment' : 'Connecté, prêt') : title;
+  const host = s.server ? s.server.replace(/^https?:\/\//, '') : '';
+  $('detail').textContent = s.message || (s.connection === 'connected' ? `à ${host}, depuis ${ago(s.since).replace('il y a ', '')}` : host);
+  $('retry').hidden = !['error', 'refused'].includes(s.connection);
+  $('site').hidden = !s.server;
+  $('pairbox').hidden = !['setup', 'refused'].includes(s.connection);
+  $('dlbar').hidden = s.download < 0;
+  $('dlbar').firstElementChild.style.width = `${Math.max(0, s.download)}%`;
+
+  $('enc').textContent = s.encoder ? `${s.encoder} (${s.codec})` : '…';
+  $('device').textContent = s.device || (s.encoder ? 'non détectée' : '…');
+  $('maxh').textContent = s.maxHeight ? (s.maxHeight >= 2160 ? '4K' : `${s.maxHeight}p`) : '…';
+
+  // Activity: what the room gets from this PC right now.
+  let act;
+  if (s.connection !== 'connected') act = 'Rien tant que l\'encodeur n\'est pas connecté.';
+  else if (!s.jobs.length) act = s.stopped
+    ? `Le site a repris le dernier film ${ago(s.stoppedAt)} : ${s.stopped}.${s.retryIn ? ` Il te le redonne dans ${s.retryIn} s environ.` : ''}`
+    : 'En attente : lance un film dans une salle où tu es. Si tout le monde lit la vidéo telle quelle, il n\'y a rien à encoder.';
+  else act = `${s.segments} segments envoyés depuis le lancement.`;
+  $('activity').textContent = act;
+  $('jobs').replaceChildren(...s.jobs.map((j) => {
+    const div = document.createElement('div');
+    div.className = 'job';
+    const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+    const what = j.renditions.length ? j.renditions.join(' + ') : 'aucune qualité demandée pour l\'instant';
+    div.innerHTML = '';
+    const b = document.createElement('b');
+    b.textContent = `Film de ${time(j.duration)} · ${what}`;
+    const p = document.createElement('div');
+    p.className = 'sub';
+    p.textContent = j.error
+      ? `Erreur : ${j.error}`
+      : j.active
+        ? `Encode : segment ${j.done} / ${j.total}${j.fps ? ` · ${Math.round(j.fps)} images/s` : ''}${j.pipeline ? ` · ${j.pipeline}` : ''}`
+        : j.renditions.length ? `En pause (assez d'avance) · segment ${j.done} / ${j.total}` : 'Reçu, en attente des spectateurs qui en ont besoin';
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.innerHTML = `<i style="width:${pct}%"></i>`;
+    div.append(b, p, bar);
+    return div;
+  }));
+
+  $('autostart').checked = s.autoStart;
+  $('autoupdate').checked = s.autoUpdate;
+  $('source').value = s.updateSource;
+  $('repoRow').hidden = s.updateSource !== 'github';
+  if (!editingRepo) $('repo').value = s.githubRepo;
+  $('srcHint').textContent = s.updateSource === 'github' ? 'Dernière release « encoder-v… » du dépôt.' : 'Toujours la version qui va avec ton site.';
+  const u = s.update;
+  const UPD = {
+    checking: 'Vérification…',
+    available: `Version ${u.latest} disponible`,
+    downloading: `Téléchargement de la version ${u.latest}…`,
+    installing: 'Installation…',
+    uptodate: 'À jour',
+    error: 'Vérification impossible',
+  };
+  $('updTitle').textContent = UPD[u.state] || 'Mises à jour';
+  $('updDetail').textContent = u.state === 'error' ? u.message : u.checked ? `Vérifié ${ago(u.checked)}` : '';
+  $('install').hidden = u.state !== 'available';
+  $('updbar').hidden = u.state !== 'downloading';
+  $('updbar').firstElementChild.style.width = `${u.progress}%`;
+  const logs = s.logs.join('\n');
+  if ($('logs').textContent !== logs) {
+    const atEnd = $('logs').scrollTop + $('logs').clientHeight >= $('logs').scrollHeight - 4;
+    $('logs').textContent = logs;
+    if (atEnd) $('logs').scrollTop = $('logs').scrollHeight;
+  }
+}
+
+const act = (fn) => async () => {
+  try { await fn(); } catch (e) { alert(e.message); }
+  refresh();
+};
+$('autostart').onchange = act(() => post('/api/prefs', { autoStart: $('autostart').checked }));
+$('autoupdate').onchange = act(() => post('/api/prefs', { autoUpdate: $('autoupdate').checked }));
+$('source').onchange = act(() => post('/api/prefs', { updateSource: $('source').value }));
+$('repo').onfocus = () => (editingRepo = true);
+$('repoSave').onclick = act(async () => { await post('/api/prefs', { githubRepo: $('repo').value }); editingRepo = false; });
+$('check').onclick = act(() => post('/api/update/check'));
+$('install').onclick = act(() => post('/api/update/install'));
+$('retry').onclick = act(() => post('/api/retry'));
+$('site').onclick = act(() => post('/api/open-site'));
+$('quit').onclick = act(async () => {
+  if (!confirm('Quitter l\'encodeur ? Ta salle n\'aura plus ton GPU.')) return;
+  await post('/api/quit');
+});
+$('pairBtn').onclick = async () => {
+  $('pairErr').textContent = '';
+  try { await post('/api/pair', { server: $('pairServer').value, key: $('pairKey').value }); }
+  catch (e) { $('pairErr').textContent = e.message; }
+  refresh();
+};
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

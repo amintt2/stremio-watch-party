@@ -504,9 +504,11 @@ app.register(async (api) => {
   api.get('/api/media/:sid/health', async (request, reply) => {
     const media = getSession(request.params.sid);
     if (!media) return reply.code(404).send({ error: 'Session inconnue' });
-    if (!media.torrent) return { kind: 'http' };
+    const room = rooms.peek(request.session.room);
+    const gpu = encoders.state(room?.media?.sid === media.sid ? room : null, media);
+    if (!media.torrent) return { kind: 'http', gpu };
     const health = await fetchTorrentHealth(media).catch(() => null);
-    return health ? { kind: 'torrent', ...health } : { kind: 'torrent', engine: media.torrent.engine, level: 'unknown' };
+    return { kind: 'torrent', ...(health || { engine: media.torrent.engine, level: 'unknown' }), gpu };
   });
 
   /** Private file URL for an external player (VLC, Infuse...), plus where the room is. */

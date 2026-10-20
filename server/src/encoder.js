@@ -9,7 +9,7 @@
 //   server → agent  job {id, source, duration, segment, video, audio}
 //   server → agent  want {job, start, until, video:[{id, width, height, bitrate}], audio:[n]}
 //                   (encode segments start..until of these renditions, in one process)
-//   server → agent  extend {job, until}            stop {job}
+//   server → agent  extend {job, until}            stop {job, reason}
 //   agent → server  progress {job, fps}            error {job, message}
 //   agent → server  PUT /api/encoder/segment/:job/:rendition/:index (MPEG-TS bytes)
 // Segments are SEGMENT_S seconds on a fixed grid (segment i starts at i × SEGMENT_S), so
@@ -27,6 +27,11 @@ const ACTIVE_MS = 90_000;
 /** Failures within FAILURE_WINDOW_MS before the server takes the job back. */
 const MAX_FAILURES = 3;
 const FAILURE_WINDOW_MS = 120_000;
+/** After a failure the film goes back to the app after this long (doubling, at most RETRY_MAX_MS). */
+const RETRY_MS = 60_000;
+const RETRY_MAX_MS = 10 * 60_000;
+/** The app counts as working while it served a segment this recently. */
+const WORKING_MS = 30_000;
 
 /** Video renditions the encoder makes (H.264, every browser plays it). */
 export const GPU_VIDEO = {
@@ -237,7 +242,8 @@ export class EncoderHub {
       case 'error': {
         const job = this.jobs.get(msg.job);
         if (job?.agent !== agent) return;
-        this.log?.warn({ job: job.id, err: text(msg.message, 300) }, 'GPU encoder error');
+        job.lastError = text(msg.message, 200);
+        this.log?.warn({ job: job.id, err: job.lastError }, 'GPU encoder error');
         this.fail(job);
         return;
       }
@@ -264,6 +270,8 @@ export class EncoderHub {
    */
   attach(session, uids) {
     if (session.gpu || !session.info?.video) return session.gpu || null;
+    // Taken back after a failure: wait before trying the app again.
+    if (session.gpuRetryAt && this.now() < session.gpuRetryAt) return null;
     for (const uid of uids) {
       const agent = uid && this.online(uid);
       if (!agent) continue;
@@ -278,6 +286,8 @@ export class EncoderHub {
         waiters: new Map(),
         failures: [],
         fps: null,
+        servedAt: 0,
+        served: 0,
       };
       this.jobs.set(job.id, job);
       agent.jobs.add(job);
@@ -300,14 +310,23 @@ export class EncoderHub {
     return null;
   }
 
-  /** Takes the job back (encoder gone or failing): viewers fall back to the server. */
-  detach(job, reason) {
+  /**
+   * Takes the job back (encoder gone or failing): viewers fall back to the server. After a
+   * failure (`retry`), the film goes back to the app a little later, sooner if it recovers.
+   */
+  detach(job, reason, { retry = false } = {}) {
     if (!this.jobs.has(job.id)) return;
     this.jobs.delete(job.id);
     job.agent.jobs.delete(job);
-    if (job.session.gpu === job) job.session.gpu = null;
+    const session = job.session;
+    if (session.gpu === job) session.gpu = null;
+    if (retry) {
+      session.gpuDelay = Math.min((session.gpuDelay || RETRY_MS / 2) * 2, RETRY_MAX_MS);
+      session.gpuRetryAt = this.now() + session.gpuDelay;
+      session.gpuError = reason;
+    }
     try {
-      job.agent.send({ type: 'stop', job: job.id });
+      job.agent.send({ type: 'stop', job: job.id, reason, retryIn: retry ? Math.round(session.gpuDelay / 1000) : null });
     } catch {}
     for (const list of job.waiters.values()) for (const w of list) w.reject(new Error(reason));
     job.waiters.clear();
@@ -325,7 +344,7 @@ export class EncoderHub {
     const t = this.now();
     job.failures = job.failures.filter((x) => t - x < FAILURE_WINDOW_MS);
     job.failures.push(t);
-    if (job.failures.length >= MAX_FAILURES) this.detach(job, 'Encodeur en échec');
+    if (job.failures.length >= MAX_FAILURES) this.detach(job, job.lastError || 'Encodeur trop lent', { retry: true });
   }
 
   /** Public description for the room (who accelerates, with what). */
@@ -333,6 +352,47 @@ export class EncoderHub {
     if (!job) return null;
     const i = job.agent.info || {};
     return { by: job.uid, encoder: i.encoder || null, device: i.device || null };
+  }
+
+  /** A segment went to a viewer (for the statistics: is the GPU really working?). */
+  served(job) {
+    job.servedAt = this.now();
+    job.served++;
+    // It works again: the next failure waits the shortest delay.
+    job.session.gpuDelay = 0;
+    job.session.gpuError = null;
+  }
+
+  /**
+   * What the player's statistics show about the GPU of a media session: who encodes,
+   * with what, and whether it is busy right now; or why it isn't used.
+   */
+  state(session, uids = []) {
+    const job = session.gpu;
+    if (job) {
+      const i = job.agent.info || {};
+      return {
+        status: this.now() - job.servedAt < WORKING_MS ? 'working' : 'ready',
+        by: job.uid,
+        encoder: i.encoder || null,
+        device: i.device || null,
+        maxHeight: i.maxHeight || null,
+        fps: job.fps,
+        segments: job.served,
+      };
+    }
+    const online = uids.map((uid) => uid && this.online(uid)).find(Boolean);
+    if (!online) return null;
+    const i = online.info || {};
+    const retryIn = session.gpuRetryAt ? Math.max(0, Math.round((session.gpuRetryAt - this.now()) / 1000)) : 0;
+    return {
+      status: retryIn > 0 ? 'retry' : 'idle',
+      by: online.uid,
+      encoder: i.encoder || null,
+      device: i.device || null,
+      error: session.gpuError || null,
+      retryIn,
+    };
   }
 
   /** Does the encoder make this quality? (else the server converts it as before) */
@@ -367,6 +427,7 @@ export class EncoderHub {
       };
       const timer = setTimeout(() => {
         done();
+        job.lastError = `Segment pas prêt en ${WAIT_MS / 1000} s`;
         this.fail(job);
         reject(Object.assign(new Error('Encodeur trop lent'), { status: 504 }));
       }, WAIT_MS);

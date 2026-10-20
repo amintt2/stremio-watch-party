@@ -159,7 +159,7 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
 
 | Situation | Ce qui se passe |
 |---|---|
-| Le navigateur de l'ami décode le codec (H.264 partout ; HEVC, AV1 ou VP9 selon l'appareil) et la qualité choisie ≥ la source | **Copie** de la vidéo, sans transcodage (4K HEVC intacte sur Discord desktop avec un GPU récent) |
+| L'appareil de l'ami décode **vraiment** le codec (H.264 partout ; HEVC, AV1 ou VP9 s'il a passé le test ci-dessous) et la qualité choisie ≥ la source | **Copie** de la vidéo, sans transcodage (4K HEVC intacte sur Discord desktop avec un GPU récent) |
 | Codec non décodable, ou qualité plus basse demandée | **Transcodage** en H.264 à 3840/1920/1280/854 px de large |
 | Audio AC3, E-AC3, DTS, TrueHD… | Toujours converti en **AAC stéréo** (coûte peu) |
 
@@ -170,6 +170,30 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
 - Les amis qui finissent avec **les mêmes paramètres partagent le même transcodage**. Pour
   ton serveur, c'est 1 transcodage par qualité, pas 1 par personne.
 - Pistes audio et sous-titres texte du fichier : sélectionnables par chacun.
+
+### Pas d'écran noir
+
+Un appareil peut annoncer qu'il lit le HEVC (ou l'AV1, le VP9) sans l'afficher : c'est le
+cas de Discord sur certains PC Windows. Le temps avance, l'image reste noire. Watch Party ne
+se fie plus à cette annonce :
+
+- **Test réel au démarrage** (`client/src/codecprobe.ts`) : un minuscule extrait de chaque
+  codec (256×144, 10 bits, une couleur connue) est décodé dans une vidéo cachée ; le codec
+  compte seulement si la bonne couleur sort. Résultat gardé 7 jours par navigateur.
+- **Garde-fou pendant la lecture** : si le temps avance sans nouvelle image (4 s), ou si le
+  décodeur refuse la piste vidéo, le lecteur repasse tout seul en H.264 au même instant et
+  ne recopie plus ce codec sur cet appareil.
+- Ce qui s'est passé est écrit dans les **statistiques** (ligne « Compatibilité »).
+
+### Statistiques du lecteur
+
+Comme dans Stremio, un panneau donne les **pairs**, la **vitesse** et le **pourcentage
+téléchargé** du torrent, plus ce que Watch Party ajoute : l'état (lecture, chargement depuis
+N s, erreur et sa cause), la source (moteur Huwa / Stremio, lien direct), la vidéo d'origine,
+ce que tu reçois (telle quelle ou convertie, et par qui), l'**accélération GPU** (active avec
+son nombre d'images/s, prête, en pause après une erreur et pourquoi, ou absente), le tampon,
+les images affichées / perdues et les codecs que ton appareil lit. Touche **I**, le point de
+connexion dans la barre, ou Réglages → Statistiques.
 
 ### VF, VO et sous-titres : chacun les siens
 
@@ -335,13 +359,29 @@ PC : sa carte graphique prépare les qualités (4K, 1080p, 720p, 480p) pour tout
   déjà la source, et le relais. Les segments reçus restent en RAM (`GPU_CACHE_MB`, 768 par
   défaut), rien sur le disque.
 - **Repli** : si l'encodeur se ferme ou prend trop de retard, le convertisseur Stremio
-  reprend tout seul et chaque lecteur recharge au même instant ; quand il revient, il reprend
-  le film en cours.
+  reprend tout seul et chaque lecteur recharge au même instant. L'app reçoit la raison et le
+  film lui revient après 1 min (puis 2, 4… 10 min si ça recommence) ; relancer l'app le lui
+  rend tout de suite.
+- **L'app** n'a plus de console : une petite fenêtre (une page servie sur le PC seulement,
+  `127.0.0.1:47470`, ouverte dans le navigateur) montre la connexion, la carte graphique, le
+  film en cours (segment, images/s, pipeline GPU ou processeur), le journal, et les options.
+  Sous Windows, une icône près de l'horloge la rouvre. Une seule copie tourne à la fois.
+- **Lancement avec l'ordinateur** (activé au premier lancement, désactivable) : clé `Run` de
+  Windows, LaunchAgent sur macOS, autostart XDG sur Linux. Il démarre sans fenêtre.
+- **Mises à jour automatiques**, entre deux films : depuis le **site** (par défaut : toujours
+  la version compilée avec ton serveur, `GET /api/encoder/latest` et `/api/encoder/update/…`
+  avec la clé de l'app) ou depuis les **releases GitHub** (`encoder-v<version>`, publiées par
+  `.github/workflows/encoder-release.yml` quand `encoder/VERSION` change). Le fichier est
+  vérifié par son SHA-256 avant de remplacer l'app, qui redémarre seule. Les réglages restent
+  à côté (dossier de configuration), pas dans le fichier.
+- Les builds sans numéro de version (avant la 1.1.0) ne savent pas se mettre à jour :
+  retélécharge l'encodeur une fois depuis Paramètres → Encodeur GPU.
 - **Débit** : l'envoi de la box de l'hôte est la limite (≈ 6 Mb/s en 1080p, 3 en 720p,
   16 en 4K, seulement pour les qualités regardées).
 - Clés : seule une empreinte est gardée en base ; « Retirer » dans Paramètres coupe le PC.
 - Le `Dockerfile` compile l'encodeur (`encoder/build.sh`, Go) pour Windows, macOS
-  (Apple Silicon et Intel) et Linux ; `ENCODER_DIST_DIR` pour servir d'autres builds.
+  (Apple Silicon et Intel) et Linux, avec `VERSION` et `SHA256SUMS` ; `ENCODER_DIST_DIR`
+  pour servir d'autres builds. Monte `encoder/VERSION` à chaque changement de l'app.
 
 ### Combien de personnes ?
 
@@ -545,14 +585,17 @@ client/src/subsync.ts  synchro auto des sous-titres (corrélation, ratios d'imag
 client/src/speech.ts   niveau des voix pendant la lecture (pour la synchro audio)
 client/src/substyle.ts / subcontrols.ts  style des sous-titres et ses réglages (testé)
 client/src/encoder.ts  Paramètres → Encodeur GPU, suggestion à l'hôte
-client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto
+client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto, garde-fou écran noir
+client/src/codecprobe.ts vrai test de décodage HEVC / AV1 / VP9 (extraits dans codecsamples.ts) (testé)
+client/src/stats.ts    panneau Statistiques : pairs, vitesse, GPU, compatibilité (testé)
 client/src/external.ts liens vers VLC, Infuse, MX Player… (intent Android, schémas iOS, .m3u) (testé)
 client/src/externalPlayer.ts « Ouvrir dans… », télécommande pendant la lecture externe
 client/src/sync.ts     horloge serveur + correction de dérive (testé)
 client/src/abr.ts      choix automatique de la qualité (testé)
 client/src/format.ts   routes, progression, choix de la meilleure source (testé)
 client/src/lists.ts    tris et filtres (bibliothèque, recherche, Découvrir), épisode suivant (testé)
-encoder/               Encodeur Watch Party (Go) : sonde GPU, ffmpeg, segments (go test)
+encoder/               Encodeur Watch Party (Go) : sonde GPU, ffmpeg, segments, fenêtre locale,
+                       icône Windows, démarrage auto, mises à jour vérifiées (go test)
 client/src/style.css   tous les styles ; couleurs et tailles en variables (thèmes sombre/clair)
 ```
 

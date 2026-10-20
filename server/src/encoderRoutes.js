@@ -3,7 +3,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import { config } from './config.js';
 import { converterParams } from './media.js';
@@ -104,15 +104,23 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
       for (const room of rooms) {
         if (!room.media || !room.members.has(uid)) continue;
         const session = getSession(room.media.sid);
-        if (session && !session.gpu) hub.attach(session, candidates(room));
+        if (!session || session.gpu) continue;
+        // A fresh start of the app gets its chance right away, even after a failure.
+        if (hub.online(uid)) session.gpuRetryAt = 0;
+        hub.attach(session, candidates(room));
       }
     },
   });
 
-  // Films nobody plays anymore: the app stops encoding them.
+  // Films nobody plays anymore: the app stops encoding them. Films taken back after a
+  // failure go back to an online app once their wait is over.
   setInterval(() => {
     for (const job of [...hub.jobs.values()]) if (!roomOf(job.sid)) hub.detach(job, 'Plus personne ne regarde');
-  }, 30_000).unref();
+    for (const room of rooms) {
+      const session = room.media && getSession(room.media.sid);
+      if (session && !session.gpu && session.gpuRetryAt) hub.attach(session, candidates(room));
+    }
+  }, 15_000).unref();
 
   /** One-time download tickets: uid → a key is made when the file is fetched. */
   const tickets = new Map();
@@ -210,6 +218,41 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     });
   });
 
+  // ------------------------------------------------------------ app updates (update.go)
+
+  /** Builds this server offers, with their SHA-256 (cached: they change only with a redeploy). */
+  let builds = null;
+  function encoderBuilds() {
+    if (builds) return builds;
+    const files = {};
+    for (const p of Object.values(PLATFORMS)) {
+      const path = join(config.encoderDistDir, p.file);
+      if (existsSync(path)) files[p.file] = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+    }
+    const versionFile = join(config.encoderDistDir, 'VERSION');
+    builds = { version: existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : null, files };
+    return builds;
+  }
+
+  /** The version the app should run (the one built with this server), for paired apps. */
+  app.get('/api/encoder/latest', async (request, reply) => {
+    if (!agentKey(request)) return reply.code(401).send();
+    const b = encoderBuilds();
+    if (!b.version) return reply.code(404).send({ error: 'Pas de version publiée sur ce serveur' });
+    return b;
+  });
+
+  /** The build itself (no settings inside: the app keeps its own). */
+  app.get('/api/encoder/update/:file', async (request, reply) => {
+    if (!agentKey(request)) return reply.code(401).send();
+    const file = String(request.params.file);
+    if (!encoderBuilds().files[file]) return reply.code(404).send();
+    return reply
+      .type('application/octet-stream')
+      .header('Cache-Control', 'no-store')
+      .send(readFileSync(join(config.encoderDistDir, file)));
+  });
+
   /** The film's file, for the app (Range passthrough; the real source URL stays here). */
   app.get('/api/encoder/source/:job', async (request, reply) => {
     const key = agentKey(request);
@@ -272,6 +315,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     request.raw.on('close', () => abort.abort());
     try {
       const buf = await hub.segment(job, parsed.quality, gpuPath.rendition, gpuPath.index, abort.signal);
+      hub.served(job);
       reply.type('video/mp2t').send(buf);
     } catch (err) {
       if (!abort.signal.aborted) reply.code(err.status || 503).send({ error: err.message });
@@ -285,6 +329,10 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     /** A new film in a room: an online encoder of someone there takes it. */
     attach(room, session) {
       hub.attach(session, candidates(room));
+    },
+    /** GPU part of the player's statistics. */
+    state(room, session) {
+      return hub.state(session, room ? candidates(room) : []);
     },
   };
 }

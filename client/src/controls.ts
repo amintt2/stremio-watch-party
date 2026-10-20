@@ -120,6 +120,7 @@ export type ShortcutAction =
   | 'audio'
   | 'subs-earlier'
   | 'subs-later'
+  | 'stats'
   | 'help'
   | 'escape';
 
@@ -170,6 +171,8 @@ export function shortcutAction(e: KeyLike): ShortcutAction | null {
       return 'subs-earlier';
     case 'h':
       return 'subs-later';
+    case 'i':
+      return 'stats';
   }
   return null;
 }
@@ -185,6 +188,7 @@ export const SHORTCUTS: [string, string][] = [
   ['C', 'Changer de sous-titres'],
   ['A', 'Piste audio suivante'],
   ['G / H', 'Sous-titres 0,1 s plus tôt / plus tard'],
+  ['I', 'Statistiques (pairs, vitesse, GPU…)'],
   ['?', 'Afficher les raccourcis'],
   ['Échap', 'Fermer / réduire le lecteur'],
 ];
