@@ -110,7 +110,9 @@ export async function probeCaps(): Promise<Caps> {
   }
   // A test cut short by time proves nothing: kept for an hour only.
   const at = timedOut ? Date.now() - MAX_AGE_MS + TIMEOUT_AGE_MS : Date.now();
-  write({ ua: navigator.userAgent, at, caps, broken: s?.broken || [], brokenAt: s?.brokenAt });
+  // Read again: a film may have marked a codec broken while the tests ran.
+  const now = read() || s;
+  write({ ua: navigator.userAgent, at, caps, broken: now?.broken || [], brokenAt: now?.brokenAt });
   return cachedCaps();
 }
 

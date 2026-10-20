@@ -158,6 +158,9 @@ export class Room {
   /** Seconds this viewer is behind the live (0 when at it, or unknown). */
   #behind(m, t = this.now()) {
     if (!this.media || m.external || m.pos == null || t - m.posAt > POSITION_STALE_MS) return 0;
+    // Stuck in place for a minute while the room plays (error, blocked autoplay, a frozen
+    // picture): no longer counts, so it can't hold the end of the film for everyone.
+    if (this.running && t - (m.movedAt || 0) > POSITION_STALE_MS * 2) return 0;
     // Their position moved on since they said it, as long as the room plays.
     const pos = this.running ? m.pos + (t - m.posAt) / 1000 : m.pos;
     return Math.max(0, this.currentPosition(t) - pos);
@@ -548,6 +551,8 @@ export class Room {
     if (!this.media || !this.paused) return false;
     this.#settle();
     this.paused = false;
+    // Nobody moved during the pause: that is not being stuck.
+    for (const m of this.members.values()) m.movedAt = this.now();
     return this.#changed();
   }
 
@@ -583,8 +588,10 @@ export class Room {
     const m = this.members.get(uid);
     if (!m || !this.media || m.external) return false;
     const t = this.now();
-    if (m.posAt && t - m.posAt < 2000) return false;
-    m.pos = Math.min(pos, this.media.duration || pos);
+    if (m.posAt && t - m.posAt < 1000) return false;
+    const next = Math.min(pos, this.media.duration || pos);
+    if (m.pos == null || Math.abs(next - m.pos) >= 0.5) m.movedAt = t;
+    m.pos = next;
     m.posAt = t;
     const behind = this.#behind(m, t);
     const shown = behind < BEHIND_S ? 0 : Math.max(5, Math.round(behind / 5) * 5);

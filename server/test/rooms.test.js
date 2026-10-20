@@ -61,7 +61,7 @@ test('how far behind the live each viewer is, in 5 s steps', () => {
   assert.equal(room.setPosition('b', 48), true, '12 s behind');
   assert.equal(room.snapshot().members.find((m) => m.uid === 'b').behind, 10);
   assert.equal(room.snapshot().members.find((m) => m.uid === 'a').behind, undefined);
-  clock.advance(1000);
+  clock.advance(500);
   assert.equal(room.setPosition('b', 49), false, 'throttled');
   clock.advance(5000);
   assert.equal(room.setPosition('b', 54), false, 'still 12 s behind');
@@ -214,4 +214,20 @@ test('a personal room stays its owner\'s, even when a guest opened it first', as
   assert.equal(again.status('owner'), 'member');
   assert.equal(again.host, 'owner');
   assert.equal(again.kick('guest', 'owner'), false);
+});
+
+test('a viewer stuck in place does not hold the end of the film', () => {
+  const { room, clock } = setup();
+  room.load({ ...media, duration: 100, next: { videoId: 'x' } });
+  room.setBuffering('a', false);
+  room.setBuffering('b', false);
+  clock.advance(10_000);
+  // b's player is in error: it keeps saying the same position.
+  for (let i = 0; i < 30; i++) {
+    room.setPosition('b', 5);
+    clock.advance(5000);
+  }
+  room.tick();
+  assert.equal(room.ended, true);
+  assert.equal(room.done, true, 'b stuck for over a minute no longer counts');
 });

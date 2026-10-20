@@ -22,6 +22,8 @@ export interface StatsInput {
   loadingFor: number | null;
   error: string | null;
   fallback: string | null;
+  /** Seconds behind the room's live (optional: 0 or absent = at the live). */
+  behind?: number;
 }
 
 export interface StatsView {
@@ -96,6 +98,8 @@ export function statsView(input: StatsInput): StatsView {
     });
   else rows.push({ label: 'État', value: 'Lecture', tone: 'good' });
   if (input.fallback) rows.push({ label: 'Compatibilité', value: input.fallback, tone: 'warn' });
+  const behind = Math.round(input.behind || 0);
+  rows.push({ label: 'Direct', value: behind >= 2 ? `${behind} s de retard` : 'à jour', tone: behind >= 4 ? 'warn' : undefined });
 
   if (src) {
     const engine = src.kind === 'http' ? 'Lien direct (débrid)' : src.engine === 'huwa' ? 'Torrent, moteur Huwa' : 'Torrent, moteur Stremio';

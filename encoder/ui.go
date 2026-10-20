@@ -154,6 +154,11 @@ func (ui *UI) routes(host string) http.Handler {
 	// Anyone on this PC may ask for the window to open (the second launch, a stale tab):
 	// it opens through a new one-time link, in the browser, nothing more.
 	mux.HandleFunc("POST /api/show", func(w http.ResponseWriter, r *http.Request) {
+		// From another website in the browser: no (it could open window after window).
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+			http.Error(w, "forbidden", 403)
+			return
+		}
 		ui.mu.Lock()
 		ok := time.Since(ui.lastShow) > 3*time.Second
 		if ok {
@@ -269,6 +274,7 @@ func (ui *UI) routes(host string) http.Handler {
 			http.Error(w, "forbidden", 403)
 			return
 		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		mux.ServeHTTP(w, r)
 	})

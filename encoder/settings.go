@@ -17,6 +17,8 @@ import (
 type Settings struct {
 	Server string `json:"server"`
 	Key    string `json:"key"`
+	// Typed in the app's window: wins over the pairing written in the .exe.
+	Manual bool `json:"manual,omitempty"`
 }
 
 // valid: https, or http to this PC only (tests, a local server): the key travels in clear otherwise.
@@ -69,6 +71,7 @@ func saveSettings(s Settings) error {
 	if err := os.MkdirAll(configDir(), 0o700); err != nil {
 		return err
 	}
+	s.Manual = true
 	data, _ := json.MarshalIndent(s, "", "  ")
 	return os.WriteFile(filepath.Join(configDir(), configName), data, 0o600)
 }
@@ -83,6 +86,14 @@ func loadSettings(flags Settings, refused map[string]bool) (Settings, error) {
 	exe, _ := os.Executable()
 	candidates := []func() (Settings, error){
 		func() (Settings, error) { return flags, nil },
+		// A pairing typed in the window, newer than the one in the .exe.
+		func() (Settings, error) {
+			s, err := readJSON(saved)
+			if err == nil && !s.Manual {
+				err = errors.New("not typed")
+			}
+			return s, err
+		},
 		func() (Settings, error) { return readTrailer(exe) },
 		func() (Settings, error) { return readJSON(filepath.Join(filepath.Dir(exe), configName)) },
 		func() (Settings, error) { return readJSON(saved) },
@@ -92,7 +103,7 @@ func loadSettings(flags Settings, refused map[string]bool) (Settings, error) {
 		if err != nil || !s.valid() || refused[s.Key] {
 			continue
 		}
-		if i < 3 {
+		if i == 0 || (i >= 2 && i < 4) {
 			_ = os.MkdirAll(filepath.Dir(saved), 0o700)
 			if data, err := json.MarshalIndent(s, "", "  "); err == nil {
 				_ = os.WriteFile(saved, data, 0o600)

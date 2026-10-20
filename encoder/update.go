@@ -296,6 +296,7 @@ func installUpdate(ctx context.Context) error {
 		return fail(err)
 	}
 	logf("Version %s installée : redémarrage.", rel.Version)
+	updatePrefs(func(p *Prefs) { p.TriedVersion, p.TriedAt = rel.Version, time.Now().Unix() })
 	restart(exe)
 	return nil
 }
@@ -383,7 +384,9 @@ func updater(ctx context.Context, idle func() bool) {
 		}
 		rel, _ := checkUpdate(ctx)
 		next := updateEvery
-		if rel != nil && currentPrefs().AutoUpdate {
+		p := currentPrefs()
+		retried := rel != nil && p.TriedVersion == rel.Version && time.Since(time.Unix(p.TriedAt, 0)) < 6*time.Hour
+		if rel != nil && p.AutoUpdate && !retried {
 			if idle() {
 				_ = installUpdate(ctx)
 			} else {

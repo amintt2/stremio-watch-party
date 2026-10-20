@@ -85,6 +85,10 @@ export class Player {
   private hasPlayed = false;
   /** Last room jump followed (new film, seek). */
   private seekId: number | undefined;
+  /** A room jump arrived while nothing was loaded (reload): applied once something is. */
+  private pendingSeek = false;
+  /** This load already started at the live (arrival mid-film). */
+  private joinedLive = false;
   private lastPositionSent = 0;
   private fatalCount = 0;
   private lastFatalAt = 0;
@@ -161,6 +165,7 @@ export class Player {
 
   /** This viewer's own position (what is on screen), or the room's before loading. */
   localPosition() {
+    if (this.pendingSeek) return this.expected();
     return this.media && this.video.readyState >= 1 ? this.video.currentTime : this.expected();
   }
 
@@ -193,7 +198,7 @@ export class Player {
 
   /** Seconds this viewer is behind the live (0 when at it, or before anything plays). */
   behind() {
-    if (!this.state?.media || !this.media || this.detached || this.video.readyState < 1) return 0;
+    if (!this.state?.media || !this.media || this.detached || this.video.readyState < 1 || this.video.ended) return 0;
     return Math.max(0, this.expected() - this.video.currentTime);
   }
 
@@ -201,9 +206,15 @@ export class Player {
   goLive() {
     if (!this.media || this.video.readyState < 1) return;
     this.video.currentTime = this.expected();
-    this.graceUntil = Date.now() + 4000;
-    this.lastPositionSent = 0;
+    this.afterJump();
     this.onChange();
+  }
+
+  /** After a jump: not a stall for the automatic quality, and tell the room soon. */
+  private afterJump() {
+    const now = Date.now();
+    this.graceUntil = now + 4000;
+    this.lastPositionSent = now - POSITION_EVERY_MS + 1500;
   }
 
   get ladder() {
@@ -220,7 +231,11 @@ export class Player {
   applyState(state: RoomState) {
     const prev = this.state;
     this.state = state;
-    if (this.detached) return;
+    if (this.detached) {
+      // Back on the site later: only the jumps from then on count.
+      this.seekId = state.seekId;
+      return;
+    }
     if (!state.media) {
       if (this.media) this.unload();
       return;
@@ -240,9 +255,10 @@ export class Player {
     // (pause, play, people coming) leave each viewer where they are.
     const seeked = state.seekId !== undefined ? state.seekId !== this.seekId : !!prev && state.rev !== prev.rev && state.position !== prev.position && !state.running;
     this.seekId = state.seekId;
-    if (seeked && this.video.readyState >= 1 && Math.abs(this.video.currentTime - this.expected()) > 0.5) {
+    if (seeked && this.video.readyState < 1) this.pendingSeek = true;
+    else if (seeked && Math.abs(this.video.currentTime - this.expected()) > 0.5) {
       this.video.currentTime = this.expected();
-      this.lastPositionSent = 0;
+      this.afterJump();
     }
   }
 
@@ -259,6 +275,8 @@ export class Player {
   private load(media: RoomMedia) {
     this.media = media;
     this.hasPlayed = false;
+    this.joinedLive = false;
+    this.pendingSeek = false;
     this.ratio = null;
     this.pendingReady = true;
     this.lastPositionSent = 0;
@@ -281,6 +299,7 @@ export class Player {
       this.pendingReady = false;
       if (this.media) this.unload();
     } else if (this.state?.media) {
+      this.seekId = this.state.seekId;
       this.load(this.state.media);
     }
     this.onChange();
@@ -563,13 +582,24 @@ export class Player {
       this.send(false);
     }
 
+    // A room jump that came during a reload: now that something is loaded.
+    if (this.pendingSeek && v.readyState >= 1 && !v.seeking) {
+      this.pendingSeek = false;
+      if (Math.abs(v.currentTime - this.expected()) > 0.5) {
+        v.currentTime = this.expected();
+        this.afterJump();
+      }
+    }
+
     if (s.running && !v.ended) {
-      // Arrived while the film runs (or the load took a while): start at the live, once,
-      // when it is already in what loaded.
-      if (!this.hasPlayed && v.readyState >= 3 && !v.seeking) {
-        const live = this.expected();
-        const ahead = this.ranges().some(([a, b]) => live >= a && live < b - 1);
-        if (live - v.currentTime > BEHIND_S && ahead) v.currentTime = live;
+      // Arrived while the film runs (or the load took a while, or the clock was not known
+      // yet): start at the live, once, before anything was seen (nothing to lose).
+      if (!this.hasPlayed && !this.joinedLive && v.readyState >= 1 && !v.seeking && this.conn.clock.ready) {
+        this.joinedLive = true;
+        if (Math.abs(this.expected() - v.currentTime) > 1.5) {
+          v.currentTime = this.expected();
+          this.afterJump();
+        }
       }
       if (v.paused && !this.needsGesture && v.readyState >= 2) {
         v.play().catch((err: DOMException) => {
@@ -582,7 +612,7 @@ export class Player {
       if (v.playbackRate !== 1) v.playbackRate = 1;
 
       // A stall only matters to the automatic quality now (it holds nobody).
-      const stalled = !v.paused && v.readyState < 3 && this.hasPlayed && now > this.graceUntil;
+      const stalled = !v.paused && !v.seeking && v.readyState < 3 && this.hasPlayed && now > this.graceUntil;
       if (stalled) {
         if (!this.stallSince) this.stallSince = now;
         else if (now - this.stallSince > STALL_REPORT_MS && !this.stalled) {
@@ -599,14 +629,22 @@ export class Player {
       // Paused (or the start of the film waits for someone): everyone stops where they are.
       if (!v.paused) v.pause();
       if (v.playbackRate !== 1) v.playbackRate = 1;
-      // Before playing anything, sit at the room's position.
-      if (!this.hasPlayed && !v.seeking && v.readyState >= 1 && Math.abs(v.currentTime - this.expected()) > 0.25) v.currentTime = this.expected();
+      // Sit at the room's position: before playing anything, and after a pause when only the
+      // pause message's delay separates us (it would add up pause after pause). Those really
+      // behind (more than 2 s) stay where they are.
+      const gap = Math.abs(v.currentTime - this.expected());
+      if (!v.seeking && v.readyState >= 1 && gap > (this.hasPlayed ? 0.1 : 0.25) && (!this.hasPlayed || gap < 2)) v.currentTime = this.expected();
+      this.stallSince = 0;
+      this.stalled = false;
     }
 
     // Tell the room where this viewer is (who is behind the live, when the film is over).
-    if (v.readyState >= 1 && !v.seeking && now - this.lastPositionSent > POSITION_EVERY_MS) {
+    // Not while nothing really plays here (error, autoplay blocked, not started yet): such
+    // a viewer must not hold the end of the film for everyone.
+    const reporting = !this.error && !this.needsGesture && (this.hasPlayed || !s.running) && !this.pendingSeek;
+    if (reporting && v.readyState >= 1 && !v.seeking && now - this.lastPositionSent > POSITION_EVERY_MS) {
       this.lastPositionSent = now;
-      this.conn.send({ t: 'position', value: v.currentTime });
+      this.conn.send({ t: 'position', value: v.ended ? this.media.duration || v.currentTime : v.currentTime });
     }
 
     this.watchPicture(v);

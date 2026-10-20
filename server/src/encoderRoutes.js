@@ -158,7 +158,8 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     api.delete('/api/encoder/keys/:id', async (request, reply) => {
       const id = String(request.params.id);
       if (!store.removeEncoderKey(request.session.uid, id)) return reply.code(404).send({ error: 'Introuvable' });
-      hub.agents.get(id)?.close();
+      // 4001: the app knows at once its key was removed (4000 would mean "used elsewhere").
+      hub.agents.get(id)?.close(4001);
       return { ok: true };
     });
   });
@@ -181,7 +182,8 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     const body = p.zip
       ? zipFiles([
           { name: p.file.replace(/-(?:darwin|linux)-(?:arm64|amd64)$/, ''), data: binary, mode: 0o755 },
-          { name: CONFIG_NAME, data: Buffer.from(JSON.stringify(settings, null, 2)) },
+          // The pairing key: readable by this user only.
+          { name: CONFIG_NAME, data: Buffer.from(JSON.stringify(settings, null, 2)), mode: 0o600 },
         ])
       : withTrailer(binary, settings);
     reply.header('Content-Disposition', `attachment; filename="${p.name}"`).header('Cache-Control', 'no-store');
@@ -203,7 +205,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     const agent = hub.connect(
       key,
       (obj) => ws.readyState === 1 && ws.send(JSON.stringify(obj)),
-      () => ws.close(4000, 'replaced')
+      (code = 4000) => ws.close(code, code === 4001 ? 'unauthorized' : 'replaced')
     );
     const ping = setInterval(() => ws.readyState === 1 && ws.ping(), 25_000);
     ws.on('message', (raw) => {

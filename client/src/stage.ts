@@ -1184,6 +1184,7 @@ export function createStage(host: StageHost) {
       loadingFor: waitingSince ? (now - waitingSince) / 1000 : null,
       error: player.error,
       fallback: player.fallback,
+      behind: player.behind(),
     });
     const key = JSON.stringify(view);
     if (key === statsKey && statsPanel.childElementCount) return;
@@ -1278,6 +1279,8 @@ export function createStage(host: StageHost) {
       clear(notice, content);
       notice.hidden = !key;
       notice.classList.toggle('notice-warn', key.startsWith('slow'));
+      // The gap counts every second: not read out again and again by screen readers.
+      notice.setAttribute('aria-live', key === 'behind' ? 'off' : 'polite');
     }
     // The gap changes every second: in place (rebuilding would eat a click on the button).
     const gap = key === 'behind' ? notice.querySelector('.notice-behind') : null;

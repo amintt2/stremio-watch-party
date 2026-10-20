@@ -17,6 +17,11 @@ type Prefs struct {
 	GithubRepo   string `json:"githubRepo"`
 	// Start with the computer was offered once (on by default on the first run).
 	AutoStartSet bool `json:"autoStartSet"`
+	// Last version installed automatically, and when: if the app still isn't on it after
+	// restarting (a build that reports another version), it doesn't install it again and
+	// again.
+	TriedVersion string `json:"triedVersion,omitempty"`
+	TriedAt      int64  `json:"triedAt,omitempty"`
 }
 
 const defaultRepo = "amintt2/stremio-watch-party"
