@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOAD_TIMEOUT_MS, Room, WAIT_TIMEOUT_MS } from '../src/rooms.js';
+import { BEHIND_S, LOAD_TIMEOUT_MS, POSITION_STALE_MS, Room } from '../src/rooms.js';
 
 function setup() {
   let t = 1_000_000;
@@ -39,31 +39,74 @@ test('load barrier gives up after the timeout', () => {
   assert.equal(room.currentPosition(), 0);
 });
 
-test('a stall freezes the room at the stall position, then resumes from there', () => {
+test('a stall mid-film holds nobody: the live goes on', () => {
   const { room, clock } = setup();
   room.load(media);
   room.setBuffering('a', false);
   room.setBuffering('b', false);
   clock.advance(60_000);
-  room.setBuffering('b', true);
+  assert.equal(room.setBuffering('b', true), false);
   clock.advance(4000);
-  assert.equal(room.currentPosition(), 60);
-  room.setBuffering('b', false);
-  clock.advance(1000);
-  assert.equal(room.currentPosition(), 61);
+  assert.equal(room.currentPosition(), 64);
+  assert.equal(room.running, true);
 });
 
-test('stalled viewers are dropped after WAIT_TIMEOUT_MS', () => {
+test('how far behind the live each viewer is, in 5 s steps', () => {
   const { room, clock } = setup();
   room.load(media);
   room.setBuffering('a', false);
   room.setBuffering('b', false);
-  room.setBuffering('b', true);
-  clock.advance(WAIT_TIMEOUT_MS - 1);
-  assert.equal(room.tick(), false);
-  clock.advance(1);
-  assert.equal(room.tick(), true);
-  assert.equal(room.running, true);
+  clock.advance(60_000);
+  assert.equal(room.setPosition('a', 59.5), false, 'at the live: nothing to say');
+  assert.equal(room.setPosition('b', 48), true, '12 s behind');
+  assert.equal(room.snapshot().members.find((m) => m.uid === 'b').behind, 10);
+  assert.equal(room.snapshot().members.find((m) => m.uid === 'a').behind, undefined);
+  clock.advance(1000);
+  assert.equal(room.setPosition('b', 49), false, 'throttled');
+  clock.advance(5000);
+  assert.equal(room.setPosition('b', 54), false, 'still 12 s behind');
+  // Pause: everyone stops where they are, the gap stays.
+  room.pause();
+  clock.advance(30_000);
+  assert.equal(room.setPosition('b', 54.5), false);
+  room.play();
+  // A seek brings everybody to the same point.
+  const seekId = room.snapshot().seekId;
+  room.seek(100);
+  assert.equal(room.snapshot().seekId, seekId + 1);
+  assert.equal(room.snapshot().members.find((m) => m.uid === 'b').behind, undefined);
+});
+
+test('the film stays on until the last viewer behind has finished it', () => {
+  const { room, clock } = setup();
+  room.load({ ...media, duration: 100, next: { videoId: 'x' } });
+  room.setBuffering('a', false);
+  room.setBuffering('b', false);
+  clock.advance(80_000);
+  room.setPosition('b', 60);
+  clock.advance(25_000);
+  room.tick();
+  assert.equal(room.ended, true);
+  assert.equal(room.done, false, 'b still has ~15 s to watch');
+  assert.equal(room.snapshot().autonext, null);
+  clock.advance(20_000);
+  room.setPosition('b', 99.5);
+  room.tick();
+  assert.equal(room.done, true);
+  assert.ok(room.snapshot().autonext, 'next episode armed once b is done');
+});
+
+test('a viewer who stopped reporting no longer holds the end', () => {
+  const { room, clock } = setup();
+  room.load({ ...media, duration: 100 });
+  room.setBuffering('a', false);
+  room.setBuffering('b', false);
+  clock.advance(50_000);
+  room.setPosition('b', 10);
+  clock.advance(POSITION_STALE_MS + 60_000);
+  assert.equal(room.ended, true);
+  assert.equal(room.done, true);
+  assert.ok(BEHIND_S > 0);
 });
 
 test('pause, seek and play keep a consistent position', () => {

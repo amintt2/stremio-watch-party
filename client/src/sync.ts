@@ -39,26 +39,6 @@ export function expectedPosition(t: RoomTiming, serverNow: number) {
   return t.duration ? Math.min(Math.max(0, pos), t.duration) : Math.max(0, pos);
 }
 
-export const SEEK_THRESHOLD = 1.0; // s: beyond this, jump
-export const NUDGE_THRESHOLD = 0.12; // s: beyond this, speed up / slow down
-export const MAX_RATE_DELTA = 0.05; // ±5 %, pitch is preserved by the browser
-
-export interface Correction {
-  seekTo?: number;
-  rate: number;
-}
-
-/** How a playing viewer should converge on the room position. */
-export function correction(actual: number, expected: number): Correction {
-  const drift = expected - actual; // > 0: we are behind
-  if (Math.abs(drift) > SEEK_THRESHOLD) return { seekTo: expected, rate: 1 };
-  if (Math.abs(drift) > NUDGE_THRESHOLD) {
-    const delta = Math.max(-MAX_RATE_DELTA, Math.min(MAX_RATE_DELTA, drift * 0.5));
-    return { rate: 1 + delta };
-  }
-  return { rate: 1 };
-}
-
 export function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
   const s = Math.floor(seconds % 60);

@@ -1566,6 +1566,20 @@ input[type='range'] {
   font-weight: 700;
 }
 
+/* How far behind the live this friend is. */
+.member-behind {
+  position: absolute;
+  top: -5px;
+  right: -8px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--warning, #c98a1b);
+  color: #fff;
+  font-weight: 700;
+}
+
 .conn-dot {
   width: 8px;
   height: 8px;

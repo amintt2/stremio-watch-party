@@ -11,13 +11,9 @@ import {
   QUEUE_PER_USER_MAX,
   REFUSE_BLOCK_MS,
   REQUEST_TTL_MS,
-  RETRIES_PER_MINUTE,
-  RETRY_WAIT_MS,
   Room,
   Rooms,
   SPAM_COOLDOWN_MS,
-  STALLS_PER_MINUTE,
-  WAIT_TIMEOUT_MS,
   formatTime,
   majority,
   mediaLabel,
@@ -671,54 +667,11 @@ test('rate limit: votes and proposals', () => {
   assert.equal(errors, 1);
 });
 
-test('a viewer stalling again and again stops freezing the room', () => {
-  const { room, clock } = setup(['a', 'b']);
+test('stalls never freeze the room, even again and again', () => {
+  const { room } = setup(['a', 'b']);
   playing(room);
-  for (let i = 0; i < STALLS_PER_MINUTE; i++) {
-    assert.equal(room.setBuffering('b', true), true);
-    clock.advance(2000);
-    room.setBuffering('b', false); // recovered on their own
-  }
-  assert.equal(room.setBuffering('b', true), false, 'ignored');
+  for (let i = 0; i < 10; i++) assert.equal(room.setBuffering('b', true), false);
   assert.equal(room.running, true);
-  clock.advance(60_000);
-  assert.equal(room.setBuffering('b', true), true, 'counted per minute');
-});
-
-test('second chance after the room gave up: shorter wait, bounded per minute', () => {
-  const { room, clock } = setup(['a', 'b']);
-  playing(room);
-  room.setBuffering('b', true);
-  clock.advance(WAIT_TIMEOUT_MS);
-  room.tick();
-  assert.equal(room.running, true, 'gave up on b');
-  // b is still loading and says so again.
-  assert.equal(room.setBuffering('b', true), true, 'second chance');
-  assert.equal(room.waiting.get('b'), clock.now() + RETRY_WAIT_MS, 'shorter deadline');
-  clock.advance(RETRY_WAIT_MS);
-  room.tick();
-  assert.equal(room.running, true);
-  for (let i = 1; i < RETRIES_PER_MINUTE; i++) {
-    assert.equal(room.setBuffering('b', true), true);
-    clock.advance(RETRY_WAIT_MS);
-    room.tick();
-  }
-  assert.equal(room.setBuffering('b', true), false, 'no more retries this minute');
-  assert.equal(room.running, true, 'the room keeps going');
-  clock.advance(60_000);
-  assert.equal(room.setBuffering('b', true), true, 'a minute later: normal wait again');
-  assert.equal(room.waiting.get('b'), clock.now() + WAIT_TIMEOUT_MS);
-});
-
-test('second chance also after the load barrier gave up', () => {
-  const { room, clock } = setup(['a', 'b']);
-  room.load(media());
-  room.setBuffering('a', false);
-  clock.advance(LOAD_TIMEOUT_MS);
-  room.tick();
-  assert.equal(room.running, true);
-  assert.equal(room.setBuffering('b', true), true);
-  assert.equal(room.waiting.get('b'), clock.now() + RETRY_WAIT_MS);
 });
 
 // ------------------------------------------------------------ presence & helpers

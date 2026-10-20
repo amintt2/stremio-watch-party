@@ -16,7 +16,7 @@ export function presentVotes(voters: string[], members: Pick<Member, 'uid'>[]) {
 
 /** Nothing to watch right now (anyone may start something). */
 export function isIdle(s: RoomState | null) {
-  return !s?.media || !!s.ended;
+  return !s?.media || !!(s.done ?? s.ended);
 }
 
 /** Host or co-pilote: answers requests and the waiting room. */

@@ -3,15 +3,19 @@ import type { RoomMedia, RoomState } from './api.ts';
 import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
-import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
+import { expectedPosition } from './sync.ts';
 import { pickAudioTrack, audioChipLabel, langCode, trackLabel } from './format.ts';
-import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
+import { bufferedAhead, bufferHealth, ewma, fragmentRatio, type Health } from './health.ts';
 import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
 
 export type { Caps } from './codecprobe.ts';
 
 const TICK_MS = 250;
 const STALL_REPORT_MS = 800;
+/** Behind the live by more than this: "Revenir au direct" is offered (same as the server). */
+export const BEHIND_S = 4;
+/** Where this viewer is, told to the room this often (who is behind, when the film is over). */
+const POSITION_EVERY_MS = 5000;
 const PREF_KEY = 'wp-quality';
 /** "fr" (VF) or "vo": this viewer's audio language, applied to every new media. */
 const AUDIO_KEY = 'wp-audio';
@@ -41,8 +45,12 @@ export interface Track {
 
 /**
  * Drives the <video> element from the room state: loads the HLS rendition for this
- * viewer's quality, keeps it within ~0.1 s of the room, reports stalls/readiness and
- * picks the quality automatically.
+ * viewer's quality, reports readiness and picks the quality automatically.
+ *
+ * Sync works like a live stream: the room's position is the live. Everyone starts there;
+ * then each viewer plays at their own pace (no speed change, no jump): one who stalls
+ * falls behind and is offered to go back to the live (goLive), or stays behind. Pause,
+ * play and seeks from the room apply to everyone (pause: where each one is).
  */
 export class Player {
   /** Codecs this device really decodes (codecprobe.ts); until tested, only H.264. */
@@ -69,25 +77,21 @@ export class Player {
   private state: RoomState | null = null;
   private abr: AutoQuality | null = null;
   private pendingReady = false;
-  private reportedStall = false;
-  private lastStallReport = 0;
-  /** This viewer's uid, to notice when the room stopped waiting for it. */
+  /** This viewer's uid. */
   uid: string | null = null;
   private stallSince = 0;
+  private stalled = false;
   private graceUntil = 0;
   private hasPlayed = false;
+  /** Last room jump followed (new film, seek). */
+  private seekId: number | undefined;
+  private lastPositionSent = 0;
   private fatalCount = 0;
   private lastFatalAt = 0;
   /** Since when nothing can be shown (readyState < 2), for the loading overlay. */
   private notReadySince = 0;
   /** EWMA of segment download speed / media bitrate, on the current quality. */
   private ratio: number | null = null;
-  /** Catch-up jump in progress: when it started, and whether we wait for the room there. */
-  private catchUpAt = 0;
-  private holding = false;
-  private latencyPending = false;
-  /** How long jumps outside the buffer take to load (s), measured. */
-  private seekLatency = 2;
   private video: HTMLVideoElement;
   private conn: Connection;
   /** Black-screen watch: decoded pictures, and where the time was when the count last moved. */
@@ -117,7 +121,7 @@ export class Player {
     this.caps = caps;
     const after = this.output();
     if (this.quality && before && after && (before.mode !== after.mode || before.codec !== after.codec)) {
-      this.startHls(this.quality, this.expected());
+      this.startHls(this.quality, this.localPosition());
     }
     this.onChange();
   }
@@ -151,7 +155,7 @@ export class Player {
     markBroken(codec);
     this.caps = { ...this.caps, [codec]: false };
     this.fallback = `${codec.toUpperCase()} non affiché ici (${reason}) : passage en H.264`;
-    this.startHls(this.quality, this.expected());
+    this.startHls(this.quality, this.localPosition());
     return true;
   }
 
@@ -187,12 +191,19 @@ export class Player {
     return this.ratio;
   }
 
-  /** True while this viewer is jumping to (or waiting for) the room position. */
-  get catchingUp() {
-    const s = this.state;
-    if (!s?.media || !this.media) return false;
-    if (this.holding || this.latencyPending) return true;
-    return s.running && this.video.readyState >= 1 && Math.abs(this.video.currentTime - this.expected()) > SEEK_THRESHOLD;
+  /** Seconds this viewer is behind the live (0 when at it, or before anything plays). */
+  behind() {
+    if (!this.state?.media || !this.media || this.detached || this.video.readyState < 1) return 0;
+    return Math.max(0, this.expected() - this.video.currentTime);
+  }
+
+  /** "Revenir au direct": jump to where the room is. */
+  goLive() {
+    if (!this.media || this.video.readyState < 1) return;
+    this.video.currentTime = this.expected();
+    this.graceUntil = Date.now() + 4000;
+    this.lastPositionSent = 0;
+    this.onChange();
   }
 
   get ladder() {
@@ -215,6 +226,7 @@ export class Player {
       return;
     }
     if (state.media.sid !== this.media?.sid) {
+      this.seekId = state.seekId;
       this.load(state.media);
       return;
     }
@@ -222,12 +234,15 @@ export class Player {
     // Only viewers who get a conversion: a copy of the source does not go through the GPU.
     if ((state.media.encoder?.by || null) !== (this.media.encoder?.by || null)) {
       this.media = state.media;
-      if (this.quality && this.output()?.mode === 'transcode') this.startHls(this.quality, this.expected());
+      if (this.quality && this.output()?.mode === 'transcode') this.startHls(this.quality, this.localPosition());
     }
-    // Someone seeked: jump now, without grace, so our buffering holds the room
-    // until everybody has the new position ready.
-    if (prev && state.rev !== prev.rev && Math.abs(this.video.currentTime - this.expected()) > SEEK_THRESHOLD) {
+    // Someone seeked: everyone goes there, those behind the live too. Other changes
+    // (pause, play, people coming) leave each viewer where they are.
+    const seeked = state.seekId !== undefined ? state.seekId !== this.seekId : !!prev && state.rev !== prev.rev && state.position !== prev.position && !state.running;
+    this.seekId = state.seekId;
+    if (seeked && this.video.readyState >= 1 && Math.abs(this.video.currentTime - this.expected()) > 0.5) {
       this.video.currentTime = this.expected();
+      this.lastPositionSent = 0;
     }
   }
 
@@ -245,11 +260,8 @@ export class Player {
     this.media = media;
     this.hasPlayed = false;
     this.ratio = null;
-    this.catchUpAt = 0;
-    this.holding = false;
-    this.latencyPending = false;
     this.pendingReady = true;
-    this.reportedStall = false;
+    this.lastPositionSent = 0;
     this.audioTrack = 0;
     this.audioPicked = false;
     this.loadRetries = 0;
@@ -267,7 +279,6 @@ export class Player {
     this.detached = on;
     if (on) {
       this.pendingReady = false;
-      this.reportedStall = false;
       if (this.media) this.unload();
     } else if (this.state?.media) {
       this.load(this.state.media);
@@ -403,8 +414,8 @@ export class Player {
         return;
       }
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-      else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad(this.expected());
-      else this.startHls(quality, this.expected());
+      else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad(this.localPosition());
+      else this.startHls(quality, this.localPosition());
     });
 
     hls.loadSource(url);
@@ -416,8 +427,8 @@ export class Player {
     if (quality === this.quality) return;
     this.graceUntil = Date.now() + 8000;
     this.ratio = null;
-    this.holding = false;
-    this.startHls(quality, this.expected());
+    // Same picture, another quality: from where this viewer is, not from the live.
+    this.startHls(quality, this.localPosition());
   }
 
   /** "auto" or a quality id, chosen in the UI. */
@@ -483,7 +494,7 @@ export class Player {
     if (!this.media || !this.quality) return;
     this.error = null;
     this.fatalCount = 0;
-    this.startHls(this.quality, this.expected());
+    this.startHls(this.quality, this.localPosition());
   }
 
   /**
@@ -500,7 +511,7 @@ export class Player {
       if (this.abr) this.abr = new AutoQuality(this.ladder, lower, now);
       this.switchQuality(lower);
     } else {
-      this.startHls(this.quality, this.expected());
+      this.startHls(this.quality, this.localPosition());
     }
   }
 
@@ -543,38 +554,23 @@ export class Player {
     const v = this.video;
     if (!s?.media || !this.media) return;
     const now = Date.now();
-    const expected = this.expected();
     if (v.readyState >= 2) this.notReadySince = 0;
     else if (!this.notReadySince) this.notReadySince = now;
-    // The end of the film: stay on the last picture (playing again would loop on it).
-    const atEnd = v.ended || (!!s.media.duration && expected >= s.media.duration - 0.5);
 
-    // Load barrier: tell the room we can play at the expected position.
+    // Load barrier (start of a film): tell the room this viewer can play.
     if (this.pendingReady && v.readyState >= 3 && !v.seeking) {
       this.pendingReady = false;
       this.send(false);
     }
 
-    // A catch-up jump outside the buffer finished loading: remember how long it took.
-    if (this.latencyPending && v.readyState >= 3 && !v.seeking) {
-      this.latencyPending = false;
-      this.seekLatency = Math.min(MAX_LEAD_S, ewma(this.seekLatency, (now - this.catchUpAt) / 1000, 0.5));
-    }
-
-    if (s.running) {
-      // Landed ahead of the room after a catch-up jump: wait there (paused) until the
-      // room position reaches us, instead of jumping again.
-      if (this.holding && !v.seeking && v.readyState >= 3) {
-        const lead = v.currentTime - expected;
-        if (lead > 0.05 && lead < MAX_LEAD_S + 1) {
-          if (!v.paused) v.pause();
-        } else this.holding = false;
+    if (s.running && !v.ended) {
+      // Arrived while the film runs (or the load took a while): start at the live, once,
+      // when it is already in what loaded.
+      if (!this.hasPlayed && v.readyState >= 3 && !v.seeking) {
+        const live = this.expected();
+        const ahead = this.ranges().some(([a, b]) => live >= a && live < b - 1);
+        if (live - v.currentTime > BEHIND_S && ahead) v.currentTime = live;
       }
-    }
-
-    if (s.running && atEnd) {
-      if (v.playbackRate !== 1) v.playbackRate = 1;
-    } else if (s.running && !(this.holding && v.paused)) {
       if (v.paused && !this.needsGesture && v.readyState >= 2) {
         v.play().catch((err: DOMException) => {
           if (err.name === 'NotAllowedError') {
@@ -583,57 +579,37 @@ export class Player {
           }
         });
       }
-      if (!v.seeking && v.readyState >= 2) {
-        const c = correction(v.currentTime, expected);
-        // While the previous catch-up jump is still loading, let it finish instead of
-        // chasing the room clock with jump after jump.
-        const loadingJump = (this.latencyPending || this.holding) && v.readyState < 3 && now < this.graceUntil;
-        if (c.seekTo !== undefined && !loadingJump) {
-          const target = catchUpTarget(expected, this.ranges(), this.seekLatency);
-          v.currentTime = target.position;
-          this.holding = target.lead > 0;
-          this.latencyPending = target.lead > 0;
-          this.catchUpAt = now;
-          // Our own catch-up seek must not hold the whole room.
-          this.graceUntil = now + 4000;
-          this.onChange();
-        }
-        if (v.playbackRate !== c.rate) v.playbackRate = c.rate;
-      }
+      if (v.playbackRate !== 1) v.playbackRate = 1;
 
-      const stalled = !v.paused && v.readyState < 3;
-      if (stalled && this.hasPlayed && now > this.graceUntil) {
+      // A stall only matters to the automatic quality now (it holds nobody).
+      const stalled = !v.paused && v.readyState < 3 && this.hasPlayed && now > this.graceUntil;
+      if (stalled) {
         if (!this.stallSince) this.stallSince = now;
-        else if (now - this.stallSince > STALL_REPORT_MS && !this.reportedStall) {
-          this.reportedStall = true;
-          this.lastStallReport = now;
-          this.send(true);
+        else if (now - this.stallSince > STALL_REPORT_MS && !this.stalled) {
+          this.stalled = true;
           const next = this.abr?.onStall(now);
           if (next) this.switchQuality(next);
         }
-        // The room gave up waiting for us (10 s) but we're still stuck: ask for a second
-        // chance. The server grants a short wait, at most twice a minute per viewer.
-        else if (this.reportedStall && this.uid && !s.waiting.includes(this.uid) && now - this.lastStallReport > 5000) {
-          this.lastStallReport = now;
-          this.send(true);
-        }
       } else {
         this.stallSince = 0;
+        this.stalled = false;
       }
-      if (!stalled && !v.paused && v.currentTime > 1) this.hasPlayed = true;
+      if (!v.paused && v.readyState >= 3 && v.currentTime > 1) this.hasPlayed = true;
     } else if (!s.running) {
-      this.holding = false;
+      // Paused (or the start of the film waits for someone): everyone stops where they are.
       if (!v.paused) v.pause();
       if (v.playbackRate !== 1) v.playbackRate = 1;
-      if (!v.seeking && v.readyState >= 1 && Math.abs(v.currentTime - expected) > 0.25) v.currentTime = expected;
+      // Before playing anything, sit at the room's position.
+      if (!this.hasPlayed && !v.seeking && v.readyState >= 1 && Math.abs(v.currentTime - this.expected()) > 0.25) v.currentTime = this.expected();
+    }
+
+    // Tell the room where this viewer is (who is behind the live, when the film is over).
+    if (v.readyState >= 1 && !v.seeking && now - this.lastPositionSent > POSITION_EVERY_MS) {
+      this.lastPositionSent = now;
+      this.conn.send({ t: 'position', value: v.currentTime });
     }
 
     this.watchPicture(v);
     this.watchLoading(v, now);
-
-    if (this.reportedStall && v.readyState >= 3 && !v.seeking) {
-      this.reportedStall = false;
-      this.send(false);
-    }
   }
 }

@@ -6,6 +6,7 @@ type Outgoing =
   | { t: 'pause' }
   | { t: 'seek'; position: number }
   | { t: 'buffering'; value: boolean }
+  | { t: 'position'; value: number }
   | { t: 'quality'; value: string }
   | { t: 'external'; value: boolean }
   | { t: 'progress'; sid: string; position: number }

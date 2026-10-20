@@ -105,7 +105,7 @@ les personnes présentes (👑 hôte, co-pilotes, et l'état de chacun : *en tra
   le film continue pour les autres (s'il était le seul à charger, la salle ne l'attend
   plus). S'il revient, il retrouve le film à la bonne position. À 3 ou plus, dès que la
   majorité est prête, les derniers ont 8 s au plus (au lieu de 20) : un appareil lent ne
-  bloque plus tout le monde, il rattrape tout seul. Si tout le monde part, le
+  bloque plus tout le monde. Si tout le monde part, le
   film est mis en pause et reprend quand quelqu'un revient (la salle est gardée 10 min).
 - **Salle protégée par défaut.** Seuls l'**hôte** (le premier arrivé) et les
   **co-pilotes** qu'il nomme mettent en pause, avancent, arrêtent ou lancent un titre. Les
@@ -141,8 +141,7 @@ les personnes présentes (👑 hôte, co-pilotes, et l'état de chacun : *en tra
   - l'hôte peut **exclure** quelqu'un (il ne peut plus revenir dans cette salle), nommer
     ou retirer des co-pilotes ;
   - chaque action est limitée par personne (ex. 3 demandes / 10 s) : au-delà, la personne
-    est ignorée 30 s et l'hôte est prévenu. Quelqu'un qui bloque la lecture plus de 4 fois
-    par minute (mauvaise connexion ou exprès) ne fait plus attendre la salle ;
+    est ignorée 30 s et l'hôte est prévenu ;
   - tout est vérifié par le serveur (`server/src/rooms.js`, `roomSocket.js`) : l'interface
     ne fait qu'afficher ce qui est permis.
 
@@ -169,11 +168,19 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
 3. **Lecture pour tout le monde** : le backend ouvre le torrent sur le serveur Stremio
    (ou suit le lien débrid), analyse le fichier, puis chaque ami charge le flux HLS de
    *sa* qualité.
-4. **Synchro** : le serveur garde l'état de référence (position, pause). Chaque client
-   estime l'horloge du serveur, se recale en accélérant ou ralentissant de ±5 % pour les
-   petits écarts, et saute à la bonne position au-delà de 1 s. Au lancement et quand
-   quelqu'un charge (ou après un déplacement), la salle **attend tout le monde**, 10 s
-   maximum.
+4. **Synchro façon « direct »** (comme un live YouTube) : le serveur garde la position
+   de la salle, le *direct*. Au lancement d'un film, la salle attend que tout le monde
+   soit prêt (20 s au plus, 8 s pour les derniers à 3 ou plus). Ensuite **chacun lit à
+   son rythme** : pas d'accélération, pas de saut automatique, et personne n'attend
+   personne. Celui dont la vidéo charge prend du retard. Au-delà de 4 s, il voit « Tu es
+   14 s derrière le direct » avec **Revenir au direct** ou **Plus tard** (il peut très bien
+   regarder en décalé), et les autres voient son retard sur sa pastille (−15s).
+   - Pause : chacun s'arrête là où il en est ; Lecture : chacun repart de là.
+   - Un déplacement (aller à 42:10, ±10 s) emmène tout le monde au même endroit.
+   - Arrivé en cours de film : on démarre au direct.
+   - Fin du film : le flux reste en ligne tant que quelqu'un le regarde encore.
+     L'épisode suivant (et la file) attend que le dernier ait fini, ou soit revenu au
+     direct. Une page qui ne donne plus sa position depuis 30 s ne retient plus personne.
 
 ### Qualité et codecs, par ami
 
@@ -619,7 +626,7 @@ client/src/subsync.ts  synchro auto des sous-titres (corrélation, ratios d'imag
 client/src/speech.ts   niveau des voix pendant la lecture (pour la synchro audio)
 client/src/substyle.ts / subcontrols.ts  style des sous-titres et ses réglages (testé)
 client/src/encoder.ts  Paramètres → Encodeur GPU, suggestion à l'hôte
-client/src/player.ts   lecteur : synchro, détection de blocage, qualité auto, garde-fou écran noir
+client/src/player.ts   lecteur : direct (retard, revenir au direct), qualité auto, garde-fou écran noir
 client/src/codecprobe.ts vrai test de décodage HEVC / AV1 / VP9 (extraits dans codecsamples.ts) (testé)
 client/src/stats.ts    panneau Statistiques : pairs, vitesse, GPU, compatibilité (testé)
 client/src/external.ts liens vers VLC, Infuse, MX Player… (intent Android, schémas iOS, .m3u) (testé)
