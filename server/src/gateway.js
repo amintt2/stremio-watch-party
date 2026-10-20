@@ -160,6 +160,9 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
 
   async function torrent(req, res, url, hash) {
     const path = url.pathname + url.search;
+    if (hash && req.method === 'GET' && url.pathname.endsWith('/stats.json') && engineOf(hash) === 'huwa') {
+      return statsFromHuwa(res, path);
+    }
     const order = hash ? [engineOf(hash)] : [engine];
     if (req.method === 'POST' && order[0] === 'huwa') order.push('stremio');
     const body = req.method === 'POST' ? await readBody(req) : undefined;
@@ -173,6 +176,12 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
         log.warn?.({ err: err.message, hash }, 'Huwa engine failed, gateway uses the Stremio torrent engine');
       }
     }
+  }
+
+  async function statsFromHuwa(res, path) {
+    const r = await fetch(`${huwaUrl}${path}`, { signal: AbortSignal.timeout(8000) });
+    const data = r.ok ? await r.json().catch(() => null) : null;
+    return send(res, r.status, data && typeof data === 'object' ? stremioStats(data) : data);
   }
 
   async function settings(req, res, origin) {
@@ -216,6 +225,33 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
       return send(res, err.status || 502, { error: err.status ? err.message : 'streaming server unavailable' });
     }
   };
+}
+
+const STATS_NUMBERS = ['downloadSpeed', 'uploadSpeed', 'downloaded', 'uploaded', 'unchoked', 'peers', 'queued', 'unique', 'connectionTries', 'swarmConnections', 'swarmSize'];
+
+/**
+ * Stremio apps drop a whole stats.json (peers, speed, progress stay at 0) unless every field of
+ * their model is there, `opts` included, which Huwa leaves empty: fill in what is missing.
+ */
+export function stremioStats(data) {
+  const out = { ...data, name: String(data.name ?? ''), infoHash: String(data.infoHash ?? '') };
+  for (const k of STATS_NUMBERS) out[k] = Number.isFinite(data[k]) && data[k] >= 0 ? data[k] : 0;
+  out.peerSearchRunning = Boolean(data.peerSearchRunning);
+  out.swarmPaused = Boolean(data.swarmPaused);
+  out.files = Array.isArray(data.files) ? data.files : [];
+  // Each source needs lastStarted, numFound… and a valid url: none is better than a rejected one.
+  out.sources = Array.isArray(data.sources)
+    ? data.sources.filter((x) => x && typeof x.url === 'string' && typeof x.lastStarted === 'string' && /^[a-z][a-z0-9+.-]*:/i.test(x.url))
+    : [];
+  const opts = data.opts && typeof data.opts === 'object' ? data.opts : {};
+  out.opts = {
+    connections: null, handshakeTimeout: null, timeout: null, path: '', dht: true, tracker: true, virtual: false,
+    ...opts,
+    growler: { flood: 0, pulse: null, ...opts.growler },
+    peerSearch: { min: 0, max: 0, sources: [], ...opts.peerSearch },
+    swarmCap: { maxSpeed: null, minPeers: null, ...opts.swarmCap },
+  };
+  return out;
 }
 
 function send(res, status, data) {
