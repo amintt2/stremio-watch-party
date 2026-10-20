@@ -47,6 +47,11 @@ directement sur le site, dans un navigateur.
     « Source : 1080p · MULTI (la plus rapide parmi 5 testées) ». La liste des sources est
     repliée sous « Choisir une source moi-même », pour qui veut en choisir une précise. Les
     badges **MULTI**, **VF** et **VOSTFR** sont lus dans le nom de la release.
+  - **Obligations sous « Lire »** : des pastilles à cocher (**VF + VO**, **VF**, **ST FR**,
+    **1080p+**, **4K**, **⚡ Débrid**). « Lire » ne met en course que les sources qui les
+    remplissent toutes ; s'il n'y en a aucune, il le dit et propose de décocher. Gardées
+    d'une fiche à l'autre, sur cet appareil. Les sources qui ne les remplissent pas sont
+    grisées dans la liste.
   - **Préparé avant le clic** : dès que la fiche (ou l'épisode sélectionné) reste affichée
     1,5 s, le serveur fait déjà la course et ouvre la source gagnante (torrent, analyse du
     fichier) ; « Lire » trouve le travail fait et démarre tout de suite. Préparation gardée

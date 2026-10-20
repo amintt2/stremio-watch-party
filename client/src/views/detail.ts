@@ -4,7 +4,8 @@ import { openExternal, publicBase } from '../auth.ts';
 import { clear, h, toast } from '../dom.ts';
 import { canResume, episodeCode, progressRatio, routeHref } from '../format.ts';
 import { defaultEpisode, isUpcoming, nextEpisode } from '../lists.ts';
-import { StreamPanel } from '../streams.ts';
+import { getMusts, mustsLabel, onMustsChange } from '../musts.ts';
+import { mustRow, StreamPanel } from '../streams.ts';
 import { formatTime } from '../sync.ts';
 import { copyText, emptyState, icon, posterCard, progressBar, row, skeletonDetail } from '../ui.ts';
 
@@ -81,7 +82,8 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       } else {
         const keys = await panel.candidates();
         if (!keys.length) {
-          toast('Aucune source disponible pour ce titre.');
+          const musts = getMusts();
+          toast(musts.length ? `Aucune source avec : ${mustsLabel(musts)}. Décoche un critère sous « Lire ».` : 'Aucune source disponible pour ce titre.');
           return;
         }
         if (textual && button.lastChild) button.lastChild.textContent = 'Recherche de la source la plus rapide…';
@@ -122,6 +124,10 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   // Like Huwa: once the sources of what is shown are known (and the page stays a moment),
   // the server races them and opens the winner, so "Lire" starts right away.
   let prewarmFor = '';
+  const offMusts = onMustsChange(() => {
+    if (!el.isConnected) return offMusts();
+    prewarm(Promise.resolve());
+  });
   const prewarm = (sources: Promise<unknown>) => {
     const id = videoId();
     prewarmFor = id;
@@ -375,6 +381,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       !meta.director.length && meta.writers?.length ? h('p', { class: 'credits' }, h('span', { class: 'faint' }, 'Création '), personLinks(meta.writers)) : null,
       meta.awards ? h('p', { class: 'credits faint small' }, meta.awards) : null,
       actions,
+      mustRow(),
       more,
       isSeries ? episodeLine : null
     )

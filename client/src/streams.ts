@@ -1,6 +1,7 @@
 import { api, type StreamOption } from './api.ts';
 import { clear, h } from './dom.ts';
 import { pickBest } from './format.ts';
+import { getMusts, meets, MUSTS, mustsLabel, onMustsChange, toggleMust } from './musts.ts';
 import { localStorageGet, localStorageSet } from './storage.ts';
 import { icon, loadingState } from './ui.ts';
 
@@ -20,6 +21,36 @@ export function sizeInGb(size: string | null) {
   if (!m) return 0;
   const factor = { K: 1e-6, M: 1e-3, G: 1, T: 1e3 }[m[2].toUpperCase() as 'K' | 'M' | 'G' | 'T'];
   return Number(m[1]) * factor;
+}
+
+/**
+ * The obligations under "Lire" (VF + VO, ST FR, 1080p+…): chips that switch on and off,
+ * the same everywhere on the page.
+ */
+export function mustRow() {
+  const row = h('div', { class: 'must-row', role: 'group', 'aria-label': 'Obligatoire pour « Lire »' });
+  const render = () => {
+    const on = getMusts();
+    clear(
+      row,
+      MUSTS.map((m) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            class: `must-chip${on.includes(m.id) ? ' on' : ''}`,
+            title: m.hint,
+            'aria-pressed': on.includes(m.id) ? 'true' : 'false',
+            onclick: () => toggleMust(m.id),
+          },
+          m.label
+        )
+      )
+    );
+  };
+  render();
+  const off = onMustsChange(() => (row.isConnected ? render() : off()));
+  return row;
 }
 
 /**
@@ -92,7 +123,12 @@ export class StreamPanel {
     this.manual.addEventListener('toggle', () => localStorageSet(MANUAL_KEY, this.manual.open ? '1' : '0'));
     // The extra toggles (start or propose a picked source, from where) are about the list.
     this.manual.append(this.manualSummary, this.extra, h('div', { class: 'streams-tools' }, filters, sortSelect), this.status, this.rows);
-    this.el.append(h('header', { class: 'streams-head' }, this.title), this.autoBtn, this.autoHint, this.manual);
+    this.el.append(h('header', { class: 'streams-head' }, this.title), this.autoBtn, mustRow(), this.autoHint, this.manual);
+    const off = onMustsChange(() => {
+      if (!this.el.isConnected && this.list.length) return off();
+      this.refreshAuto();
+      if (this.list.length) this.render();
+    });
     this.empty('Choisis un épisode pour voir ses sources.');
   }
 
@@ -101,12 +137,34 @@ export class StreamPanel {
     clear(this.extra, node);
   }
 
-  /** The big button follows what is known about the sources. */
+  /** The big button follows what is known about the sources (and the obligations). */
   private setAuto(state: 'loading' | 'ready' | 'none', count = 0) {
+    this.autoState = state;
     this.autoBtn.disabled = state !== 'ready';
-    this.autoHint.textContent =
-      state === 'loading' ? 'Recherche des sources…' : state === 'none' ? 'Aucune source pour lancer.' : `Teste les ${count} sources en même temps et lance la plus rapide.`;
     this.manualSummary.textContent = state === 'ready' ? `Choisir une source moi-même (${count})` : 'Choisir une source moi-même';
+    if (state !== 'ready') {
+      this.autoHint.textContent = state === 'loading' ? 'Recherche des sources…' : 'Aucune source pour lancer.';
+      return;
+    }
+    const musts = getMusts();
+    const fit = this.usable().filter((s) => meets(s, musts)).length;
+    if (!musts.length) this.autoHint.textContent = count > 1 ? `Teste les ${count} sources en même temps et lance la plus rapide.` : 'Vérifie la source et la lance.';
+    else if (fit > 1) this.autoHint.textContent = `Teste les ${fit} sources sur ${count} qui ont : ${mustsLabel(musts)}.`;
+    else if (fit) this.autoHint.textContent = `Une source sur ${count} a : ${mustsLabel(musts)}.`;
+    else {
+      this.autoHint.textContent = `Aucune source avec : ${mustsLabel(musts)}. Décoche un critère.`;
+      this.autoBtn.disabled = true;
+    }
+  }
+
+  private autoState: 'loading' | 'ready' | 'none' = 'none';
+
+  private usable() {
+    return this.list.filter((s) => !s.tooBig);
+  }
+
+  private refreshAuto() {
+    if (this.autoState === 'ready') this.setAuto('ready', this.usable().length);
   }
 
   empty(text: string) {
@@ -150,9 +208,10 @@ export class StreamPanel {
     return pickBest((await this.ready).filter((s) => !s.tooBig));
   }
 
-  /** Every usable source, for the automatic choice (the server tests them). */
+  /** Every usable source that meets the obligations, for the automatic choice (the server tests them). */
   async candidates() {
-    return (await this.ready).filter((s) => !s.tooBig).map((s) => s.key);
+    const musts = getMusts();
+    return (await this.ready).filter((s) => !s.tooBig && meets(s, musts)).map((s) => s.key);
   }
 
   private render() {
@@ -185,7 +244,7 @@ export class StreamPanel {
     return h(
       'button',
       {
-        class: `source${s.tooBig ? ' source-too-big' : ''}`,
+        class: `source${s.tooBig ? ' source-too-big' : ''}${meets(s, getMusts()) ? '' : ' source-unmet'}`,
         type: 'button',
         disabled: !!s.tooBig,
         title: s.tooBig ? `${s.release}\nTrop gros pour le stockage du serveur : choisis une source plus légère` : s.release,
