@@ -64,7 +64,11 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   const start = async (pick: (() => Promise<StreamOption | null>) | null, startAt: number, button: HTMLButtonElement) => {
     button.disabled = true;
     button.classList.add('busy');
-    const label = button.lastChild?.textContent;
+    // Starting now: a preparation still waiting would only duplicate the work.
+    prewarmFor = '';
+    // Big buttons say what is going on; an episode row keeps its text (it gets a spinner).
+    const textual = button.classList.contains('btn');
+    const label = textual ? button.lastChild?.textContent : null;
     try {
       let chosen: { streamKey?: string; candidates?: string[] };
       if (pick) {
@@ -80,7 +84,8 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
           toast('Aucune source disponible pour ce titre.');
           return;
         }
-        if (button.lastChild) button.lastChild.textContent = 'Recherche de la source la plus rapide…';
+        if (textual && button.lastChild) button.lastChild.textContent = 'Recherche de la source la plus rapide…';
+        else toast('Recherche de la source la plus rapide…');
         chosen = { candidates: keys };
       }
       await app.play({
@@ -111,6 +116,26 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
     }
   };
   panel.onPick = (s, button) => (pickMode === 'propose' ? propose(s.key, button) : start(async () => s, useResume ? resumeAt() : 0, button));
+  // "Lire" in the panel: the fastest source, from where this viewer stopped (if the toggle says so).
+  panel.onAuto = (button) => start(null, useResume ? resumeAt() : 0, button);
+
+  // Like Huwa: once the sources of what is shown are known (and the page stays a moment),
+  // the server races them and opens the winner, so "Lire" starts right away.
+  let prewarmFor = '';
+  const prewarm = (sources: Promise<unknown>) => {
+    const id = videoId();
+    prewarmFor = id;
+    void sources.then(async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (prewarmFor !== id || !el.isConnected) return;
+      const keys = await panel.candidates();
+      if (!keys.length) return;
+      api('/api/prewarm', {
+        method: 'POST',
+        body: JSON.stringify({ candidates: keys, lang: app.player.audioPref, meta: { id: meta.id, type: meta.type, videoId: id } }),
+      }).catch(() => {});
+    });
+  };
 
   // ---- watched marks (movie, episode, season)
   const setWatched = async (videos: Video[] | null, watched: boolean) => {
@@ -135,7 +160,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
     video = v;
     renderActions();
     renderEpisodes?.(true);
-    panel.load('series', v.id, subtitle());
+    prewarm(panel.load('series', v.id, subtitle()));
     if (scroll && window.matchMedia('(max-width: 1100px)').matches) panel.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -146,11 +171,11 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       {
         class: `btn ${at ? 'btn-secondary' : 'btn-primary'} btn-lg`,
         type: 'button',
-        title: 'Teste les sources en parallèle et lance la plus rapide pour tout le salon',
+        title: 'Teste toutes les sources en parallèle et lance la plus rapide pour toute la salle',
         onclick: () => start(null, 0, watchBtn),
       },
-      icon('users'),
-      at ? 'Depuis le début' : 'Regarder ensemble'
+      icon('play'),
+      at ? 'Depuis le début' : 'Lire'
     );
     const resumeBtn: HTMLButtonElement | null = at
       ? h(
@@ -383,7 +408,15 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
             class: 'episode-main',
             type: 'button',
             'aria-current': v.id === video?.id ? 'true' : null,
-            onclick: () => selectVideo(v, true),
+            title: upcoming ? 'Pas encore sorti' : 'Lire cet épisode (source la plus rapide)',
+            onclick: (e: Event) => {
+              selectVideo(v, upcoming);
+              if (!upcoming) {
+                // One click plays it, like Huwa: the fastest source, from where it was left.
+                const p = progress.get(v.id);
+                void start(null, canResume(p) ? p!.position : 0, e.currentTarget as HTMLButtonElement);
+              }
+            },
           },
           h(
             'span',
@@ -477,6 +510,5 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
 
   renderActions();
   renderEpisodes?.(true);
-  if (video) panel.load('series', video.id, subtitle());
-  else panel.load('movie', meta.id, 'Sources');
+  prewarm(video ? panel.load('series', video.id, subtitle()) : panel.load('movie', meta.id, 'Sources'));
 }

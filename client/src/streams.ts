@@ -1,9 +1,12 @@
 import { api, type StreamOption } from './api.ts';
 import { clear, h } from './dom.ts';
 import { pickBest } from './format.ts';
-import { loadingState } from './ui.ts';
+import { localStorageGet, localStorageSet } from './storage.ts';
+import { icon, loadingState } from './ui.ts';
 
 type SortMode = 'addon' | 'seeders' | 'size';
+/** The viewer opened the hand-picked list once: keep it open. */
+const MANUAL_KEY = 'wp-sources-manual';
 const QUALITY_FILTERS = ['Tous', '4K', '1080p', '720p'];
 const LANGUAGE_HINTS: Record<string, string> = {
   MULTI: 'VF et VO dans le même fichier : chacun choisit sa langue',
@@ -21,11 +24,14 @@ export function sizeInGb(size: string | null) {
 
 /**
  * Side panel listing the sources of one video (movie or episode), with the quality
- * filter and sort. Clicking a source calls onPick; `best()` serves the one-click buttons.
+ * filter and sort. Its big "Lire" button (onAuto) is the normal way to start: the server
+ * races the sources. The list, folded by default, is for picking one by hand (onPick).
  */
 export class StreamPanel {
   readonly el = h('aside', { class: 'streams', 'aria-label': 'Sources' });
   onPick: (s: StreamOption, button: HTMLButtonElement) => void = () => {};
+  /** "Lire": the server tests every source at once and plays the fastest (like Huwa). */
+  onAuto: (button: HTMLButtonElement) => void = () => {};
 
   private list: StreamOption[] = [];
   private ready: Promise<StreamOption[]> = Promise.resolve([]);
@@ -36,6 +42,16 @@ export class StreamPanel {
   private title = h('h3', {}, 'Sources');
   private extra = h('div', { class: 'streams-extra' });
   private status = h('div', { class: 'streams-status' });
+  private autoBtn: HTMLButtonElement = h(
+    'button',
+    { class: 'btn btn-primary btn-lg streams-auto', type: 'button', onclick: () => this.onAuto(this.autoBtn) },
+    icon('play'),
+    'Lire'
+  );
+  private autoHint = h('p', { class: 'muted small streams-auto-hint' }, 'Teste toutes les sources en même temps et lance la plus rapide.');
+  /** Picking a source by hand is the exception: the list stays folded unless opened. */
+  private manual = h('details', { class: 'streams-manual' });
+  private manualSummary = h('summary', {}, 'Choisir une source moi-même');
 
   constructor() {
     const filters = h(
@@ -72,12 +88,11 @@ export class StreamPanel {
       h('option', { value: 'seeders' }, 'Plus de sources'),
       h('option', { value: 'size' }, 'Plus gros fichier')
     );
-    this.el.append(
-      h('header', { class: 'streams-head' }, this.title, h('div', { class: 'streams-tools' }, filters, sortSelect)),
-      this.extra,
-      this.status,
-      this.rows
-    );
+    this.manual.open = localStorageGet(MANUAL_KEY) === '1';
+    this.manual.addEventListener('toggle', () => localStorageSet(MANUAL_KEY, this.manual.open ? '1' : '0'));
+    // The extra toggles (start or propose a picked source, from where) are about the list.
+    this.manual.append(this.manualSummary, this.extra, h('div', { class: 'streams-tools' }, filters, sortSelect), this.status, this.rows);
+    this.el.append(h('header', { class: 'streams-head' }, this.title), this.autoBtn, this.autoHint, this.manual);
     this.empty('Choisis un épisode pour voir ses sources.');
   }
 
@@ -86,7 +101,16 @@ export class StreamPanel {
     clear(this.extra, node);
   }
 
+  /** The big button follows what is known about the sources. */
+  private setAuto(state: 'loading' | 'ready' | 'none', count = 0) {
+    this.autoBtn.disabled = state !== 'ready';
+    this.autoHint.textContent =
+      state === 'loading' ? 'Recherche des sources…' : state === 'none' ? 'Aucune source pour lancer.' : `Teste les ${count} sources en même temps et lance la plus rapide.`;
+    this.manualSummary.textContent = state === 'ready' ? `Choisir une source moi-même (${count})` : 'Choisir une source moi-même';
+  }
+
   empty(text: string) {
+    this.setAuto('none');
     this.list = [];
     this.ready = Promise.resolve([]);
     clear(this.status);
@@ -98,10 +122,13 @@ export class StreamPanel {
     this.title.textContent = title;
     clear(this.status);
     clear(this.rows, loadingState('Recherche des sources…'));
+    this.setAuto('loading');
     this.ready = api<{ streams: StreamOption[]; failedAddons: number }>(`/api/streams/${type}/${encodeURIComponent(id)}`)
       .then((res) => {
         if (seq !== this.seq) return this.list;
         this.list = res.streams;
+        const usable = this.list.filter((s) => !s.tooBig).length;
+        this.setAuto(usable ? 'ready' : 'none', usable);
         if (res.failedAddons) clear(this.status, h('p', { class: 'muted small' }, `${res.failedAddons} addon(s) n'ont pas répondu.`));
         if (!this.list.length) {
           clear(this.rows, h('p', { class: 'empty' }, res.failedAddons ? 'Les addons de sources ne répondent pas.' : 'Aucune source trouvée.'));
@@ -109,7 +136,11 @@ export class StreamPanel {
         return this.list;
       })
       .catch((err: Error) => {
-        if (seq === this.seq) clear(this.rows, h('p', { class: 'auth-error' }, err.message));
+        if (seq === this.seq) {
+          clear(this.rows, h('p', { class: 'auth-error' }, err.message));
+          this.setAuto('none');
+          this.manual.open = true;
+        }
         return [];
       });
     return this.ready;
