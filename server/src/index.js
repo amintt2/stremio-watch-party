@@ -31,6 +31,7 @@ import { cuesFor, listSubtitles } from './subtitles.js';
 import {
   watchStremioServer,
   hlsParams,
+  ladderPlaylist,
   createSession,
   sweepConverters,
   publicMessage,
@@ -42,7 +43,6 @@ import {
   isAllowedHlsPath,
   parseProfile,
   publicMedia,
-  rewritePlaylist,
 } from './media.js';
 import { Rooms, mediaLabel } from './rooms.js';
 import { RateLimiter, SOCIAL_MESSAGES, cleanProposal, handleRoomMessage } from './roomSocket.js';
@@ -53,6 +53,7 @@ import { registerEncoder } from './encoderRoutes.js';
 import { HuwaProbes, chooseSources } from './race.js';
 import { Prewarms } from './prewarm.js';
 import { parseGpuPath } from './encoder.js';
+import { HlsRelay } from './hlsRelay.js';
 import { createGateway, routeOf } from './gateway.js';
 
 const app = Fastify({
@@ -185,9 +186,15 @@ function sweepStaleConverters(log = app.log) {
   };
   sweepConverters(active)
     .then((ids) => ids.length && log.info({ count: ids.length }, 'stale converters stopped'))
-    .catch((err) => log.debug({ err: err.message }, 'converter sweep failed'));
+    .catch((err) => log.debug({ err: err.message }, 'converter sweep failed'))
+    .finally(() => hlsRelay.prune(active()));
 }
 setInterval(sweepStaleConverters, 60_000).unref();
+
+// Between the browsers and the converters: segments kept, asked in order, made ahead.
+const hlsRelay = new HlsRelay({ fetch: fetchHls, cacheBytes: config.hlsCacheBytes, log: app.log });
+// A room on pause keeps its converters (Stremio drops them after 2 min without a request).
+setInterval(() => hlsRelay.keepAlive((sid) => [...rooms].some((room) => room.media?.sid === sid)), 60_000).unref();
 
 // Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
 const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
@@ -863,9 +870,13 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
 // in the path so the relative URIs inside playlists keep it.
 app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
   const { sid, profile } = request.params;
-  const rest = request.params['*'];
   const session = getSession(sid);
   if (!session) return reply.code(404).send({ error: 'Session inconnue' });
+  // "ladder.m3u8": every quality in one master (see ladderPlaylist), so the player changes
+  // quality without being rebuilt. While a GPU encoder serves this film its renditions are
+  // not the converter's: the plain master is sent (the player then reloads to change).
+  const ladder = request.params['*'] === 'ladder.m3u8' && !session.gpu;
+  const rest = request.params['*'] === 'ladder.m3u8' ? 'master.m3u8' : request.params['*'];
   if (!isAllowedHlsPath(rest) && !parseGpuPath(rest)) return reply.code(400).send({ error: 'Chemin invalide' });
 
   const parsed = parseProfile(profile);
@@ -877,31 +888,23 @@ app.get('/api/hls/:sid/:profile/*', async (request, reply) => {
   const abort = new AbortController();
   request.raw.on('close', () => abort.abort());
 
-  let upstream;
+  // Through the relay (hlsRelay.js): segments kept and asked of the converter in order, so
+  // viewers sharing a converter don't cancel each other's segments.
+  let out;
   try {
-    upstream = await fetchHls(session, params, rest, abort.signal);
+    out = await hlsRelay.serve(session, params, rest, abort.signal);
   } catch (err) {
     if (abort.signal.aborted) return reply;
-    return reply.code(502).send({ error: `Serveur Stremio injoignable : ${err.message}` });
+    const detail = err.detail || {};
+    const level = /canceled/.test(detail.body || '') ? 'debug' : 'warn';
+    request.log[level]({ status: detail.status, rest, body: detail.body, err: err.message }, 'hls upstream error');
+    return reply.code(err.status && err.status !== 499 ? err.status : 502).send({ error: err.message, status: detail.status });
   }
-
-  if (!upstream.ok) {
-    const body = await upstream.text().catch(() => '');
-    // Viewers share a converter: a seek cancels in-flight segments, hls.js retries them.
-    const level = body.includes('canceled') ? 'debug' : 'warn';
-    request.log[level]({ status: upstream.status, rest, body: body.slice(0, 300) }, 'hls upstream error');
-    return reply.code(502).send({ error: 'Erreur du convertisseur', status: upstream.status });
-  }
-
   reply.header('Cache-Control', 'no-store');
-  if (rest.endsWith('.m3u8')) {
-    reply.type('application/vnd.apple.mpegurl');
-    return rewritePlaylist(await upstream.text());
-  }
-  reply.type(upstream.headers.get('content-type') || 'application/octet-stream');
-  const length = upstream.headers.get('content-length');
-  if (length) reply.header('Content-Length', length);
-  return reply.send(upstream.body);
+  reply.type(out.type);
+  // The ladder: every quality of the film in one master (the converter's own lists one).
+  if (ladder) return reply.send(ladderPlaylist(out.body.toString(), sid, session.info, parsed.caps));
+  return reply.send(out.body);
 });
 
 // ---------------------------------------------------------------- image proxy

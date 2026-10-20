@@ -267,6 +267,8 @@ export async function probe(mediaURL) {
   const video = body.streams.find((s) => s.track === 'video');
   return {
     duration: body.format?.duration || null,
+    // "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"…: the relay restarts transcoded Matroska earlier.
+    container: typeof body.format?.name === 'string' ? body.format.name : null,
     bitrate: body.format?.bitrate || video?.formatBitRate || null,
     video: video
       ? {
@@ -347,7 +349,8 @@ export async function sweepConverters(activeSids) {
   const all = Object.keys((await res.json().catch(() => null)) || {});
   const live = typeof activeSids === 'function' ? activeSids() : activeSids;
   const stale = all.filter((id) => {
-    const m = /^wp-(.+)-(?:c-[a-z0-9]+|t-\d+|a\d+)$/.exec(id);
+    // "r<n>": the same converter, renamed by the relay after Stremio destroyed it (hlsRelay.js).
+    const m = /^wp-(.+)-(?:c-[a-z0-9]+|t-\d+(?:r\d+)?|a\d+(?:r\d+)?)$/.exec(id);
     return m && !live.has(m[1]);
   });
   await Promise.all(stale.map((id) => stremio(`/hlsv2/${encodeURIComponent(id)}/destroy`, { signal: AbortSignal.timeout(5000) }).catch(() => null)));
@@ -435,6 +438,42 @@ export function hlsParams(sid, info, quality, caps, rest) {
   return converterParams(sid, info, quality, caps);
 }
 
+const CAP_LETTER_OF = Object.fromEntries(Object.entries(CAP_LETTERS).map(([letter, codec]) => [codec, letter]));
+
+/**
+ * One master playlist for every quality of a viewer profile ("ladder.m3u8"), built from
+ * the converter's own master: its audio and subtitle groups are kept (audio comes from
+ * per-track converters, the same for every quality). Each quality is a variant pointing at
+ * its own converter (`../<quality><caps>/video0.m3u8`): hls.js then changes quality inside
+ * the same player (same MediaSource, buffer and audio kept) instead of being rebuilt.
+ * NAME carries the quality id; BANDWIDTH a real figure (hls.js sizes its buffer with it).
+ */
+export function ladderPlaylist(master, sid, info, caps = {}) {
+  const letters = ['hevc', 'av1', 'vp9'].filter((c) => caps[c]).map((c) => CAP_LETTER_OF[c]).join('');
+  const lines = String(master).split('\n');
+  const inf = lines.find((l) => l.startsWith('#EXT-X-STREAM-INF:')) || '';
+  const groups = (inf.match(/(?:AUDIO|SUBTITLES|CLOSED-CAPTIONS)=(?:"[^"]*"|NONE)/g) || []).join(',');
+  const out = ['#EXTM3U'];
+  for (const l of lines) {
+    if (l.startsWith('#EXT-X-VERSION') || l.startsWith('#EXT-X-INDEPENDENT-SEGMENTS')) out.push(l);
+    else if (l.startsWith('#EXT-X-MEDIA:') && !/TYPE=VIDEO/.test(l)) out.push(l);
+  }
+  const { width = 16, height = 9 } = info.video || {};
+  const seen = new Set();
+  for (const q of availableQualities(info)) {
+    const p = converterParams(sid, info, q.id, caps);
+    // Two qualities served by one converter would be the same stream twice.
+    if (!p || seen.has(p.convertId)) continue;
+    seen.add(p.convertId);
+    const bandwidth = p.mode === 'copy' && info.bitrate > 0 ? Math.round(info.bitrate) : q.estBitrate;
+    const h = Math.max(2, Math.round((p.outputWidth * height) / width / 2) * 2);
+    const attrs = [`BANDWIDTH=${bandwidth}`, `RESOLUTION=${p.outputWidth}x${h}`, `NAME="${q.id}"`];
+    if (groups) attrs.push(groups);
+    out.push(`#EXT-X-STREAM-INF:${attrs.join(',')}`, `../${q.id}${letters}/video0.m3u8`);
+  }
+  return out.join('\n') + '\n';
+}
+
 /** Public, browser-safe description of a session. */
 export function publicMedia(session) {
   const { info } = session;
@@ -480,9 +519,17 @@ export async function fetchHls(session, params, rest, signal) {
   });
 }
 
+// Stremio's own torrent engine (TORRENT_ENGINE=stremio, and Huwa's fallback) holds itself back
+// past btDownloadSpeedHardLimit (3.5 MB/s, about 28 Mbit/s, in its default profile): less than
+// a 1080p or 4K remux plays at. These are its "fast" profile's values.
+const FAST_TORRENT = { btDownloadSpeedSoftLimit: 4194304, btDownloadSpeedHardLimit: 39321600, btMaxConnections: 200, btMinPeersForStable: 10 };
+
 /** Settings the watch party needs from the Stremio server (applied when STREMIO_AUTO_TUNE is on). */
 export function wantedSettings(values) {
   const wanted = {};
+  for (const [key, min] of Object.entries(FAST_TORRENT)) {
+    if (typeof values[key] === 'number' && values[key] < min) wanted[key] = min;
+  }
   // One converter per quality must be able to live at the same time.
   if ((values.transcodeConcurrency || 1) < config.stremioTranscodeConcurrency) {
     wanted.transcodeConcurrency = config.stremioTranscodeConcurrency;

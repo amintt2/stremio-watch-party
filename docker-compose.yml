@@ -35,6 +35,12 @@ services:
       # Serveur de streaming pour les apps Stremio, sur la même adresse (torrents par Huwa).
       # 0 = désactivé.
       STREMIO_GATEWAY: ${STREMIO_GATEWAY:-1}
+      # Lecture : morceaux de vidéo gardés en mémoire pour tous les spectateurs (Mo), et
+      # conversions simultanées du serveur Stremio (≈ 6 par film en cours).
+      HLS_CACHE_MB: ${HLS_CACHE_MB:-512}
+      STREMIO_TRANSCODE_CONCURRENCY: ${STREMIO_TRANSCODE_CONCURRENCY:-12}
+      # Proxys devant le serveur (Traefik de Coolify : 1 ; + Cloudflare : 2).
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
     volumes:
       # Comptes, progression, bibliothèque (SQLite).
       - watch-party-data:/app/data

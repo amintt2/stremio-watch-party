@@ -202,3 +202,34 @@ test('a failing app gets the film back later, and the statistics say why', () =>
   assert.ok(hub.attach(session, ['alice']), 'back to the app after the wait');
   assert.equal(hub.state({ sid: 'x', info: {} }, ['bob']), null, 'nobody with an app: nothing to show');
 });
+
+test('an app that fails again soon after getting the film back waits longer each time', () => {
+  let t = 1_000_000;
+  const hub = new EncoderHub({ keys: () => null, now: () => t });
+  const sent = [];
+  const agent = hub.connect({ id: 'k1', uid: 'alice', label: 'PC' }, (m) => sent.push(m), () => {});
+  hub.message(agent, { type: 'hello', version: '1', os: 'windows', encoder: 'NVENC', device: 'RTX 4070', maxHeight: 2160 });
+  const session = { sid: 's1', info: { duration: 600, video: { width: 3840, height: 2160, codec: 'hevc' }, audio: [{}] } };
+  const flap = () => {
+    const job = hub.attach(session, ['alice']);
+    assert.ok(job);
+    t += 30_000;
+    hub.served(job); // works a little…
+    for (let i = 0; i < 3; i++) hub.message(agent, { type: 'error', job: job.id, message: 'trop lent' });
+    assert.equal(session.gpu, null);
+    return sent.filter((m) => m.type === 'stop').at(-1).retryIn;
+  };
+  assert.equal(flap(), 60);
+  t += 61_000;
+  assert.equal(flap(), 120, 'a segment served right after getting it back does not reset the wait');
+  t += 121_000;
+  assert.equal(flap(), 240);
+
+  // Working for a good while: the next failure is forgiven quickly again.
+  t += 241_000;
+  const job = hub.attach(session, ['alice']);
+  t += 6 * 60_000;
+  hub.served(job);
+  for (let i = 0; i < 3; i++) hub.message(agent, { type: 'error', job: job.id, message: 'trop lent' });
+  assert.equal(sent.filter((m) => m.type === 'stop').at(-1).retryIn, 60);
+});
