@@ -27,6 +27,7 @@ import { HEALTH_LABEL, lowerQuality, sourceDetail, sourceProblem, type Health, t
 import { roomPlayback, type Playback } from './playback.ts';
 import type { Player } from './player.ts';
 import { langCode } from './format.ts';
+import { getMusts } from './musts.ts';
 import { SpeechMeter } from './speech.ts';
 import { statsView } from './stats.ts';
 import { subtitleStyleControls } from './subcontrols.ts';
@@ -1300,7 +1301,21 @@ export function createStage(host: StageHost) {
     else subs.render(video.currentTime);
   }, 100);
 
+  // "VF" or "VF + VO" asked under « Lire », but the file has no French track (the source
+  // was mislabelled): say it once per film, rather than leave the viewer looking for it.
+  let noFrenchWarned: string | null = null;
+  function checkFrench() {
+    const sid = state()?.media?.sid || null;
+    if (!sid || noFrenchWarned === sid || player.audioTracks.length < 1) return;
+    const musts = getMusts();
+    if (!musts.includes('vf') && !musts.includes('multi')) return;
+    noFrenchWarned = sid;
+    if (player.audioTracks.some((t) => t.short === 'VF')) return;
+    toast("Cette source n'a pas de piste française, malgré son nom. Choisis-en une autre dans la fiche (liste des sources).");
+  }
+
   player.onChange = () => {
+    checkFrench();
     renderChips();
     renderMenu();
     overlayKey = '\u0000';

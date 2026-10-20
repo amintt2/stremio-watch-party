@@ -4,7 +4,7 @@ import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
-import { pickAudioTrack, audioChipLabel, langCode } from './format.ts';
+import { pickAudioTrack, audioChipLabel, langCode, trackLabel } from './format.ts';
 import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
 import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
 
@@ -340,7 +340,7 @@ export class Player {
       if (next) this.switchQuality(next);
     });
     const updateTracks = () => {
-      this.audioTracks = hls.audioTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Piste ${i + 1}`, short: audioChipLabel(t, i) }));
+      this.audioTracks = hls.audioTracks.map((t, i) => ({ id: i, label: trackLabel(t, `Piste ${i + 1}`), short: audioChipLabel(t, i) }));
       // First time this media's tracks are known: apply the viewer's VF / VO choice.
       if (!this.audioPicked && hls.audioTracks.length) {
         this.audioPicked = true;
@@ -350,7 +350,7 @@ export class Player {
           hls.audioTrack = wanted;
         }
       }
-      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}`, lang: t.lang || undefined }));
+      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: trackLabel(t, `Sous-titres ${i + 1}`), lang: t.lang || undefined }));
       this.onChange();
     };
     hls.on(Hls.Events.MANIFEST_PARSED, () => {

@@ -112,7 +112,8 @@ const LANGS: Record<string, string> = {
   nl: 'Néerlandais', ar: 'Arabe', tr: 'Turc', ru: 'Russe', pl: 'Polonais', ja: 'Japonais', ko: 'Coréen', zh: 'Chinois',
   el: 'Grec', he: 'Hébreu', ro: 'Roumain', sv: 'Suédois', da: 'Danois', no: 'Norvégien', fi: 'Finnois', cs: 'Tchèque',
   hr: 'Croate', sl: 'Slovène', hu: 'Hongrois', bg: 'Bulgare', sr: 'Serbe', uk: 'Ukrainien', vi: 'Vietnamien',
-  th: 'Thaï', id: 'Indonésien', fa: 'Persan', hi: 'Hindi',
+  th: 'Thaï', id: 'Indonésien', fa: 'Persan', hi: 'Hindi', ta: 'Tamoul', te: 'Télougou', kn: 'Kannada',
+  ml: 'Malayalam', bn: 'Bengali', mr: 'Marathi', pa: 'Pendjabi', ur: 'Ourdou', ms: 'Malais', tl: 'Tagalog',
 };
 // ISO 639-2 (OpenSubtitles, file tags) → 639-1.
 const THREE: Record<string, string> = {
@@ -120,6 +121,7 @@ const THREE: Record<string, string> = {
   ara: 'ar', tur: 'tr', rus: 'ru', pol: 'pl', jpn: 'ja', kor: 'ko', chi: 'zh', zho: 'zh', ell: 'el', gre: 'el', heb: 'he',
   ron: 'ro', rum: 'ro', swe: 'sv', dan: 'da', nor: 'no', fin: 'fi', cze: 'cs', ces: 'cs', hrv: 'hr', slv: 'sl', hun: 'hu',
   bul: 'bg', srp: 'sr', scc: 'sr', ukr: 'uk', vie: 'vi', tha: 'th', ind: 'id', per: 'fa', fas: 'fa', hin: 'hi',
+  tam: 'ta', tel: 'te', kan: 'kn', mal: 'ml', ben: 'bn', mar: 'mr', pan: 'pa', urd: 'ur', may: 'ms', msa: 'ms', tgl: 'tl',
 };
 
 /** "fre" / "fra" / "fr" / "fr-FR" → "fr"; unknown codes are kept lower-cased. */
@@ -167,6 +169,17 @@ const NAME_CODES: [RegExp, string][] = [
   [/deutsch|german|allemand/i, 'de'],
   [/italian|italien/i, 'it'],
 ];
+
+/**
+ * Name of a track in the menus: its own title ("English 5.1"), unless that is only a
+ * language code ("tel") — then the language ("Télougou").
+ */
+export function trackLabel(track: { lang?: string | null; name?: string | null }, fallback: string) {
+  const name = (track.name || '').trim();
+  if (name && !/^[a-z]{2,3}([-_][a-z]{2})?$/i.test(name)) return name;
+  const code = name || track.lang || '';
+  return code && code.toLowerCase() !== 'und' ? languageName(code) : fallback;
+}
 
 /**
  * Short label of an audio track for the player's chip: "VF" for French, else the language
