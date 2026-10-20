@@ -9,6 +9,12 @@ function audioContextCtor(): AudioContextCtor | null {
   return window.AudioContext || (window as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext || null;
 }
 
+/** The page has had a gesture (an AudioContext may start without one now). Unknown: yes. */
+function userActivated() {
+  const ua = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+  return ua ? ua.hasBeenActive : true;
+}
+
 /** iOS ignores video.volume (always 1): only Web Audio or mute work there. */
 function volumeSettable() {
   try {
@@ -76,8 +82,9 @@ export class Volume {
     if (!this.settable || !this.Ctx) return null;
     this.analysisWanted = true;
     if (!this.gain) {
-      // Inside a click this still counts as the user's gesture.
-      void this.route();
+      // Inside a click this still counts as the user's gesture. Called from a timer before
+      // any gesture, a context could not start: the next gesture routes (see gesture()).
+      if (userActivated()) void this.route();
       return null;
     }
     if (!this.analyserNode && this.ctx && this.source) {
@@ -122,7 +129,9 @@ export class Volume {
     this.routing = true;
     try {
       const ctx = new this.Ctx();
-      if (ctx.state !== 'running') await ctx.resume().catch(() => {});
+      // resume() may never settle without a gesture: don't wait for it forever (routing
+      // would stay "in progress" and no later gesture could route).
+      if (ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1000))]);
       if (ctx.state !== 'running') {
         // Never route the sound into a context that would stay silent.
         ctx.close().catch(() => {});
@@ -135,6 +144,14 @@ export class Volume {
       this.ctx = ctx;
       this.gain = gain;
       this.source = source;
+      // Once routed, the film's sound only comes out through this context: if the system
+      // suspends it (another app took the sound, the tab came back), start it again at once
+      // rather than stay silent until the next click.
+      const wake = () => {
+        if (ctx.state !== 'running' && ctx.state !== 'closed' && !document.hidden) ctx.resume().catch(() => {});
+      };
+      ctx.addEventListener('statechange', wake);
+      document.addEventListener('visibilitychange', wake);
     } catch {
       this.max = 100;
       this.pct = Math.min(this.pct, 100);

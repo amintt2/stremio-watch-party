@@ -30,6 +30,13 @@ const FAILURE_WINDOW_MS = 120_000;
 /** After a failure the film goes back to the app after this long (doubling, at most RETRY_MAX_MS). */
 const RETRY_MS = 60_000;
 const RETRY_MAX_MS = 10 * 60_000;
+/**
+ * A job that works this long without failing has recovered: the next failure waits the
+ * shortest delay again. Before that, a segment served doesn't reset the delay, or an app
+ * that works a minute then fails would take the film and give it back every minute (each
+ * change reloads the stream of every viewer who gets a conversion: a cut).
+ */
+const STABLE_MS = 5 * 60_000;
 /** The app counts as working while it served a segment this recently. */
 const WORKING_MS = 30_000;
 
@@ -296,6 +303,7 @@ export class EncoderHub {
         sourceToken: randomBytes(18).toString('base64url'),
         servedAt: 0,
         served: 0,
+        startedAt: this.now(),
       };
       this.jobs.set(job.id, job);
       agent.jobs.add(job);
@@ -371,9 +379,10 @@ export class EncoderHub {
   served(job) {
     job.servedAt = this.now();
     job.served++;
-    // It works again: the next failure waits the shortest delay.
-    job.session.gpuDelay = 0;
     job.session.gpuError = null;
+    // Working for a while: the next failure waits the shortest delay.
+    const t = this.now();
+    if (t - job.startedAt >= STABLE_MS && !job.failures.some((x) => t - x < FAILURE_WINDOW_MS)) job.session.gpuDelay = 0;
   }
 
   /**

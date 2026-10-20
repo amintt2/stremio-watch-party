@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedPosition, formatTime, ServerClock } from './sync.ts';
+import { expectedPosition, formatTime, joinLiveJump, loadRetryWait, ServerClock } from './sync.ts';
 import { AutoQuality } from './abr.ts';
 
 test('server clock prefers low-latency samples', () => {
@@ -59,4 +59,15 @@ test('never goes above the top or below the bottom of the ladder', () => {
   assert.equal(bottom.onStall(20_000), null);
   assert.equal(bottom.onStall(30_000), null);
   assert.equal(bottom.current, '480');
+});
+
+test('arriving mid-film: jump to the live only when it costs no second wait, or when far', () => {
+  assert.equal(joinLiveJump(1, false, 4), false, 'close enough');
+  assert.equal(joinLiveJump(3, true, 4), true, 'already loaded there: free');
+  assert.equal(joinLiveJump(3, false, 4), false, 'would load again for 3 s');
+  assert.equal(joinLiveJump(14, false, 4), true, 'far behind: worth the wait');
+});
+
+test('reloads of a stream that shows nothing come less and less often', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 9].map((n) => loadRetryWait(n) / 1000), [30, 60, 120, 240, 240, 240]);
 });

@@ -39,6 +39,20 @@ export function expectedPosition(t: RoomTiming, serverNow: number) {
   return t.duration ? Math.min(Math.max(0, pos), t.duration) : Math.max(0, pos);
 }
 
+/**
+ * Arriving while the film runs: jump to the live? Jumping outside what is loaded means
+ * waiting again (about as long as the first load, the live moving on meanwhile): only
+ * when far behind it (more than `behindS`, where "Revenir au direct" would show).
+ */
+export function joinLiveJump(gap: number, loadedAtTarget: boolean, behindS: number) {
+  return gap > 1.5 && (loadedAtTarget || gap > behindS);
+}
+
+/** Wait before the n-th automatic reload of a stream that shows nothing (0 = first). */
+export function loadRetryWait(retries: number, firstMs = 30_000, maxMs = 4 * 60_000) {
+  return Math.min(firstMs * 2 ** Math.max(0, retries), maxMs);
+}
+
 export function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
   const s = Math.floor(seconds % 60);

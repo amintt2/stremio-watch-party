@@ -3,7 +3,7 @@ import type { RoomMedia, RoomState } from './api.ts';
 import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
-import { expectedPosition } from './sync.ts';
+import { expectedPosition, joinLiveJump, loadRetryWait } from './sync.ts';
 import { pickAudioTrack, audioChipLabel, langCode, trackLabel } from './format.ts';
 import { bufferedAhead, bufferHealth, ewma, fragmentRatio, type Health } from './health.ts';
 import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
@@ -24,8 +24,14 @@ const AUDIO_LANG_KEY = 'wp-audio-lang';
 
 /** Seconds the time may run without a single new picture before we call it a black screen. */
 const NO_PICTURE_S = 4;
-/** No video at all after this long: reload (then a lower quality). */
+/** No video at all after this long: reload (then a lower quality), waiting twice as long each time. */
 const LOAD_RETRY_MS = 30_000;
+const LOAD_RETRY_MAX_MS = 4 * 60_000;
+/** hls.js leaving the viewer's audio track: put back at most this often (each switch cuts the sound). */
+const AUDIO_RESTORES = 2;
+const AUDIO_RESTORE_WINDOW_MS = 10 * 60_000;
+/** Paused: sit at the room's position when only this far from it (smaller: not worth a seek). */
+const PAUSE_SNAP_S = 0.25;
 const NO_PICTURE = "La vidéo ne s'affiche pas sur cet appareil. Essaie une qualité plus basse ou une autre source.";
 
 
@@ -109,6 +115,15 @@ export class Player {
   private audioRestores: number[] = [];
   /** Automatic reloads of this media because nothing came (see watchLoading). */
   private loadRetries = 0;
+  /** Codecs the current stream was asked with (the test can end while it plays). */
+  private loadedCaps: Caps | null = null;
+  /**
+   * The codec test changed what this viewer should receive while a film plays: taken at
+   * the next pause or jump of the room, where a reload is not seen, never mid-scene.
+   */
+  private capsReload = false;
+  /** GPU encoder of the room when the current stream was asked (its qualities are its own). */
+  private loadedEncoder: string | null = null;
 
   constructor(video: HTMLVideoElement, conn: Connection) {
     this.video = video;
@@ -119,13 +134,22 @@ export class Player {
       .catch(() => {});
   }
 
-  /** New codec test result: reload the stream if it changes what this viewer receives. */
+  /**
+   * New codec test result: reload the stream if it changes what this viewer receives, but
+   * never mid-scene (a reload is a cut): before anything was seen, else at the next pause
+   * or jump of the room (capsReload).
+   */
   private setCaps(caps: Caps) {
+    // What the loaded stream is, against what the new result would ask for.
     const before = this.output();
     this.caps = caps;
-    const after = this.output();
+    const q = this.media?.qualities.find((x) => x.id === this.quality);
+    const after = this.media && q ? outputOf(this.media.source, q.maxWidth, caps) : null;
     if (this.quality && before && after && (before.mode !== after.mode || before.codec !== after.codec)) {
-      this.startHls(this.quality, this.localPosition());
+      // Nothing seen yet: reload now. Playing: the current stream works, a reload now would
+      // blank the picture and cut the sound; it waits for the next pause or jump.
+      if (!this.hasPlayed) this.startHls(this.quality, this.localPosition());
+      else this.capsReload = true;
     }
     this.onChange();
   }
@@ -134,7 +158,7 @@ export class Player {
   output() {
     const q = this.media?.qualities.find((x) => x.id === this.quality);
     if (!this.media || !q) return null;
-    return outputOf(this.media.source, q.maxWidth, this.caps);
+    return outputOf(this.media.source, q.maxWidth, this.loadedCaps || this.caps);
   }
 
   /** Decoded pictures so far (null where the browser doesn't tell). */
@@ -205,9 +229,20 @@ export class Player {
   /** "Revenir au direct": jump to where the room is. */
   goLive() {
     if (!this.media || this.video.readyState < 1) return;
-    this.video.currentTime = this.expected();
-    this.afterJump();
+    this.jump(this.expected());
     this.onChange();
+  }
+
+  /**
+   * Goes to a position (room seek, back to the live). The buffer is lost there anyway: a
+   * better quality the automatic choice was keeping for a break is loaded right away.
+   */
+  private jump(position: number) {
+    this.video.currentTime = position;
+    // Moved first: a quality that needs a reload starts from there.
+    const up = this.abr?.atBreak(Date.now());
+    if (up && up !== this.quality) this.switchQuality(up, 'soon');
+    this.afterJump();
   }
 
   /** After a jump: not a stall for the automatic quality, and tell the room soon. */
@@ -255,11 +290,14 @@ export class Player {
     // (pause, play, people coming) leave each viewer where they are.
     const seeked = state.seekId !== undefined ? state.seekId !== this.seekId : !!prev && state.rev !== prev.rev && state.position !== prev.position && !state.running;
     this.seekId = state.seekId;
-    if (seeked && this.video.readyState < 1) this.pendingSeek = true;
-    else if (seeked && Math.abs(this.video.currentTime - this.expected()) > 0.5) {
-      this.video.currentTime = this.expected();
-      this.afterJump();
+    // A new codec test result waits for a moment where a reload is not seen: a jump, a pause.
+    if (this.capsReload && this.quality && this.video.readyState >= 1 && (seeked || (prev?.running && !state.running))) {
+      this.startHls(this.quality, seeked ? this.expected() : this.video.currentTime);
+      if (seeked) this.afterJump();
+      return;
     }
+    if (seeked && this.video.readyState < 1) this.pendingSeek = true;
+    else if (seeked && Math.abs(this.video.currentTime - this.expected()) > 0.5) this.jump(this.expected());
   }
 
   private initialQuality(): string {
@@ -285,6 +323,7 @@ export class Player {
     this.loadRetries = 0;
     this.fatalCount = 0;
     this.fallback = null;
+    this.audioRestores = [];
     this.subtitleTrack = -1;
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
@@ -310,6 +349,7 @@ export class Player {
     this.hls = null;
     this.media = null;
     this.quality = null;
+    this.loadedCaps = null;
     this.video.removeAttribute('src');
     this.video.load();
     this.onChange();
@@ -322,16 +362,19 @@ export class Player {
     this.hls = null;
     this.error = null;
     this.quality = quality;
+    this.loadedCaps = this.caps;
+    this.loadedEncoder = media.encoder?.by || null;
+    this.capsReload = false;
     this.frames = -1;
     this.loadStartedAt = Date.now();
     this.notReadySince = this.loadStartedAt;
     this.conn.send({ t: 'quality', value: quality });
 
-    const url = `/api/hls/${media.sid}/${profileSegment(quality, this.caps)}/master.m3u8`;
+    const base = `/api/hls/${media.sid}/${profileSegment(quality, this.caps)}`;
 
     if (!Hls.isSupported()) {
       // iOS < 17.1 WebView: native HLS.
-      this.video.src = url;
+      this.video.src = `${base}/master.m3u8`;
       this.video.addEventListener('loadedmetadata', () => (this.video.currentTime = startPosition), { once: true });
       this.onChange();
       return;
@@ -350,7 +393,20 @@ export class Player {
       startPosition,
       maxBufferLength: 30,
       maxMaxBufferLength: 120,
-      backBufferLength: 60,
+      // Behind the picture: enough to go back a little. More only fills the browser's
+      // buffer quota (about 150 MB) at high bitrates, and a full buffer means reloads.
+      backBufferLength: 30,
+      // Audio and video come from separate converters: their fragments do not end on the
+      // same sample. Holes this small are stepped over instead of stopping the picture.
+      maxBufferHole: 0.5,
+      // More nudges before a stall becomes fatal (a fatal error rebuilds the player).
+      nudgeMaxRetry: 6,
+      appendErrorMaxRetry: 5,
+      // The quality is chosen here (abr.ts): never fetch another quality to measure the
+      // network (each one is a converter, an ffmpeg, on the server).
+      testBandwidth: false,
+      // Ask for the first fragment while the media is still being attached.
+      startFragPrefetch: true,
       manifestLoadPolicy: slow,
       playlistLoadPolicy: slow,
       fragLoadPolicy: slow,
@@ -359,13 +415,21 @@ export class Player {
 
     hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
       if (data.frag.type !== 'main') return;
+      // After a change of quality, fragments of the previous one still arrive: not counted.
+      const level = this.levelOf(this.quality);
+      if (level >= 0 && data.frag.level !== level) return;
       const { loaded, loading } = data.frag.stats;
       const r = fragmentRatio(loaded, loading.end - loading.start, data.frag.duration);
       if (r !== null) this.ratio = ewma(this.ratio, r);
-      if (!this.abr) return;
+      if (!this.abr || this.hls !== hls) return;
+      // A switch reloads the stream: up only at a break (see AbrContext), down only when the
+      // buffer won't carry the playback.
+      const v = this.video;
+      const upNow = !this.hasPlayed || v.paused || !this.state?.running;
       const next = this.abr.onFragment(
         { bytes: loaded, loadMs: loading.end - loading.start, durationS: data.frag.duration },
-        Date.now()
+        Date.now(),
+        { ahead: this.bufferAhead(), upNow }
       );
       if (next) this.switchQuality(next);
     });
@@ -384,6 +448,13 @@ export class Player {
       this.onChange();
     };
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      // Every quality in one master (ladder.m3u8): start on this viewer's and stay on the
+      // ones chosen here (hls.js' own ABR off). One variant (GPU encoder): nothing to pin.
+      const level = this.levelOf(this.quality);
+      if (level >= 0) {
+        hls.startLevel = level;
+        hls.loadLevel = level;
+      }
       // Cues load into a hidden track: the stage draws them in the viewer's style.
       hls.subtitleDisplay = false;
       updateTracks();
@@ -392,18 +463,31 @@ export class Player {
       if (this.audioTrack >= 0 && this.audioTrack < hls.audioTracks.length && hls.audioTrack !== this.audioTrack) hls.audioTrack = this.audioTrack;
       if (this.subtitleTrack >= 0) hls.subtitleTrack = this.subtitleTrack;
     });
+    // hls.js leaves a quality that fails to load for another one (and turns its own ABR
+    // back on): stay there, on manual, and let the automatic quality start from there.
+    hls.on(Hls.Events.LEVEL_SWITCHING, (_e, data) => {
+      if (this.hls !== hls || hls.levels.length < 2) return;
+      if (hls.autoLevelEnabled) hls.loadLevel = data.level;
+      const name = hls.levels[data.level]?.name;
+      if (name && name !== this.quality && this.ladder.includes(name)) {
+        this.quality = name;
+        this.conn.send({ t: 'quality', value: name });
+        if (this.abr) this.abr = new AutoQuality(this.ladder, name, Date.now());
+        this.onChange();
+      }
+    });
     hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, updateTracks);
     // hls.js changes track by itself when the chosen one fails to load for a moment: go
     // back to the viewer's (a few times a minute at most, then accept and say so).
     hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => {
       if (this.hls !== hls || data.id === this.audioTrack || this.audioTrack >= hls.audioTracks.length) return;
       const now = Date.now();
-      this.audioRestores = this.audioRestores.filter((t) => now - t < 60_000);
-      if (this.audioRestores.length < 3) {
+      this.audioRestores = this.audioRestores.filter((t) => now - t < AUDIO_RESTORE_WINDOW_MS);
+      if (this.audioRestores.length < AUDIO_RESTORES) {
         this.audioRestores.push(now);
         const wanted = this.audioTrack;
         setTimeout(() => {
-          if (this.hls === hls && this.audioTrack === wanted && hls.audioTrack !== wanted) hls.audioTrack = wanted;
+          if (this.hls === hls && this.audioTrack === wanted && hls.audioTrack !== wanted) hls.nextAudioTrack = wanted;
         }, 2000);
       } else {
         const lost = this.audioTracks[this.audioTrack]?.label;
@@ -434,19 +518,42 @@ export class Player {
       }
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
       else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad(this.localPosition());
-      else this.startHls(quality, this.localPosition());
+      else this.startHls(this.quality || quality, this.localPosition());
     });
 
-    hls.loadSource(url);
+    hls.loadSource(`${base}/ladder.m3u8`);
     hls.attachMedia(this.video);
     this.onChange();
   }
 
-  private switchQuality(quality: string) {
+  /** Index of this quality in the current player's levels (-1: only one, or not there). */
+  private levelOf(quality: string | null): number {
+    const levels = this.hls?.levels;
+    if (!quality || !levels || levels.length < 2) return -1;
+    return levels.findIndex((l) => l.name === quality);
+  }
+
+  /**
+   * Another quality, from where this viewer is. Inside the same player when it has every
+   * quality (ladder.m3u8): no reload, the picture and the sound go on. "smooth" (automatic
+   * quality) keeps what is buffered and changes after it; "soon" (the viewer's choice)
+   * changes within a fragment; "reload" rebuilds the player (nothing plays anyway).
+   */
+  private switchQuality(quality: string, how: 'smooth' | 'soon' | 'reload' = 'smooth') {
     if (quality === this.quality) return;
     this.graceUntil = Date.now() + 8000;
     this.ratio = null;
-    // Same picture, another quality: from where this viewer is, not from the live.
+    // The qualities in this player were listed without the GPU encoder that came since.
+    const stale = (this.media?.encoder?.by || null) !== this.loadedEncoder;
+    const level = how === 'reload' || stale ? -1 : this.levelOf(quality);
+    if (this.hls && level >= 0) {
+      this.quality = quality;
+      this.conn.send({ t: 'quality', value: quality });
+      if (how === 'soon') this.hls.nextLevel = level;
+      else this.hls.loadLevel = level;
+      this.onChange();
+      return;
+    }
     this.startHls(quality, this.localPosition());
   }
 
@@ -461,14 +568,17 @@ export class Player {
     } else {
       this.abr = null;
       // The closest quality this film has (4K asked, 1080p at most here).
-      this.switchQuality(this.initialQuality());
+      this.switchQuality(this.initialQuality(), 'soon');
     }
   }
 
   setAudioTrack(id: number) {
     this.audioTrack = id;
+    this.audioRestores = [];
     if (this.hls) {
-      this.hls.audioTrack = id;
+      // Without a gap: the other track loads while this one plays, then takes over (the
+      // plain audioTrack setter empties the sound buffer first: silence until it reloads).
+      this.hls.nextAudioTrack = id;
       // Remember the choice as a language, so the next film starts in it too.
       const tracks = this.hls.audioTracks;
       if (tracks.length > 1) {
@@ -518,17 +628,21 @@ export class Player {
 
   /**
    * Nothing arrives at all (the room runs, the screen stays black): reload once after
-   * 30 s, then go one quality down (lighter for the server to prepare) after 30 s more.
+   * 30 s, then go one quality down (lighter for the server to prepare) after 60 s more,
+   * then keep trying every 2, then 4 minutes (loadRetryWait).
    */
   private watchLoading(v: HTMLVideoElement, now: number) {
-    if (!this.state?.running || v.readyState >= 1 || !this.quality || now - this.loadStartedAt < LOAD_RETRY_MS) return;
+    // Not over an error the viewer is reading (the reload would hide it, then it comes back),
+    // and less and less often: each reload starts the server's work on it again.
+    const wait = loadRetryWait(this.loadRetries, LOAD_RETRY_MS, LOAD_RETRY_MAX_MS);
+    if (this.error || !this.state?.running || v.readyState >= 1 || !this.quality || now - this.loadStartedAt < wait) return;
     this.loadRetries++;
     const lower = this.ladder[this.ladder.indexOf(this.quality) + 1];
     if (this.loadRetries >= 2 && lower) {
       this.fallback = `Rien n'arrivait en ${this.quality === '2160' ? '4K' : `${this.quality}p`} : passage en ${lower === '2160' ? '4K' : `${lower}p`}`;
       // Auto quality starts again from there (it would climb straight back otherwise).
       if (this.abr) this.abr = new AutoQuality(this.ladder, lower, now);
-      this.switchQuality(lower);
+      this.switchQuality(lower, 'reload');
     } else {
       this.startHls(this.quality, this.localPosition());
     }
@@ -596,8 +710,11 @@ export class Player {
       // yet): start at the live, once, before anything was seen (nothing to lose).
       if (!this.hasPlayed && !this.joinedLive && v.readyState >= 1 && !v.seeking && this.conn.clock.ready) {
         this.joinedLive = true;
-        if (Math.abs(this.expected() - v.currentTime) > 1.5) {
-          v.currentTime = this.expected();
+        const target = this.expected();
+        const gap = Math.abs(target - v.currentTime);
+        // A jump outside what is loaded means loading again (see joinLiveJump).
+        if (joinLiveJump(gap, bufferedAhead(this.ranges(), target, 0) > 1, BEHIND_S)) {
+          v.currentTime = target;
           this.afterJump();
         }
       }
@@ -624,16 +741,24 @@ export class Player {
         this.stallSince = 0;
         this.stalled = false;
       }
-      if (!v.paused && v.readyState >= 3 && v.currentTime > 1) this.hasPlayed = true;
+      if (!v.paused && v.readyState >= 3 && v.currentTime > 1) {
+        this.hasPlayed = true;
+        // It plays: a later load that hangs starts the retries from the short wait again.
+        this.loadRetries = 0;
+      }
     } else if (!s.running) {
       // Paused (or the start of the film waits for someone): everyone stops where they are.
       if (!v.paused) v.pause();
       if (v.playbackRate !== 1) v.playbackRate = 1;
+      // A better quality kept for a break: now (it loads during the pause).
+      const up = this.hasPlayed && this.state?.paused ? this.abr?.atBreak(now) : null;
+      if (up && up !== this.quality) this.switchQuality(up);
       // Sit at the room's position: before playing anything, and after a pause when only the
       // pause message's delay separates us (it would add up pause after pause). Those really
-      // behind (more than 2 s) stay where they are.
+      // behind (more than 2 s) stay where they are. Under PAUSE_SNAP_S, not worth a seek
+      // (it can't add up beyond that).
       const gap = Math.abs(v.currentTime - this.expected());
-      if (!v.seeking && v.readyState >= 1 && gap > (this.hasPlayed ? 0.1 : 0.25) && (!this.hasPlayed || gap < 2)) v.currentTime = this.expected();
+      if (!v.seeking && v.readyState >= 1 && gap > PAUSE_SNAP_S && (!this.hasPlayed || gap < 2)) v.currentTime = this.expected();
       this.stallSince = 0;
       this.stalled = false;
     }

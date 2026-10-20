@@ -428,10 +428,18 @@ export function createStage(host: StageHost) {
   // Auto-sync listens to the film's voices (this viewer's own playback, nothing sent).
   const speech = new SpeechMeter(video, () => volume.analyser());
   const wantsAudioSync = () => !!subs.selected && subs.auto && !['file', 'manual', 'reference'].includes(subs.method);
+  // The comparison costs up to ~50 ms on a fast computer with 20 minutes heard (several
+  // times that on a TV or a phone): only with enough new sound since the last one, and
+  // rarely once the timing is found (it only checks it still holds).
+  let listenedAt = 0;
   setInterval(() => {
     if (wantsAudioSync()) {
       speech.start();
-      subs.listen(speech.samples);
+      const fresh = speech.measured - listenedAt;
+      if (fresh >= (subs.method === 'audio' ? 300 : 50)) {
+        listenedAt = speech.measured;
+        subs.listen(speech.samples);
+      }
     } else speech.stop();
   }, 3000);
   subs.onAutoSync = (message) => toast(message);

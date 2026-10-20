@@ -77,10 +77,13 @@ export const config = {
   stremioGateway: process.env.STREMIO_GATEWAY !== '0',
   // Apply the settings below to the Stremio server at startup (STREMIO_AUTO_TUNE=0 to disable).
   stremioAutoTune: process.env.STREMIO_AUTO_TUNE !== '0',
-  stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 8),
+  stremioTranscodeConcurrency: Number(process.env.STREMIO_TRANSCODE_CONCURRENCY || 12),
   // Largest torrent file the server will download (its disk is limited; a 4K remux is
   // 50–80 GB). Unset or 0 = no limit. Debrid/HTTP sources use no disk and are not limited.
   maxTorrentBytes: Number(process.env.MAX_TORRENT_GB) > 0 ? Math.round(Number(process.env.MAX_TORRENT_GB) * 1024 ** 3) : null,
+  // Memory kept for the HLS segments relayed from the Stremio converters (MB, least recently
+  // used dropped first): viewers behind the others read them from here (hlsRelay.js).
+  hlsCacheBytes: (Number(process.env.HLS_CACHE_MB) > 0 ? Number(process.env.HLS_CACHE_MB) : 512) * 1024 ** 2,
   stremioCacheBytes: process.env.STREMIO_CACHE_GB
     ? Math.round(Number(process.env.STREMIO_CACHE_GB) * 1024 ** 3)
     : null,

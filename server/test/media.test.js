@@ -18,6 +18,7 @@ import {
   wantedSettings,
   peerSources,
   rewritePlaylist,
+  ladderPlaylist,
 } from '../src/media.js';
 import http from 'node:http';
 import { describeStream, parseSize, streamLanguages, tooBigForServer } from '../src/addons.js';
@@ -155,8 +156,15 @@ test('VP9 sources are copied for viewers that support them', () => {
 });
 
 test('Stremio server tuning only asks for what is missing', () => {
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 8 });
-  assert.deepEqual(wantedSettings({ transcodeConcurrency: 8, cacheSize: null }), {});
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 1, cacheSize: 5 * 1024 ** 3 }), { transcodeConcurrency: 12 });
+  assert.deepEqual(wantedSettings({ transcodeConcurrency: 12, cacheSize: null }), {});
+});
+
+test("Stremio's torrent engine gets its fast profile: the default one stalls on a remux", () => {
+  const defaults = { transcodeConcurrency: 12, cacheSize: null, btDownloadSpeedSoftLimit: 2621440, btDownloadSpeedHardLimit: 3670016, btMaxConnections: 55, btMinPeersForStable: 5 };
+  assert.deepEqual(wantedSettings(defaults), { btDownloadSpeedSoftLimit: 4194304, btDownloadSpeedHardLimit: 39321600, btMaxConnections: 200, btMinPeersForStable: 10 });
+  const ultra = { ...defaults, btDownloadSpeedSoftLimit: 8388608, btDownloadSpeedHardLimit: 78643200, btMaxConnections: 400, btMinPeersForStable: 10 };
+  assert.deepEqual(wantedSettings(ultra), {}, 'a faster profile chosen by the operator stays');
 });
 
 test('ten viewers on every quality need at most 5 converters per media', () => {
@@ -298,4 +306,40 @@ test('played file name and size, from the torrent or the addon hints', () => {
   );
   assert.deepEqual(fileFromStream({}, 'https://cdn/dl/Film%202024.mp4?token=1'), { name: 'Film 2024.mp4', size: null, hash: null });
   assert.deepEqual(fileFromStream({ behaviorHints: { videoHash: 'nope' } }, 'https://cdn/resolve/abc'), { name: null, size: null, hash: null });
+});
+
+test('ladder playlist: one variant per quality, same audio group, each on its converter', () => {
+  const master = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    '#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="video",NAME="Video",AUTOSELECT=YES,DEFAULT=YES',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="VFF",LANGUAGE="fre",AUTOSELECT=YES,DEFAULT=YES,URI="audio0.m3u8"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="eng",AUTOSELECT=YES,DEFAULT=NO,URI="audio1.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=164000,VIDEO="video",AUDIO="audio",NAME="Main"',
+    'video0.m3u8',
+  ].join('\n');
+  const info = { ...hevc4k, bitrate: 20_000_000 };
+  const text = ladderPlaylist(master, 's', info, { hevc: true });
+  const lines = text.trim().split('\n');
+  assert.ok(!lines.some((l) => l.includes('TYPE=VIDEO')));
+  assert.equal(lines.filter((l) => l.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')).length, 2);
+  const variants = lines.filter((l) => l.startsWith('#EXT-X-STREAM-INF'));
+  assert.deepEqual(
+    lines.filter((l) => l && !l.startsWith('#')),
+    ['../2160h/video0.m3u8', '../1080h/video0.m3u8', '../720h/video0.m3u8', '../480h/video0.m3u8']
+  );
+  // The copy says the file's bitrate, conversions their estimate; every one the audio group.
+  assert.match(variants[0], /BANDWIDTH=20000000,RESOLUTION=3840x2160,NAME="2160",AUDIO="audio"/);
+  assert.match(variants[1], /BANDWIDTH=8000000,RESOLUTION=1920x1080,NAME="1080"/);
+  assert.match(variants[3], /RESOLUTION=854x480/);
+});
+
+test('ladder playlist: qualities served by the same converter appear once', () => {
+  // A 1080p H.264 file: 1080 is the copy; nothing above it is offered.
+  const text = ladderPlaylist('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nvideo0.m3u8', 's', h264p1080, {});
+  assert.deepEqual(
+    text.trim().split('\n').filter((l) => l && !l.startsWith('#')),
+    ['../1080/video0.m3u8', '../720/video0.m3u8', '../480/video0.m3u8']
+  );
+  assert.ok(!text.includes('AUDIO='));
 });

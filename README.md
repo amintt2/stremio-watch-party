@@ -198,6 +198,25 @@ Discord (chaque ami)                   Ton serveur (PC ou VPS)
   ton serveur, c'est 1 transcodage par qualité, pas 1 par personne.
 - Pistes audio et sous-titres texte du fichier : sélectionnables par chacun.
 
+### Lecture fluide à plusieurs
+
+- **Relais HLS** (`server/src/hlsRelay.js`) : le serveur Stremio ne prépare qu'un morceau
+  à la fois par conversion, et une demande d'un autre morceau annule celle en cours. Avec
+  plusieurs spectateurs à des positions différentes, ils s'annulaient sans cesse (blocages,
+  son coupé). Le relais garde les morceaux en mémoire (`HLS_CACHE_MB`, 512 par défaut),
+  ne demande qu'un morceau à la fois par conversion, dans l'ordre, et prépare les suivants.
+  Il garde aussi les conversions en vie pendant une pause (Stremio les jette après 2 min),
+  évite l'image figée après un saut dans un MKV, et refait un morceau audio devenu silence
+  (source coupée).
+- **Changer de qualité sans coupure** : toutes les qualités du film sont dans une seule
+  liste (`ladder.m3u8`). Le lecteur passe de l'une à l'autre sans se recharger : ce qui est
+  chargé continue de jouer, l'image change ensuite (comme YouTube). Pareil pour la langue
+  audio.
+- **Moins de coupures inutiles** : la qualité auto ne baisse que si le tampon se vide
+  vraiment, ne remonte qu'à une pause ou un saut, et ne fait plus de va-et-vient ; le test
+  des codecs, les relances « rien n'arrive » et le retour de piste audio ne rechargent plus
+  en pleine scène.
+
 ### Pas d'écran noir
 
 Un appareil peut annoncer qu'il lit le HEVC (ou l'AV1, le VP9) sans l'afficher : c'est le
@@ -539,11 +558,10 @@ Pour l'ouvrir dans Discord pendant le dev, mappe `/` vers un tunnel HTTPS qui po
 Au démarrage, le backend règle lui-même le serveur Stremio (`STREMIO_AUTO_TUNE=0` pour
 désactiver) :
 
-- **`transcodeConcurrency` = 8** (`STREMIO_TRANSCODE_CONCURRENCY`) : par défaut à 1, ce qui
+- **`transcodeConcurrency` = 12** (`STREMIO_TRANSCODE_CONCURRENCY`) : par défaut à 1, ce qui
   détruit le transcodage des autres qualités, donc un ami en 720p coupe celui en 1080p. Un
-  film utilise au plus 1 copie + 4 tailles de transcodage + 1 conversion par piste audio
-  écoutée (souvent 2 : VF et VO), quel que soit le nombre de spectateurs : 8 couvre donc
-  10 personnes et plus.
+  film utilise environ 6 conversions (1 copie, 1 ou 2 tailles, 1 par piste audio écoutée,
+  relances), quel que soit le nombre de spectateurs : 12 couvre deux salles en même temps.
 - **Peu de place sur le disque** : seuls les **torrents** prennent de la place (le fichier
   téléchargé reste en cache). Le HLS n'est pas stocké, les liens **débrid** n'utilisent pas de
   disque. Trois réglages :

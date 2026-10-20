@@ -29,6 +29,8 @@ export function voiceLevel(spectrum: Float32Array, sampleRate: number): number |
 export class SpeechMeter {
   /** Step index (video time / SPEECH_STEP) → level. */
   readonly samples = new Map<number, number>();
+  /** Measurements taken so far (never goes back: tells when there is something new). */
+  measured = 0;
   private timer: number | null = null;
   private buffer: Float32Array<ArrayBuffer> | null = null;
 
@@ -70,6 +72,7 @@ export class SpeechMeter {
     const level = voiceLevel(this.buffer, node.context.sampleRate);
     if (level === null) return;
     this.samples.set(Math.round(v.currentTime / SPEECH_STEP), level);
+    this.measured++;
     if (this.samples.size > MAX_SAMPLES) {
       // Forget what is farthest from where we are now.
       const here = v.currentTime / SPEECH_STEP;
