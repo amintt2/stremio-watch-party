@@ -129,6 +129,24 @@ test('Torrentio-style stream descriptions are parsed', () => {
   assert.ok(!JSON.stringify(d).includes('aaaa'), 'no infoHash leaks to the browser');
 });
 
+test('AIOStreams "prism" labels: FHD/HD in the name, 📦 size, 🌱 seeders', () => {
+  const aio = (name, description, extra = {}) => describeStream({ name, description, infoHash: 'b'.repeat(40), ...extra }, 'AIOStreams');
+  const fhd = aio('🚀 FHD', '🎬 Part Two (2024) \n📦 7.19 GB 📊 5.74 Mbps 🌱 42 \n🏷️ HD 📡 CineDoze \n⚠️ P2P 🔍Comet ', {
+    behaviorHints: { filename: 'Dune.Part.Two.2024.1080p.WEB.mkv' },
+  });
+  assert.equal(fhd.quality, '1080p');
+  assert.equal(fhd.size, '7.19 GB');
+  assert.equal(fhd.seeders, 42);
+  assert.equal(fhd.release, 'Dune.Part.Two.2024.1080p.WEB.mkv');
+  assert.equal(aio('💿 HD', '🏷️ HD').quality, '720p');
+  assert.equal(aio('🔥4K UHD', '').quality, '4K');
+  assert.equal(aio('✨ QHD', '').quality, '1440p');
+  assert.equal(aio('💩 Low Quality', '').quality, '480p');
+  assert.equal(aio('💩 Unknown', '🏷️ HD 📡 X').quality, null, 'HD in the description is a tag, not a resolution');
+  assert.equal(aio('🚀 FHD', 'x\n⚡Ready (RD) 🔍Comet').cached, true);
+  assert.equal(aio('🚀 FHD', 'x\n❌ Not Ready (RD)').cached, false);
+});
+
 test('debrid links are flagged as cached and keep their URL private', () => {
   const d = describeStream(
     { name: '[RD+] Torrentio\n1080p', title: 'Show.S01E01.1080p\n👤 50', url: 'https://x/realdebrid/SECRET/f.mkv' },
