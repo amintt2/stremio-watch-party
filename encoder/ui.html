@@ -172,7 +172,10 @@ let editingRepo = false;
 async function refresh() {
   let s;
   try {
-    s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+    const r = await fetch('/api/status', { cache: 'no-store' });
+    // The app restarted (new session): the page asks to be reopened from the app.
+    if (r.status === 403) return location.reload();
+    s = await r.json();
   } catch {
     $('dot').className = 'dot bad';
     $('title').textContent = 'Encodeur arrêté';

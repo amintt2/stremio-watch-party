@@ -250,7 +250,14 @@ func fetch(ctx context.Context, url, key string, limit int64, progress func(done
 }
 
 // installUpdate downloads, checks and puts the new build in place, then restarts into it.
+// installing: one update at a time (the window's button pressed twice, the updater at once).
+var installing sync.Mutex
+
 func installUpdate(ctx context.Context) error {
+	if !installing.TryLock() {
+		return errors.New("mise à jour déjà en cours")
+	}
+	defer installing.Unlock()
 	updateMu.Lock()
 	rel := available
 	updateMu.Unlock()

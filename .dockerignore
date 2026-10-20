@@ -4,4 +4,5 @@ client/dist
 encoder/dist
 data
 .env
+**/.env*
 .git

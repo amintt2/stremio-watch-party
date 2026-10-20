@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Start at login on Linux desktops: an XDG autostart entry.
@@ -32,9 +33,15 @@ func setAutoStart(on bool) error {
 	if err != nil {
 		return err
 	}
-	entry := fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Watch Party — Encodeur GPU\nExec=%q -background\nX-GNOME-Autostart-enabled=true\n", exe)
+	entry := fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Watch Party — Encodeur GPU\nExec=%s -background\nX-GNOME-Autostart-enabled=true\n", desktopQuote(exe))
 	if err := os.MkdirAll(filepath.Dir(desktopEntryPath()), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(desktopEntryPath(), []byte(entry), 0o644)
+}
+
+// desktopQuote: a path as the Exec line of a .desktop file wants it (Desktop Entry spec).
+func desktopQuote(path string) string {
+	r := strings.NewReplacer(`\\`, `\\\\`, `"`, `\\"`, "`", "\\`", `$`, `\\$`, "%", "%%", "\n", " ")
+	return `"` + r.Replace(path) + `"`
 }

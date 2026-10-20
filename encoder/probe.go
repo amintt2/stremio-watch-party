@@ -117,8 +117,14 @@ func probeEncoders(ffmpeg, forced string) (*Encoder, error) {
 	return nil, errors.New("aucun encodeur H.264 ne fonctionne avec ce ffmpeg")
 }
 
+// quiet: no console window flashing on Windows (the app has none of its own).
+func quiet(cmd *exec.Cmd) *exec.Cmd {
+	hideWindow(cmd)
+	return cmd
+}
+
 func ffmpegEncoders(ffmpeg string) string {
-	out, _ := exec.Command(ffmpeg, "-hide_banner", "-encoders").Output()
+	out, _ := quiet(exec.Command(ffmpeg, "-hide_banner", "-encoders")).Output()
 	return string(out)
 }
 
@@ -149,18 +155,18 @@ func gpuName() string {
 	var out []byte
 	switch runtime.GOOS {
 	case "windows":
-		out, _ = exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name").Output()
+		out, _ = quiet(exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name")).Output()
 	case "darwin":
-		raw, _ := exec.Command("system_profiler", "SPDisplaysDataType").Output()
+		raw, _ := quiet(exec.Command("system_profiler", "SPDisplaysDataType")).Output()
 		for _, line := range strings.Split(string(raw), "\n") {
 			if strings.Contains(line, "Chipset Model:") {
 				return strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
 			}
 		}
 	default:
-		out, _ = exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader").Output()
+		out, _ = quiet(exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")).Output()
 		if len(out) == 0 {
-			raw, _ := exec.Command("lspci").Output()
+			raw, _ := quiet(exec.Command("lspci")).Output()
 			for _, line := range strings.Split(string(raw), "\n") {
 				if strings.Contains(line, "VGA") || strings.Contains(line, "3D controller") {
 					if parts := strings.SplitN(line, ": ", 2); len(parts) == 2 {

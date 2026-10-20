@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,54 @@ type UI struct {
 	pair  chan Settings
 	retry chan struct{}
 	quit  func()
+
+	// One-time links (?k=) that open the window: the page and its token are only given to
+	// a browser opened by the app itself, never to whatever asks this port.
+	mu       sync.Mutex
+	links    map[string]time.Time
+	lastShow time.Time
+}
+
+const uiCookie = "wpe_ui"
+
+// open shows the window in the browser, through a fresh one-time link.
+func (ui *UI) open() {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	k := hex.EncodeToString(b)
+	ui.mu.Lock()
+	if ui.links == nil {
+		ui.links = map[string]time.Time{}
+	}
+	for old, at := range ui.links {
+		if time.Since(at) > 2*time.Minute {
+			delete(ui.links, old)
+		}
+	}
+	ui.links[k] = time.Now()
+	ui.mu.Unlock()
+	openBrowser(ui.url + "?k=" + k)
+}
+
+func (ui *UI) useLink(k string) bool {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	at, ok := ui.links[k]
+	delete(ui.links, k)
+	return ok && time.Since(at) < 2*time.Minute
+}
+
+func (ui *UI) hasCookie(r *http.Request) bool {
+	c, err := r.Cookie(uiCookie)
+	return err == nil && c.Value == ui.token
+}
+
+// showOther asks the copy already running (at url) to open its window.
+func showOther(url string) {
+	client := http.Client{Timeout: 2 * time.Second}
+	if resp, err := client.Post(url+"api/show", "application/json", strings.NewReader("{}")); err == nil {
+		resp.Body.Close()
+	}
 }
 
 // startUI listens on the window's port. When another copy of the app already runs there,
@@ -84,15 +133,46 @@ func (ui *UI) close() {
 func (ui *UI) routes(host string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:")
+		if k := r.URL.Query().Get("k"); k != "" {
+			if ui.useLink(k) {
+				http.SetCookie(w, &http.Cookie{Name: uiCookie, Value: ui.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			}
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if !ui.hasCookie(r) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(lockedPage))
+			return
+		}
 		_, _ = w.Write([]byte(strings.Replace(uiPage, "__TOKEN__", ui.token, 1)))
+	})
+	// Anyone on this PC may ask for the window to open (the second launch, a stale tab):
+	// it opens through a new one-time link, in the browser, nothing more.
+	mux.HandleFunc("POST /api/show", func(w http.ResponseWriter, r *http.Request) {
+		ui.mu.Lock()
+		ok := time.Since(ui.lastShow) > 3*time.Second
+		if ok {
+			ui.lastShow = time.Now()
+		}
+		ui.mu.Unlock()
+		if ok {
+			ui.open()
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"app": "watchparty-encoder", "version": version})
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		if !ui.hasCookie(r) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
 		writeJSON(w, status.snapshot())
 	})
 	mux.HandleFunc("POST /api/prefs", func(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +265,7 @@ func (ui *UI) routes(host string) http.Handler {
 			http.Error(w, "forbidden", 403)
 			return
 		}
-		if r.Method == http.MethodPost && r.Header.Get("X-Token") != ui.token {
+		if r.Method == http.MethodPost && r.URL.Path != "/api/show" && (r.Header.Get("X-Token") != ui.token || !ui.hasCookie(r)) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -193,6 +273,11 @@ func (ui *UI) routes(host string) http.Handler {
 		mux.ServeHTTP(w, r)
 	})
 }
+
+const lockedPage = `<!doctype html><html lang="fr"><meta charset="utf-8"><title>Encodeur GPU</title>
+<body style="font:15px system-ui;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
+<div style="text-align:center;max-width:420px"><p>Cette page s'ouvre depuis l'app (icône Watch Party près de l'horloge, ou en relançant l'encodeur).</p>
+<button style="font:inherit;padding:8px 16px" onclick="fetch('/api/show',{method:'POST'})">Ouvrir la fenêtre</button></div></body></html>`
 
 func pokeUpdater() {
 	select {

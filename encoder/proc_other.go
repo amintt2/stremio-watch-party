@@ -13,3 +13,8 @@ func hideWindow(cmd *exec.Cmd) {}
 func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
+
+// adopt: on Windows, ties a started ffmpeg to the app (see proc_windows.go).
+func adopt(cmd *exec.Cmd) {}
+
+func showFatal(string) {}

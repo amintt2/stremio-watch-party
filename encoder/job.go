@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,34 @@ type JobSpec struct {
 		HDR    bool    `json:"hdr"`
 	} `json:"video"`
 	Audio int `json:"audio"`
+}
+
+var (
+	jobIDRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	sourceRe    = regexp.MustCompile(`^/api/encoder/source/[A-Za-z0-9_-]{1,64}(\?t=[A-Za-z0-9_-]{1,128})?$`)
+	renditionRe = regexp.MustCompile(`^\d{3,4}$`)
+)
+
+// validSpec: what the server sends goes into file names and ffmpeg's command line.
+func validSpec(s JobSpec) bool {
+	return jobIDRe.MatchString(s.ID) && sourceRe.MatchString(s.Source) && s.Duration >= 0 && s.Segment >= 0 && s.Segment <= 60
+}
+
+func validWant(m ServerMessage) bool {
+	if m.Start < 0 || m.Until < m.Start || len(m.Video) > 8 || len(m.Audio) > 16 {
+		return false
+	}
+	for _, v := range m.Video {
+		if !renditionRe.MatchString(v.ID) || v.Width <= 0 || v.Width > 8192 || v.Height <= 0 || v.Height > 8192 || v.Bitrate <= 0 || v.Bitrate > 200_000_000 {
+			return false
+		}
+	}
+	for _, a := range m.Audio {
+		if a < 0 || a > 63 {
+			return false
+		}
+	}
+	return true
 }
 
 // Rendition is one video quality to make.
@@ -226,6 +255,17 @@ func (j *Job) encodeOnce(ctx context.Context, r *run) (int, bool) {
 	return 0, false
 }
 
+// removeOldTemp: segment folders left by an app that was killed (only this copy runs,
+// so anything older than an hour is nobody's).
+func removeOldTemp() {
+	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "watchparty-encoder-*"))
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() && time.Since(fi.ModTime()) > time.Hour {
+			_ = os.RemoveAll(d)
+		}
+	}
+}
+
 // encode runs ffmpeg for one run. Returns how many segments were sent.
 func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	dir, err := os.MkdirTemp("", "watchparty-encoder-")
@@ -243,6 +283,7 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	defer kill()
 	cmd := exec.CommandContext(ffCtx, j.agent.ffmpeg, args...)
 	hideWindow(cmd)
+	own(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, _ := cmd.StdoutPipe()
@@ -256,6 +297,7 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
+	adopt(cmd)
 	go j.readProgress(stdout)
 
 	var sentCount atomic.Int64
@@ -401,12 +443,12 @@ func (j *Job) args(r *run, dir string, hybrid bool) []string {
 	if startTime > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", startTime))
 	}
-	src := j.agent.settings.Server + j.spec.Source
-	if strings.HasPrefix(src, "http") {
-		args = append(args,
-			"-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10", "-rw_timeout", "60000000",
-			"-headers", "Authorization: Bearer "+j.agent.settings.Key+"\r\n")
-	}
+	// The source URL carries a token for this film only (?t=): the pairing key never goes on
+	// ffmpeg's command line, where other programs on the PC could read it.
+	src := strings.TrimSuffix(j.agent.settings.Server, "/") + j.spec.Source
+	args = append(args,
+		"-protocol_whitelist", "http,https,tcp,tls,crypto",
+		"-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "10", "-rw_timeout", "60000000")
 	args = append(args, "-i", src)
 
 	// Video: one decode, split into every rendition.
