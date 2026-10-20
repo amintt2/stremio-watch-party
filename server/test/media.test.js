@@ -203,7 +203,13 @@ test('source languages come from the release name', () => {
   assert.deepEqual(streamLanguages('Dune.2021.FRENCH.1080p'), ['VF']);
   assert.deepEqual(streamLanguages('Dune 2021 VOSTFR 1080p'), ['VOSTFR']);
   assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay\n🇬🇧 / 🇫🇷'), ['VF']);
-  assert.deepEqual(streamLanguages('Dune.2021.Dual.Audio.1080p'), ['MULTI']);
+  assert.deepEqual(streamLanguages('Dune.2021.Dual.Audio.1080p'), [], 'dual audio: usually English + another, not French');
+  assert.deepEqual(streamLanguages('Dune.2021.Dual.Audio.FRENCH.1080p'), ['MULTI', 'VF']);
+  // Indian "multi audio" releases: no French in them.
+  assert.deepEqual(streamLanguages('RRR.2022.1080p.WEB-DL.Multi.Audio.[Hindi.Tamil.Telugu.Kannada.Malayalam.English]'), []);
+  assert.deepEqual(streamLanguages('Film 2023 MULTi 1080p\n🇮🇳 / 🇬🇧'), [], 'flags without the French one');
+  assert.deepEqual(streamLanguages('Film 2023 MULTi 1080p\n🇫🇷 / 🇬🇧'), ['MULTI', 'VF']);
+  assert.deepEqual(streamLanguages('Film.2023.MULTi.1080p.WEB'), ['MULTI'], 'French scene MULTi');
   assert.deepEqual(streamLanguages('Dune.2021.1080p.BluRay.x264'), []);
   assert.deepEqual(streamLanguages('Frenchie.2021.1080p'), [], 'word boundaries');
   assert.deepEqual(describeStream({ name: 'X\n1080p', title: 'Film.MULTi.1080p' }, 'a').languages, ['MULTI']);

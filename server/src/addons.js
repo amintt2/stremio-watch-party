@@ -324,14 +324,22 @@ function normalizeQuality(raw) {
 /**
  * Audio languages announced by the release name / addon text:
  * MULTI (VF + VO), VF (French audio), VOSTFR (original + French subs).
+ * MULTI means French + original only: the French scene writes "MULTi" for that, but an
+ * Indian "Multi Audio" (Hindi, Tamil, Telugu…) or an English "Dual Audio" has no French.
  */
 export function streamLanguages(text) {
   const t = ` ${text} `;
   const out = [];
-  const multi = /[\s._\-[(](multi|dual[\s._-]?audio|multi[\s._-]?audio)[\s._\-\])]/i.test(t);
+  const multiWord = /[\s._\-[(](multi|multi[\s._-]?audio)[\s._\-\])]/i.test(t);
+  const dual = /[\s._\-[(]dual[\s._-]?audio[\s._\-\])]/i.test(t);
   const vostfr = /[\s._\-[(](vostfr|subfrench|stfr)[\s._\-\])]/i.test(t);
   const vf = /[\s._\-[(](vff|vfq|vfi|vf2|vf|truefrench|french)[\s._\-\])]/i.test(t) || t.includes('🇫🇷');
-  if (multi) out.push('MULTI');
+  // Other languages named (or flags without the French one): a "multi" without French.
+  const flags = /[\u{1F1E6}-\u{1F1FF}]{2}/u.test(t);
+  const others =
+    (flags && !t.includes('🇫🇷')) ||
+    /[\s._\-[(](hindi|hin|tamil|tam|telugu|kannada|malayalam|bengali|marathi|punjabi|urdu|korean|kor|japanese|jpn|chinese|spanish|esp|latino|castellano|italian|ita|german|ger|deu|russian|rus|polish|portuguese|turkish|arabic)[\s._\-\])]/i.test(t);
+  if ((multiWord || dual) && (vf || (multiWord && !others))) out.push('MULTI');
   if (vf && !vostfr) out.push('VF');
   if (vostfr) out.push('VOSTFR');
   return out;

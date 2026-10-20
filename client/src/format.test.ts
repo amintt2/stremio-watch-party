@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   activeCues,
+  trackLabel,
   canResume,
   episodeCode,
   langCode,
@@ -121,4 +122,12 @@ test('the exact language chosen last time wins over "VO" (English, not the first
   assert.equal(pickAudioTrack(tracks, 'vo', 'en'), 1);
   assert.equal(pickAudioTrack(tracks, 'fr', 'de'), 2, 'language not in this film: back to VF / VO');
   assert.equal(pickAudioTrack(tracks, null, null), null);
+});
+
+test('track names: a bare code becomes the language', () => {
+  assert.equal(trackLabel({ name: 'tel', lang: 'tel' }, 'Piste 1'), 'Télougou');
+  assert.equal(trackLabel({ name: 'eng' }, 'Piste 1'), 'Anglais');
+  assert.equal(trackLabel({ name: 'English 5.1', lang: 'en' }, 'Piste 1'), 'English 5.1');
+  assert.equal(trackLabel({ lang: 'und' }, 'Piste 2'), 'Piste 2');
+  assert.equal(trackLabel({ name: 'xyz' }, 'Piste 2'), 'XYZ');
 });
