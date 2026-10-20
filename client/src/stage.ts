@@ -718,7 +718,7 @@ export function createStage(host: StageHost) {
                     },
                   },
                   h('span', { class: 'menu-line-time' }, lineTime(cue, subs.timing)),
-                  h('span', { class: 'menu-line-text' }, cue.text.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\n/g, ' '))
+                  h('span', { class: 'menu-line-text' }, cue.text.replace(/<[^<>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\n/g, ' '))
                 )
               )
             : [h('div', { class: 'menu-item menu-muted' }, 'Aucune réplique autour de ce moment')])

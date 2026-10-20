@@ -26,7 +26,8 @@ func TestArgsFullGPUPipeline(t *testing.T) {
 		t.Skip("no NVENC candidate on this OS")
 	}
 	j := testJob(nvenc)
-	r := &run{start: 30, video: []Rendition{{ID: "1080", Width: 1920, Height: 1080, Bitrate: 6000000}, {ID: "720", Width: 1280, Height: 720, Bitrate: 3000000}}, audio: []int{0, 1}}
+	r := &run{video: []Rendition{{ID: "1080", Width: 1920, Height: 1080, Bitrate: 6000000}, {ID: "720", Width: 1280, Height: 720, Bitrate: 3000000}}, audio: []int{0, 1}}
+	r.start.Store(30)
 	got := strings.Join(j.args(r, "/tmp/x", false), " ")
 	for _, want := range []string{
 		"-hwaccel cuda -hwaccel_output_format cuda",
@@ -52,7 +53,7 @@ func TestArgsHybridHDRToneMapsOnCPU(t *testing.T) {
 	sw := &Encoder{Name: "software", Codec: "libx264"}
 	j := testJob(sw)
 	j.spec.Video.HDR = true
-	r := &run{start: 0, video: []Rendition{{ID: "480", Width: 854, Height: 480, Bitrate: 1400000}}}
+	r := &run{video: []Rendition{{ID: "480", Width: 854, Height: 480, Bitrate: 1400000}}}
 	got := strings.Join(j.args(r, "/tmp/x", true), " ")
 	if !strings.Contains(got, "tonemap=hable") || !strings.Contains(got, "scale=854:480") || strings.Contains(got, "-ss ") || strings.Contains(got, "-hwaccel") {
 		t.Errorf("unexpected: %s", got)

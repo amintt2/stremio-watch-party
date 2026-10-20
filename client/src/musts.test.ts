@@ -24,4 +24,5 @@ test('the defaults line comes from the last choices made in the player', async (
   const store: Record<string, string> = { 'wp-audio': 'vo', 'wp-subs': 'fr', 'wp-quality': '1080' };
   assert.equal(launchPrefs((k) => store[k] ?? null), 'VO · sous-titres français · 1080p');
   assert.equal(launchPrefs(() => null), 'audio du fichier · sans sous-titres · qualité auto');
+  assert.equal(launchPrefs((k) => ({ ...store, 'wp-audio-lang': 'en' })[k] ?? null), 'VO anglais · sous-titres français · 1080p');
 });

@@ -47,6 +47,8 @@ async function setup({ huwaDown = false } = {}) {
       stremioSelfUrl: 'http://127.0.0.1:11470',
       engine: 'huwa',
       log: {},
+      // Fake DNS: a public name, and one that points into the private network.
+      resolve: async (host) => (host === 'dl.example.org' ? [{ address: '93.184.216.34' }] : host.endsWith('nip.io') ? [{ address: '127.0.0.1' }] : []),
     }),
   );
   const call = (path, init = {}) =>
@@ -176,6 +178,28 @@ test('stats.json from Huwa goes out completed, through the gateway', async () =>
     assert.equal(s.peers, 0);
     assert.equal(s.opts.dht, true);
     assert.equal(t.huwa.seen.at(-1).url, `/${HASH}/0/stats.json`);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the rooms' conversions, the status list and the internals stay out of reach", async () => {
+  const t = await setup();
+  try {
+    for (const path of ['/hlsv2/status', '/hlsv2/wp-abc-t-1920/master.m3u8', '/hlsv2/x/destroy', '/hlsv2/destroy-all', '/tracks/http%3A%2F%2Fhuwa', '/ftp/x', '/zip/create', '/hwaccel-profiler']) {
+      assert.equal((await t.call(path)).status, 404, path);
+    }
+    for (const [path, body] of [['/network-info', { availableInterfaces: [] }], ['/stats.json', {}], ['/casting', []]]) {
+      const res = await t.call(path);
+      assert.deepEqual(await res.json(), body, path);
+    }
+    assert.equal(t.stremio.seen.some((r) => /status|destroy|network-info|stats\.json/.test(r.url)), false, 'none reached Stremio');
+    for (const target of ['http://localhost.:11470/x', 'http://127.0.0.1.nip.io/x', 'file:///etc/passwd', ' http://huwa:8080/x', 'http://x.internal./']) {
+      const res = await t.call(`/hlsv2/probe?mediaURL=${encodeURIComponent(target)}`);
+      assert.equal(res.status, 403, target);
+    }
+    assert.equal((await t.call(`/proxy/${encodeURIComponent('d=file:///etc')}/passwd`)).status, 403);
+    assert.equal((await t.call('/proxy/nothing/x')).status, 403, 'proxy without a destination');
   } finally {
     await t.close();
   }

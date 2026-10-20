@@ -103,7 +103,7 @@ test('a film goes to an online encoder, segments are asked for, encoded ahead, t
   assert.equal(hub.attach(session, ['bob', 'alice']).agent, agent, 'first candidate with an encoder');
   assert.deepEqual(changes, ['s1']);
   assert.equal(sent[0].type, 'job');
-  assert.equal(sent[0].job.source, `/api/encoder/source/${session.gpu.id}`);
+  assert.equal(sent[0].job.source, `/api/encoder/source/${session.gpu.id}?t=${session.gpu.sourceToken}`);
   assert.deepEqual(hub.describe(session.gpu), { by: 'alice', encoder: 'NVENC', device: null });
 
   const job = session.gpu;

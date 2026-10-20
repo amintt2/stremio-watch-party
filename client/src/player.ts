@@ -4,7 +4,7 @@ import { AutoQuality } from './abr.ts';
 import type { Connection } from './connection.ts';
 import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
-import { pickAudioTrack, audioChipLabel } from './format.ts';
+import { pickAudioTrack, audioChipLabel, langCode } from './format.ts';
 import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
 import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
 
@@ -15,6 +15,8 @@ const STALL_REPORT_MS = 800;
 const PREF_KEY = 'wp-quality';
 /** "fr" (VF) or "vo": this viewer's audio language, applied to every new media. */
 const AUDIO_KEY = 'wp-audio';
+/** The exact language of the last audio track chosen ("en"), tried before fr / vo. */
+const AUDIO_LANG_KEY = 'wp-audio-lang';
 
 /** Seconds the time may run without a single new picture before we call it a black screen. */
 const NO_PICTURE_S = 4;
@@ -92,6 +94,8 @@ export class Player {
   loadStartedAt = 0;
   /** Set when the picture failed and we switched to H.264 (shown in the statistics). */
   fallback: string | null = null;
+  /** When the viewer's audio track was put back after hls.js switched away from it. */
+  private audioRestores: number[] = [];
   /** Automatic reloads of this media because nothing came (see watchLoading). */
   private loadRetries = 0;
 
@@ -333,7 +337,7 @@ export class Player {
       // First time this media's tracks are known: apply the viewer's VF / VO choice.
       if (!this.audioPicked && hls.audioTracks.length) {
         this.audioPicked = true;
-        const wanted = pickAudioTrack(hls.audioTracks, this.audioPref);
+        const wanted = pickAudioTrack(hls.audioTracks, this.audioPref, localStorageGet(AUDIO_LANG_KEY));
         if (wanted !== null && wanted !== this.audioTrack) {
           this.audioTrack = wanted;
           hls.audioTrack = wanted;
@@ -345,10 +349,31 @@ export class Player {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       this.fatalCount = 0;
       updateTracks();
-      if (this.audioTrack > 0 && this.audioTrack < hls.audioTracks.length) hls.audioTrack = this.audioTrack;
+      // A reload (quality, retry) keeps the viewer's track, the first one too: the file may
+      // mark another track as default.
+      if (this.audioTrack >= 0 && this.audioTrack < hls.audioTracks.length && hls.audioTrack !== this.audioTrack) hls.audioTrack = this.audioTrack;
       if (this.subtitleTrack >= 0) hls.subtitleTrack = this.subtitleTrack;
     });
     hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, updateTracks);
+    // hls.js changes track by itself when the chosen one fails to load for a moment: go
+    // back to the viewer's (a few times a minute at most, then accept and say so).
+    hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => {
+      if (this.hls !== hls || data.id === this.audioTrack || this.audioTrack >= hls.audioTracks.length) return;
+      const now = Date.now();
+      this.audioRestores = this.audioRestores.filter((t) => now - t < 60_000);
+      if (this.audioRestores.length < 3) {
+        this.audioRestores.push(now);
+        const wanted = this.audioTrack;
+        setTimeout(() => {
+          if (this.hls === hls && this.audioTrack === wanted && hls.audioTrack !== wanted) hls.audioTrack = wanted;
+        }, 2000);
+      } else {
+        const lost = this.audioTracks[this.audioTrack]?.label;
+        this.audioTrack = data.id;
+        this.fallback = `Piste audio « ${lost || '?'} » indisponible : passage en « ${this.audioTracks[data.id]?.label || '?'} »`;
+        this.onChange();
+      }
+    });
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, updateTracks);
     hls.on(Hls.Events.ERROR, (_e, data) => {
       // A copied HEVC/AV1/VP9 the device can't take: H.264 right away, no retry loop. Only
@@ -406,6 +431,8 @@ export class Player {
       if (tracks.length > 1) {
         this.audioPref = pickAudioTrack(tracks, 'fr') === id ? 'fr' : 'vo';
         localStorageSet(AUDIO_KEY, this.audioPref);
+        const lang = langCode(tracks[id]?.lang);
+        localStorageSet(AUDIO_LANG_KEY, lang || '');
       }
     }
     this.onChange();

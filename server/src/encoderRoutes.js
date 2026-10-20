@@ -8,6 +8,7 @@ import { crc32 } from 'node:zlib';
 import { config } from './config.js';
 import { converterParams } from './media.js';
 import { proxyFile } from './external.js';
+import { RateLimiter } from './roomSocket.js';
 import { EncoderHub, masterPlaylist, mediaPlaylist, newKey, parseGpuPath } from './encoder.js';
 
 /** Builds offered for download (encoder/build.sh writes them to ENCODER_DIST_DIR). */
@@ -122,6 +123,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     }
   }, 15_000).unref();
 
+  const pairLimit = new RateLimiter({ max: 10, windowMs: 60_000 });
   /** One-time download tickets: uid → a key is made when the file is fetched. */
   const tickets = new Map();
   setInterval(() => {
@@ -142,6 +144,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
 
     /** A one-time link to download the app already paired with this account. */
     api.post('/api/encoder/pair', async (request, reply) => {
+      if (!pairLimit.allow(request.session.uid)) return reply.code(429).send({ error: 'Trop de demandes, réessaie dans une minute' });
       const platform = String(request.body?.platform || '');
       const p = PLATFORMS[platform];
       if (!p) return reply.code(400).send({ error: 'Système inconnu' });
@@ -168,6 +171,8 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
     const p = PLATFORMS[entry.platform];
     const path = join(config.encoderDistDir, p.file);
     if (!existsSync(path)) return reply.code(404).send();
+    // Checked again here: tickets asked for in advance must not get past the limit.
+    if (store.listEncoderKeys(entry.uid).length >= 10) return reply.code(429).type('text/plain; charset=utf-8').send('Trop de PC jumelés : supprimes-en un dans Paramètres → Encodeur GPU.');
     const key = newKey();
     const date = new Date().toLocaleDateString('fr-FR');
     store.addEncoderKey(entry.uid, { id: key.id, hash: key.hash, label: `${p.label} · ${date}` });
@@ -185,10 +190,8 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
 
   // ------------------------------------------------------------ app (pairing key)
 
-  const agentKey = (request) => {
-    const key = hub.authenticate(bearer(request) || request.query?.key);
-    return key;
-  };
+  // Header only: a key in the URL would end up in proxy logs.
+  const agentKey = (request) => hub.authenticate(bearer(request));
 
   app.get('/api/encoder/ws', { websocket: true }, (ws, request) => {
     const key = agentKey(request);
@@ -230,8 +233,10 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
       if (existsSync(path)) files[p.file] = { sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
     }
     const versionFile = join(config.encoderDistDir, 'VERSION');
-    builds = { version: existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : null, files };
-    return builds;
+    const found = { version: existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : null, files };
+    // Not kept while nothing is there yet (a build still being copied): asked again next time.
+    if (found.version && Object.keys(files).length) builds = found;
+    return found;
   }
 
   /** The version the app should run (the one built with this server), for paired apps. */
@@ -246,7 +251,7 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
   app.get('/api/encoder/update/:file', async (request, reply) => {
     if (!agentKey(request)) return reply.code(401).send();
     const file = String(request.params.file);
-    if (!encoderBuilds().files[file]) return reply.code(404).send();
+    if (!Object.hasOwn(encoderBuilds().files, file)) return reply.code(404).send();
     return reply
       .type('application/octet-stream')
       .header('Cache-Control', 'no-store')
@@ -254,18 +259,26 @@ export function registerEncoder(app, { store, rooms, publish, getSession, requir
   });
 
   /** The film's file, for the app (Range passthrough; the real source URL stays here). */
+  // ffmpeg reads it with the job's own short token (?t=), not the pairing key: a command
+  // line is visible to other users of the PC, and the token dies with the job.
   app.get('/api/encoder/source/:job', async (request, reply) => {
+    const job = hub.jobs.get(String(request.params.job));
     const key = agentKey(request);
-    const job = key && hub.jobs.get(request.params.job);
-    if (!job || job.agent.id !== key.id) return reply.code(403).send();
-    return proxyFile(request, reply, job.session.mediaURL, { name: job.session.fileName || 'video.mkv' });
+    const allowed = job && ((key && job.agent.id === key.id) || hub.sourceTokenMatches(job, request.query?.t));
+    if (!allowed) return reply.code(403).send();
+    return proxyFile(request, reply, job.session.mediaURL, { name: job.session.fileName || 'video.mkv', guard: !job.session.torrent });
   });
 
   app.register(async (uploads) => {
-    uploads.addContentTypeParser(['video/mp2t', 'application/octet-stream'], { parseAs: 'buffer', bodyLimit: 64 * 1024 ** 2 }, (req, body, done) => done(null, body));
+    // Checked before the body is read: no one without a key makes the server buffer 32 MB.
+    uploads.addHook('onRequest', async (request, reply) => {
+      request.encoderKey = agentKey(request);
+      if (!request.encoderKey) return reply.code(401).send();
+    });
+    // A 4 s segment is ~8 MB at 4K (16 Mb/s): room to spare, not to abuse.
+    uploads.addContentTypeParser(['video/mp2t', 'application/octet-stream'], { parseAs: 'buffer', bodyLimit: 32 * 1024 ** 2 }, (req, body, done) => done(null, body));
     uploads.put('/api/encoder/segment/:job/:rendition/:index', async (request, reply) => {
-      const key = agentKey(request);
-      if (!key) return reply.code(401).send();
+      const key = request.encoderKey;
       const { job, rendition, index } = request.params;
       if (!Buffer.isBuffer(request.body) || !request.body.length) return reply.code(400).send();
       const ok = hub.upload(key.id, job, rendition, Number(index), request.body);

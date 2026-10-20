@@ -26,7 +26,7 @@ export function cleanCueText(text) {
   return text
     .replace(/\{\\[^}]*\}/g, '')
     .replace(/<(\/?)([ibu])\s*>/gi, (_, slash, tag) => `\u0001${slash}${tag.toLowerCase()}\u0002`)
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^<>]*>/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

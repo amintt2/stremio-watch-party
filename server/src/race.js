@@ -7,7 +7,7 @@
 // The decision rules are Huwa's (src/torrent/peer-race.ts), with server time budgets.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { describeStream, lookupStream } from './addons.js';
+import { describeStream, guardedFetch, lookupStream } from './addons.js';
 import { peerSources } from './media.js';
 
 /** Answering peers that make a swarm "healthy". */
@@ -264,7 +264,7 @@ export async function raceTorrents(cands, probes, { episode = null, now = Date.n
 }
 
 /** Direct links: the first of the best few to answer a 1-byte request (better rank wins ties). */
-export async function raceHttp(cands, { fetchImpl = fetch, graceMs = 500, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+export async function raceHttp(cands, { fetchImpl = guardedFetch, graceMs = 500, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   const top = cands.slice(0, 3);
   if (!top.length) return null;
   const t0 = Date.now();

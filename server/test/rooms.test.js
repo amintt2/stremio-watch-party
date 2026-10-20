@@ -157,3 +157,18 @@ test('a group does not wait the full time for its slowest device', async () => {
   duo.tick();
   assert.equal(duo.running, false);
 });
+
+test('a personal room stays its owner\'s, even when a guest opened it first', async () => {
+  const { Rooms } = await import('../src/rooms.js');
+  const rooms = new Rooms({ now: () => 1_000_000 });
+  // The guest arrives first (after a restart): the room is created without an owner.
+  const room = rooms.get('web:abc', { lobby: true, owner: null });
+  room.join({ uid: 'guest', name: 'Guest' });
+  assert.equal(room.host, 'guest');
+  // The owner comes: recognised, straight in, crowned; the guest can't kick them.
+  const again = rooms.get('web:abc', { lobby: true, owner: 'owner' });
+  again.join({ uid: 'owner', name: 'Owner' });
+  assert.equal(again.status('owner'), 'member');
+  assert.equal(again.host, 'owner');
+  assert.equal(again.kick('guest', 'owner'), false);
+});

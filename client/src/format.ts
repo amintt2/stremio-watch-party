@@ -183,8 +183,15 @@ export function audioChipLabel(track: { lang?: string | null; name?: string | nu
  * Track for this viewer's audio preference: "fr" → the French track, "vo" → the
  * first non-French one (the original). null when nothing matches or no preference.
  */
-export function pickAudioTrack(tracks: AudioTrackLike[], pref: string | null): number | null {
-  if (!pref || tracks.length < 2) return null;
+export function pickAudioTrack(tracks: AudioTrackLike[], pref: string | null, lang: string | null = null): number | null {
+  if (tracks.length < 2) return null;
+  // The exact language chosen last time (English, not just "not French": a film can have
+  // Hindi first and English second).
+  if (lang) {
+    const exact = tracks.findIndex((t) => langCode(t.lang) === lang);
+    if (exact >= 0) return exact;
+  }
+  if (!pref) return null;
   const isFrench = (t: AudioTrackLike) => langCode(t.lang) === 'fr' || /fran[cç]ais|french|\bvf/i.test(t.name || '');
   const i = pref === 'fr' ? tracks.findIndex(isFrench) : tracks.findIndex((t) => !isFrench(t));
   return i >= 0 ? i : null;

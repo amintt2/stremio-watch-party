@@ -214,7 +214,13 @@ export class EncoderHub {
 
   /** A paired app connected: `send(obj)` writes to its socket, `close()` ends it. */
   connect(key, send, close) {
-    this.agents.get(key.id)?.close();
+    const old = this.agents.get(key.id);
+    if (old) {
+      // Its socket may close later (or never, half-dead): its films go now, else they would
+      // stay with an app that no longer reads them and the new one would get nothing.
+      for (const job of [...old.jobs]) this.detach(job, 'Encodeur reconnecté');
+      old.close();
+    }
     const agent = { id: key.id, uid: key.uid, label: key.label, send, close, info: null, jobs: new Set(), since: this.now() };
     this.agents.set(key.id, agent);
     return agent;
@@ -286,6 +292,8 @@ export class EncoderHub {
         waiters: new Map(),
         failures: [],
         fps: null,
+        // Lets ffmpeg on the app read the source without the pairing key (see encoderRoutes).
+        sourceToken: randomBytes(18).toString('base64url'),
         servedAt: 0,
         served: 0,
       };
@@ -296,7 +304,7 @@ export class EncoderHub {
         type: 'job',
         job: {
           id: job.id,
-          source: `/api/encoder/source/${job.id}`,
+          source: `/api/encoder/source/${job.id}?t=${job.sourceToken}`,
           duration: session.info.duration,
           segment: SEGMENT_S,
           video: session.info.video,
@@ -308,6 +316,11 @@ export class EncoderHub {
       return job;
     }
     return null;
+  }
+
+  sourceTokenMatches(job, token) {
+    if (typeof token !== 'string' || token.length !== job.sourceToken.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(job.sourceToken));
   }
 
   /**

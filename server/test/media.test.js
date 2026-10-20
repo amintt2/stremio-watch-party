@@ -178,7 +178,10 @@ test('torrents without trackers get DHT plus public trackers', () => {
   assert.ok(fallback.length > 3 && fallback.slice(1).every((s) => s.startsWith('tracker:udp://')));
 });
 
+const hevc4kBase = hevc4k;
 test('each audio track has its own converter, shared by every viewer of that track', () => {
+  const hevc4k = { ...hevc4kBase, audio: [{ codec: 'eac3' }, { codec: 'aac' }] };
+  assert.equal(hlsParams('s', hevc4k, '1080', {}, 'audio2.m3u8'), null, 'no converter for a track the file does not have');
   const vf = hlsParams('s', hevc4k, '1080', { hevc: false }, 'audio0/segment3.m4s');
   const vo = hlsParams('s', hevc4k, '2160', { hevc: true }, 'audio1.m3u8');
   const vfOther = hlsParams('s', hevc4k, '720', {}, 'audio0/init.mp4');
@@ -193,6 +196,7 @@ test('each audio track has its own converter, shared by every viewer of that tra
   assert.equal(hlsParams('s', hevc4k, '1080', {}, 'video0/segment1.m4s').convertId, 'wp-s-t-1920');
   assert.equal(hlsParams('s', hevc4k, '999', {}, 'audio0.m3u8'), null);
 });
+
 
 test('source languages come from the release name', () => {
   assert.deepEqual(streamLanguages('Dune.2021.MULTi.VFF.2160p.WEB'), ['MULTI', 'VF']);

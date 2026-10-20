@@ -52,10 +52,11 @@ export function mustsLabel(musts: Must[]) {
  */
 export function launchPrefs(get: (key: string) => string | null = localStorageGet) {
   const audio = get('wp-audio');
+  const audioLang = get('wp-audio-lang') || '';
   const subs = get('wp-subs') || '';
   const quality = get('wp-quality') || 'auto';
   return [
-    audio === 'fr' ? 'VF' : audio === 'vo' ? 'VO' : 'audio du fichier',
+    audio === 'fr' ? 'VF' : audio === 'vo' ? (audioLang && audioLang !== 'fr' ? `VO ${languageName(audioLang).toLowerCase()}` : 'VO') : 'audio du fichier',
     subs ? `sous-titres ${languageName(subs).toLowerCase()}` : 'sans sous-titres',
     quality === 'auto' ? 'qualité auto' : quality === '2160' ? '4K' : `${quality}p`,
   ].join(' · ');

@@ -363,7 +363,7 @@ export function lineTime(cue: TimedCue, timing: Timing) {
 export function cleanVttText(text: string) {
   return text
     .replace(/<(\/?)([ibu])(?:\.[^>\s]*)?\s*>/gi, (_, slash, tag) => `\u0001${slash}${tag.toLowerCase()}\u0002`)
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^<>]*>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
