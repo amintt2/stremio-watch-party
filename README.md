@@ -469,6 +469,10 @@ peut en plus ajouter les siens dans **Paramètres**.
   adresse privée (autres conteneurs, box, `localhost`) : le serveur vérifie l'adresse
   résolue à chaque redirection. Les addons de `STREAM_ADDON_URLS` restent permis où qu'ils
   soient. Mets `1` seulement si tes sources sont sur ton réseau local.
+- `TRUST_PROXY_HOPS` (facultatif, `1` par défaut) : nombre de proxys devant le serveur
+  (Traefik de Coolify : 1). Seule l'adresse vue par le dernier compte pour les limites par
+  adresse : un `X-Forwarded-For` inventé ne les contourne pas. Mets `2` si Cloudflare
+  (proxy orange) est aussi devant.
 
 ### 3. Lancer
 

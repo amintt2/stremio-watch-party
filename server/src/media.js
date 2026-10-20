@@ -263,6 +263,7 @@ export async function probe(mediaURL) {
   const res = await stremio(`/hlsv2/probe?${new URLSearchParams({ mediaURL })}`);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(publicMessage(body?.error?.message || `Analyse du fichier impossible (${res.status})`));
+  if (!Array.isArray(body?.streams)) throw new Error('Analyse du fichier impossible (réponse incomplète)');
   const video = body.streams.find((s) => s.track === 'video');
   return {
     duration: body.format?.duration || null,

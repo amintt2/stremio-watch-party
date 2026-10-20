@@ -18,6 +18,11 @@ export { isPublicHost };
 
 const HASH = '[0-9a-fA-F]{40}';
 const TORRENT_RE = new RegExp(`^/(${HASH})/(?:create|remove|stats\\.json|[^/]+(?:/stats\\.json)?)$`);
+/** The address of whoever calls: the last X-Forwarded-For entry is the one our proxy added. */
+export function clientAddress(req) {
+  const list = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return list[list.length - 1] || req.socket?.remoteAddress || '';
+}
 // What the Stremio apps call for playback. Not here on purpose: /hlsv2/status and
 // /hlsv2/…/destroy (they list and stop every conversion, the rooms' included), the rooms'
 // conversions themselves ("wp-…"), archives / ftp / tracks (URLs hidden in paths and bodies).
@@ -71,8 +76,7 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
   const counters = new Map();
   /** Not more than LIMITS[kind] a minute from one address (behind the proxy: X-Forwarded-For). */
   const allow = (req, kind) => {
-    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
-    const key = `${kind}:${ip}`;
+    const key = `${kind}:${clientAddress(req)}`;
     const t = now();
     const list = (counters.get(key) || []).filter((x) => t - x < 60_000);
     if (list.length >= LIMITS[kind]) return false;
@@ -105,8 +109,12 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
     }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') throw Object.assign(new Error('scheme refused'), { status: 403 });
     if (u.origin === origin) {
+      // Our own address: only a torrent file (/{hash}/{index}) is mapped to the engine. Any
+      // other path would reach the streaming server's internal routes (the origin comes
+      // from the request's own headers, so it proves nothing).
       const m = /^\/([0-9a-fA-F]{40})\/\d+$/.exec(u.pathname);
-      const base = m && engineOf(m[1].toLowerCase()) === 'huwa' ? huwaMediaUrl : stremioSelfUrl;
+      if (!m) throw Object.assign(new Error('address refused'), { status: 403 });
+      const base = engineOf(m[1].toLowerCase()) === 'huwa' ? huwaMediaUrl : stremioSelfUrl;
       return `${base.replace(/\/+$/, '')}${u.pathname}${u.search}`;
     }
     // The converter's own playlists carry the internal media URL back to the client.
@@ -166,8 +174,10 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
       req.on('data', (c) => {
         size += c.length;
         // A .torrent blob (hex) can be a few MB; nothing else is big.
-        if (size > 16 * 1024 * 1024) reject(Object.assign(new Error('too large'), { status: 413 }));
-        else chunks.push(c);
+        if (size > 16 * 1024 * 1024) {
+          reject(Object.assign(new Error('too large'), { status: 413 }));
+          req.destroy();
+        } else chunks.push(c);
       });
       req.on('end', () => resolve(Buffer.concat(chunks)));
       req.on('error', reject);
@@ -236,6 +246,8 @@ export function createGateway({ huwaUrl, huwaMediaUrl, stremioUrl, stremioSelfUr
       if (url.pathname === '/settings') return await settings(req, res, origin);
       if (route.to === 'torrent') {
         if (req.method === 'POST' && !allow(req, 'torrent')) return send(res, 429, { error: 'too many torrents' });
+        // Removing a torrent: only one opened through here (never a room's), and limited.
+        if (url.pathname.endsWith('/remove') && (!engines.has(route.hash) || !allow(req, 'torrent'))) return send(res, 403, { error: 'not yours' });
         return await torrent(req, res, url, route.hash);
       }
       // A new conversion or probe (not its segments): limited per address.

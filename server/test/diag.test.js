@@ -5,7 +5,7 @@ import { describeFetchError } from '../src/addons.js';
 
 test('addon URLs are masked (debrid keys never shown)', () => {
   const masked = maskAddon('https://torrentio.strem.fun/realdebrid=SECRETKEY123|language=french');
-  assert.ok(masked.startsWith('torrentio.strem.fun/real…'));
+  assert.equal(masked, 'torrentio.strem.fun/…(39)');
   assert.ok(!masked.includes('SECRET'));
   assert.equal(maskAddon('https://v3-cinemeta.strem.io'), 'v3-cinemeta.strem.io');
   assert.equal(maskAddon('not a url'), 'URL invalide');

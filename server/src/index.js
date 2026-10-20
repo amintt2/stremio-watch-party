@@ -45,7 +45,7 @@ import {
   rewritePlaylist,
 } from './media.js';
 import { Rooms, mediaLabel } from './rooms.js';
-import { RateLimiter, cleanProposal, handleRoomMessage } from './roomSocket.js';
+import { RateLimiter, SOCIAL_MESSAGES, cleanProposal, handleRoomMessage } from './roomSocket.js';
 import { diagnostics, logDiagnostics } from './diag.js';
 import { Handoffs, fileUrl, issueRoomPass, proxyFile, safeFileName, signFileToken, verifyFileToken, verifyRoomPass } from './external.js';
 import { privacyPage, termsPage } from './legal.js';
@@ -59,7 +59,9 @@ const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
   // Per-request lines are noisy with HLS segments: off unless LOG_REQUESTS=1.
   logController: new LogController({ disableRequestLogging: process.env.LOG_REQUESTS !== '1' }),
-  trustProxy: true,
+  // Proxies in front of us (Coolify's Traefik: 1). Only the address the last one saw is
+  // believed: an X-Forwarded-For sent by the client can't dodge the per-address limits.
+  trustProxy: config.trustProxyHops,
 });
 assertConfig(app.log);
 
@@ -77,7 +79,7 @@ if (config.stremioGateway) {
   app.addHook('onRequest', (request, reply, done) => {
     if (!routeOf(request.url.split('?')[0])) return done();
     reply.hijack();
-    gateway(request.raw, reply.raw);
+    gateway(request.raw, reply.raw).catch((err) => app.log.warn({ err: err.message }, 'gateway'));
   });
 }
 
@@ -141,7 +143,14 @@ function publish(room) {
 }
 
 setInterval(() => {
-  for (const room of [...rooms]) if (room.tick()) publish(room);
+  for (const room of [...rooms]) {
+    // One room's error must not stop the others' clocks (nor the process).
+    try {
+      if (room.tick()) publish(room);
+    } catch (err) {
+      app.log.error({ err: err.message, room: room.id }, 'room tick failed');
+    }
+  }
   // Emptied rooms keep their film for a while (someone may come back), then go.
   for (const id of rooms.sweep()) sockets.delete(id);
 }, 1000).unref();
@@ -185,6 +194,8 @@ const encoders = registerEncoder(app, { store, rooms, publish, getSession, requi
 
 // Coarse flood guard per person on the socket; the room has finer per-action limits.
 const floodLimit = new RateLimiter({ max: 40, windowMs: 10_000 });
+const MAX_SOCKETS_PER_USER = 6;
+const socialLimit = new RateLimiter({ max: 15, windowMs: 10_000 });
 // Clock pings (a few a second at most) and progress saves (one every few seconds is plenty):
 // both are cheap, but not free (progress writes to SQLite).
 const pingLimit = new RateLimiter({ max: 30, windowMs: 10_000 });
@@ -308,7 +319,7 @@ app.get('/api/config', async (request) => ({
 
 app.post('/api/token', async (request, reply) => {
   const { code, instanceId } = request.body || {};
-  if (typeof code !== 'string' || typeof instanceId !== 'string' || !instanceId) {
+  if (typeof code !== 'string' || typeof instanceId !== 'string' || !/^[\w-]{1,128}$/.test(instanceId)) {
     return reply.code(400).send({ error: 'code et instanceId requis' });
   }
   if (!config.discord.clientId || !config.discord.clientSecret) {
@@ -568,11 +579,18 @@ app.register(async (api) => {
   });
 
   /** Torrent download health (peers, speed vs the stream's bitrate) for the player's indicator. */
+  /** The viewer's room, when it plays this media session and they are in it. */
+  const roomPlaying = (request, sid) => {
+    const room = rooms.peek(request.session.room);
+    return room && room.status(request.session.uid) === 'member' && room.media?.sid === sid ? room : null;
+  };
+
   api.get('/api/media/:sid/health', async (request, reply) => {
+    const room = roomPlaying(request, request.params.sid);
+    if (!room) return reply.code(409).send({ error: 'Cette vidéo ne passe plus dans ta salle' });
     const media = getSession(request.params.sid);
     if (!media) return reply.code(404).send({ error: 'Session inconnue' });
-    const room = rooms.peek(request.session.room);
-    const gpu = encoders.state(room?.media?.sid === media.sid ? room : null, media);
+    const gpu = encoders.state(room, media);
     if (!media.torrent) return { kind: 'http', gpu };
     const health = await fetchTorrentHealth(media).catch(() => null);
     return { kind: 'torrent', ...(health || { engine: media.torrent.engine, level: 'unknown' }), gpu };
@@ -608,6 +626,7 @@ app.register(async (api) => {
   /** External subtitles of what a media session plays (each viewer picks their own). */
   const subtitleLists = new Map();
   api.get('/api/subtitles/:sid', async (request, reply) => {
+    if (!roomPlaying(request, request.params.sid)) return reply.code(409).send({ error: 'Cette vidéo ne passe plus dans ta salle' });
     const media = getSession(request.params.sid);
     if (!media) return reply.code(404).send({ error: 'Session inconnue' });
     const meta = media.meta;
@@ -777,6 +796,11 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
     return;
   }
   ws.uid = session.uid;
+  // A few tabs / devices per person; hundreds would multiply every broadcast.
+  if ([...(sockets.get(room.id) || [])].filter((s) => s.uid === session.uid).length >= MAX_SOCKETS_PER_USER) {
+    ws.close(4008, 'too many connections');
+    return;
+  }
   if (!sockets.has(room.id)) sockets.set(room.id, new Set());
   sockets.get(room.id).add(ws);
 
@@ -816,6 +840,8 @@ app.get('/api/ws', { websocket: true }, (ws, request) => {
         break;
     }
     if (!floodLimit.allow(session.uid)) return;
+    // State toggles (presence, quality, roles…) each send the whole room to everyone: fewer.
+    if (SOCIAL_MESSAGES.has(msg?.t) && !socialLimit.allow(session.uid)) return;
     // Every action goes through the room's permissions and per-person limits.
     if (handleRoomMessage(room, session.uid, msg) || room.outbox.length) publish(room);
   });

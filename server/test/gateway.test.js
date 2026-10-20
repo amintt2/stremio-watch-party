@@ -204,3 +204,25 @@ test("the rooms' conversions, the status list and the internals stay out of reac
     await t.close();
   }
 });
+
+test('our own address only maps a torrent file, nothing else, and rooms\' torrents stay', async () => {
+  const t = await setup();
+  try {
+    // The origin comes from the request's own headers: it must not open the internals.
+    const own = 'https://stream.example.com';
+    for (const path of [
+      `/subtitles.vtt?from=${encodeURIComponent(`${own}/hlsv2/status`)}`,
+      `/hlsv2/probe?mediaURL=${encodeURIComponent(`${own}/hlsv2/wp-abc-t-1920/destroy`)}`,
+      `/proxy/${encodeURIComponent(`d=${own}`)}/hlsv2/wp-abc-t-1920/destroy`,
+    ]) {
+      assert.equal((await t.call(path)).status, 403, path);
+    }
+    assert.equal(t.stremio.seen.some((r) => /status|destroy/.test(r.url)), false, 'none reached Stremio');
+    const hash = 'a'.repeat(40);
+    assert.equal((await t.call(`/hlsv2/probe?mediaURL=${encodeURIComponent(`${own}/${hash}/0`)}`)).status, 200, 'a torrent file still plays');
+    // A room's torrent (not opened through the gateway) can't be removed from outside.
+    assert.equal((await t.call(`/${'b'.repeat(40)}/remove`)).status, 403);
+  } finally {
+    await t.close();
+  }
+});

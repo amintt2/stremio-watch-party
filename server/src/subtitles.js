@@ -4,6 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { config } from './config.js';
+import { safeFetch } from './netguard.js';
 
 const LIST_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_PER_LANG = 8;
@@ -193,7 +194,8 @@ export async function cuesFor(key) {
   if (cueCache.has(key)) return cueCache.get(key);
   const file = files.get(key);
   if (!file) return null;
-  const res = await fetch(file.url, { signal: AbortSignal.timeout(20000) });
+  // The file's address comes from the addon's answer: public addresses only.
+  const res = await safeFetch(file.url, { signal: AbortSignal.timeout(20000) }, { allowPrivate: config.allowPrivateSources });
   if (!res.ok) throw new Error(`Sous-titres indisponibles (${res.status})`);
   const length = Number(res.headers.get('content-length') || 0);
   if (length > MAX_FILE_BYTES) throw new Error('Fichier de sous-titres trop gros');

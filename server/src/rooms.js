@@ -29,6 +29,8 @@
 // Room methods never do I/O. What the server must say or do is pushed to `outbox`
 // (notices, stream starts, kicks) and drained by index.js.
 
+/** A start (sources raced, file opened) that takes longer than this is given up. */
+export const START_TIMEOUT_MS = 4 * 60_000;
 export const LOAD_TIMEOUT_MS = 20_000;
 /** Once most of a room (3+ people) is ready, the last ones get at most this long. */
 export const STRAGGLER_WAIT_MS = 8_000;
@@ -130,6 +132,7 @@ export class Room {
     // Bumped by every jump everyone must follow (new film, seek): a viewer behind the live
     // only moves for these, not for the other state changes.
     this.seekId = 0;
+    this.wasDone = false;
     this.muted = new Map(); // uid -> until
 
     this.emptySince = now(); // nobody yet
@@ -643,6 +646,9 @@ export class Room {
     const m = this.members.get(uid);
     if (!m || typeof value !== 'boolean' || m.external === value) return false;
     m.external = value;
+    // No longer told where they are (their player is elsewhere): no stale "behind".
+    m.pos = null;
+    m.behind = 0;
     if (value && this.waiting.has(uid)) {
       this.#settle();
       this.waiting.delete(uid);
@@ -889,9 +895,9 @@ export class Room {
    * Marks a start in progress (shown to everyone) and returns its token: only the
    * latest start may load (index.js checks isCurrentStart before room.load).
    */
-  beginStart({ title, subtitle, by = null, announce = null }) {
+  beginStart({ title, subtitle, by = null, announce = null, next = false }) {
     const token = ++this.startSeq;
-    this.starting = { token, title: mediaLabel({ title, subtitle }), by: by ? this.#name(by) : null };
+    this.starting = { token, title: mediaLabel({ title, subtitle }), by: by ? this.#name(by) : null, at: this.now(), next };
     this.autostart = null;
     this.autonext = null;
     if (announce) this.#notice(announce, { except: by });
@@ -912,6 +918,8 @@ export class Room {
   /** A start failed (stream error...): drop the "starting" state. */
   failStart(token) {
     if (this.starting?.token !== token) return false;
+    // The next episode couldn't start (no source…): not again every 10 s.
+    if (this.starting.next && this.media) this.autonextCancelled = this.media.sid;
     this.starting = null;
     this.#evaluate();
     return this.#changed();
@@ -965,6 +973,7 @@ export class Room {
       title: media.title,
       subtitle: next.subtitle,
       announce: `${prefix}Épisode suivant : ${mediaLabel({ title: media.title, subtitle: next.subtitle })}`,
+      next: true,
     });
     this.outbox.push({
       type: 'start',
@@ -1064,6 +1073,11 @@ export class Room {
   tick() {
     const t = this.now();
     let changed = false;
+    // A start that never ended (lost on the way): the room's automatic starts work again.
+    if (this.starting && t - this.starting.at > START_TIMEOUT_MS) {
+      this.starting = null;
+      changed = true;
+    }
     for (const [uid, deadline] of this.waiting) {
       if (deadline <= t) {
         if (!changed) this.#settle();

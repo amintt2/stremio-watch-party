@@ -29,6 +29,8 @@ export class RateLimiter {
 /** Messages of the social layer (votes, queue, host...), rate-limited per person. */
 export const SOCIAL_MESSAGES = new Set([
   'presence',
+  'quality',
+  'external',
   'vote',
   'withdraw',
   'start',

@@ -231,3 +231,29 @@ test('a viewer stuck in place does not hold the end of the film', () => {
   assert.equal(room.ended, true);
   assert.equal(room.done, true, 'b stuck for over a minute no longer counts');
 });
+
+test('a next episode that fails to start is not retried every 10 s', () => {
+  const { room, clock } = setup();
+  room.load({ ...media, duration: 100, next: { videoId: 'x', subtitle: 'S1E2' } });
+  room.setBuffering('a', false);
+  room.setBuffering('b', false);
+  clock.advance(101_000);
+  room.tick();
+  assert.ok(room.snapshot().autonext, 'armed');
+  clock.advance(11_000);
+  room.tick();
+  const start = room.outbox.find((o) => o.type === 'start');
+  assert.ok(start, 'next episode started');
+  room.failStart(start.token);
+  clock.advance(30_000);
+  room.tick();
+  assert.equal(room.snapshot().autonext, null, 'not armed again');
+});
+
+test('a start lost on the way is given up', () => {
+  const { room, clock } = setup();
+  room.beginStart({ title: 'Film' });
+  clock.advance(5 * 60_000);
+  room.tick();
+  assert.equal(room.snapshot().starting, null);
+});
