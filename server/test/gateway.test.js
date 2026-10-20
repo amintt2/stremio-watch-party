@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createGateway, isPublicHost, publicOrigin, routeOf } from '../src/gateway.js';
+import { createGateway, isPublicHost, publicOrigin, routeOf, stremioStats } from '../src/gateway.js';
 
 const HASH = 'a'.repeat(40);
 
@@ -145,6 +145,37 @@ test('the private network is out of reach, unknown routes too', async () => {
     const ok = await t.call(`/hlsv2/probe?mediaURL=${encodeURIComponent('https://dl.example.org/f.mkv')}`);
     assert.equal(ok.status, 200);
     assert.equal(new URL(t.stremio.seen.at(-1).url, 'http://x').searchParams.get('mediaURL'), 'https://dl.example.org/f.mkv');
+  } finally {
+    await t.close();
+  }
+});
+
+test('stats.json: Huwa\'s answer gets every field Stremio\'s model requires', async () => {
+  const huwa = {
+    infoHash: HASH, name: 'Film', files: [{ name: 'f.mkv', path: 'f.mkv', length: 10, offset: 0 }],
+    downloadSpeed: 2500000, uploadSpeed: 0, downloaded: 5, uploaded: 0, peers: 12, unchoked: 12, queued: 3,
+    unique: 40, connectionTries: 40, swarmPaused: false, swarmConnections: 12, swarmSize: 40,
+    peerSearchRunning: false, sources: [], opts: {}, streamLen: 10, streamName: 'f.mkv', streamProgress: 0.5,
+  };
+  const s = stremioStats(huwa);
+  assert.equal(s.peers, 12);
+  assert.equal(s.streamProgress, 0.5);
+  assert.deepEqual(Object.keys(s.opts).sort(), ['connections', 'dht', 'growler', 'handshakeTimeout', 'path', 'peerSearch', 'swarmCap', 'timeout', 'tracker', 'virtual']);
+  assert.deepEqual(s.opts.growler, { flood: 0, pulse: null });
+  assert.deepEqual(stremioStats({ sources: [{ url: 'dht:x' }] }).sources, []);
+  assert.equal(stremioStats({ peers: -1 }).peers, 0);
+});
+
+test('stats.json from Huwa goes out completed, through the gateway', async () => {
+  const t = await setup();
+  try {
+    const res = await t.call(`/${HASH}/0/stats.json`);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+    const s = await res.json();
+    assert.equal(s.from, 'huwa');
+    assert.equal(s.peers, 0);
+    assert.equal(s.opts.dht, true);
+    assert.equal(t.huwa.seen.at(-1).url, `/${HASH}/0/stats.json`);
   } finally {
     await t.close();
   }
