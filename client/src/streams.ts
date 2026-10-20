@@ -180,6 +180,8 @@ export class StreamPanel {
 
   load(type: string, id: string, title: string) {
     const seq = ++this.seq;
+    // The previous video's sources must not be played (or listed) for this one.
+    this.list = [];
     this.title.textContent = title;
     clear(this.status);
     clear(this.rows, loadingState('Recherche des sources…'));

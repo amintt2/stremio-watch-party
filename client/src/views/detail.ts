@@ -16,6 +16,7 @@ const STATUS: Record<string, string> = { Continuing: 'En cours', Ended: 'Termin�
 export function detailView(app: App, params: Record<string, string>): View {
   const el = h('div', { class: 'page page-detail' }, skeletonDetail());
   let disposed = false;
+  let cleanup = () => {};
 
   const load = () =>
     Promise.all([
@@ -23,7 +24,7 @@ export function detailView(app: App, params: Record<string, string>): View {
       api<{ items: Progress[]; inLibrary: boolean }>(`/api/progress/${encodeURIComponent(params.id)}`).catch(() => ({ items: [], inLibrary: false })),
     ])
       .then(([{ meta }, progress]) => {
-        if (!disposed) render(app, el, meta, progress.items, progress.inLibrary, params.video);
+        if (!disposed) cleanup = render(app, el, meta, progress.items, progress.inLibrary, params.video);
       })
       .catch((err: Error) => {
         if (disposed) return;
@@ -43,7 +44,13 @@ export function detailView(app: App, params: Record<string, string>): View {
       });
   load();
 
-  return { el, dispose: () => (disposed = true) };
+  return {
+    el,
+    dispose: () => {
+      disposed = true;
+      cleanup();
+    },
+  };
 }
 
 function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[], inLibrary: boolean, wantedVideo?: string) {
@@ -62,7 +69,14 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   let useResume = true;
 
   /** `pick`: one source (chosen by hand), or null for the automatic choice (fastest source). */
+  let starting = false;
   const start = async (pick: (() => Promise<StreamOption | null>) | null, startAt: number, button: HTMLButtonElement) => {
+    // One start at a time (a second click, another episode meanwhile), for the video shown at the click.
+    if (starting) return;
+    starting = true;
+    const id = videoId();
+    const sub = subtitle();
+    const sources = pick ? null : panel.candidates();
     button.disabled = true;
     button.classList.add('busy');
     // Starting now: a preparation still waiting would only duplicate the work.
@@ -80,7 +94,7 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
         }
         chosen = { streamKey: s.key };
       } else {
-        const keys = await panel.candidates();
+        const keys = await sources!;
         if (!keys.length) {
           const musts = getMusts();
           toast(musts.length ? `Aucune source avec : ${mustsLabel(musts)}. Décoche un critère sous « Lire ».` : 'Aucune source disponible pour ce titre.');
@@ -93,13 +107,14 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
       await app.play({
         ...chosen,
         meta: { id: meta.id, type: meta.type, name: meta.name, poster: meta.poster },
-        videoId: videoId(),
-        subtitle: subtitle(),
+        videoId: id,
+        subtitle: sub,
         startAt,
       });
     } catch (err) {
       toast((err as Error).message);
     } finally {
+      starting = false;
       button.disabled = false;
       button.classList.remove('busy');
       if (button.lastChild && label) button.lastChild.textContent = label;
@@ -518,4 +533,8 @@ function render(app: App, el: HTMLElement, meta: Meta, progressList: Progress[],
   renderActions();
   renderEpisodes?.(true);
   prewarm(video ? panel.load('series', video.id, subtitle()) : panel.load('movie', meta.id, 'Sources'));
+  return () => {
+    prewarmFor = '';
+    offMusts();
+  };
 }

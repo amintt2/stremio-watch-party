@@ -950,9 +950,14 @@ export function createStage(host: StageHost) {
     if (!host.isOpen() || !state()?.media) return;
     const t = e.target as HTMLElement;
     if (t.closest?.('input:not([type="range"]), textarea, select, [contenteditable="true"], [contenteditable=""]')) return;
-    if (t.closest?.('.topbar, .rail, .content')) return;
+    if (t.closest?.('.topbar, .rail, .content, .room-layer, .encoder-suggest, #toasts')) return;
     const action = shortcutAction(e);
     if (!action) return;
+    // A held key repeats: fine for seeking and volume, not for on/off keys.
+    if (e.repeat && !['back', 'forward', 'volume-up', 'volume-down', 'subs-earlier', 'subs-later'].includes(action)) {
+      e.preventDefault();
+      return;
+    }
     // Enter/Space on a focused button keeps its own meaning.
     if (action === 'toggle' && e.key === ' ' && t.closest('button') && el.contains(t)) {
       e.preventDefault();
@@ -1007,6 +1012,10 @@ export function createStage(host: StageHost) {
         break;
       case 'escape':
         if (closeMenus()) break;
+        if (!statsPanel.hidden) {
+          toggleStats(false);
+          break;
+        }
         if (fsElement()) break; // the browser leaves fullscreen itself
         host.close();
         break;
@@ -1026,6 +1035,7 @@ export function createStage(host: StageHost) {
 
   // ------------------------------------------------------------ overlay & notices
   let overlayKey = '';
+  let loadingSecs = 0;
   function renderOverlay() {
     const s = state();
     const media = s?.media;
@@ -1037,7 +1047,18 @@ export function createStage(host: StageHost) {
       content = s ? () => null : msg('Connexion à la salle…');
     } else if (player.error) {
       key = `error:${player.error}`;
-      content = () => h('div', { class: 'overlay-msg' }, h('p', { class: 'auth-error' }, player.error));
+      content = () =>
+        h(
+          'div',
+          { class: 'overlay-msg' },
+          h('p', { class: 'auth-error' }, player.error),
+          h(
+            'div',
+            { class: 'overlay-actions' },
+            h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => player.reload() }, 'Réessayer'),
+            h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', onclick: () => toggleStats(true) }, 'Statistiques')
+          )
+        );
     } else if (player.needsGesture) {
       key = 'gesture';
       content = () =>
@@ -1052,13 +1073,15 @@ export function createStage(host: StageHost) {
         // Nothing to show yet: say it (a black screen with a running clock says nothing).
         const secs = Math.round(loading);
         const detail = sourceDetail(source) || (player.output()?.mode === 'transcode' ? 'Le serveur (ou le GPU) prépare la vidéo.' : 'Le serveur prépare la vidéo.');
-        key = `loading:${secs}:${detail}`;
+        // The seconds change in place: rebuilding would eat a click on the buttons.
+        key = `loading:${secs >= 12}:${detail}`;
+        loadingSecs = secs;
         content = () =>
           h(
             'div',
             { class: 'overlay-msg overlay-loading' },
             h('span', { class: 'spinner' }),
-            h('strong', {}, `Chargement de la vidéo… ${secs} s`),
+            h('strong', { class: 'overlay-loading-time' }, `Chargement de la vidéo… ${secs} s`),
             h('span', { class: 'small' }, detail),
             secs >= 12
               ? h(
@@ -1080,9 +1103,13 @@ export function createStage(host: StageHost) {
         content = () => null;
       }
     }
-    if (key === overlayKey) return;
-    overlayKey = key;
-    clear(overlay, content());
+    if (key !== overlayKey) {
+      overlayKey = key;
+      clear(overlay, content());
+    }
+    const time = overlay.querySelector('.overlay-loading-time');
+    const text = `Chargement de la vidéo… ${loadingSecs} s`;
+    if (time && time.textContent !== text) time.textContent = text;
   }
 
   // "Risque de coupure": the buffer health in the bar, and a notice when it stays red.
@@ -1123,6 +1150,7 @@ export function createStage(host: StageHost) {
 
   // ------------------------------------------------------------ statistics (like Stremio's)
   let waitingSince = 0;
+  let statsKey = '';
   function toggleStats(open = statsPanel.hidden) {
     statsPanel.hidden = !open;
     if (open) void pollSource().then(renderStats);
@@ -1153,6 +1181,9 @@ export function createStage(host: StageHost) {
       error: player.error,
       fallback: player.fallback,
     });
+    const key = JSON.stringify(view);
+    if (key === statsKey && statsPanel.childElementCount) return;
+    statsKey = key;
     clear(
       statsPanel,
       view.top.length ? h('div', { class: 'stats-top' }, ...view.top.map((t) => h('div', { class: 'stats-big' }, h('span', { class: 'stats-label' }, t.label), h('strong', {}, t.value)))) : null,

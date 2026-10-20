@@ -2076,6 +2076,11 @@ input[type='range'] {
   pointer-events: none;
 }
 
+.overlay-msg .overlay-actions,
+.overlay-msg button {
+  pointer-events: auto;
+}
+
 /* Toasts above the controls while the player is open. */
 body.player-open .toasts {
   bottom: 128px;
