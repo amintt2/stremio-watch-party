@@ -534,9 +534,12 @@ export function createStage(host: StageHost) {
   let page: Page = 'main';
   const menuOpen = () => !menu.hidden || !help.hidden;
 
+  /** Opened straight on a list (the arrows of the audio / CC chips): a choice closes it. */
+  let menuDirect = false;
   function openMenu(p: Page = 'main') {
     help.hidden = true;
     page = p;
+    menuDirect = p !== 'main';
     menu.hidden = false;
     gearBtn.setAttribute('aria-expanded', 'true');
     el.classList.add('menu-open');
@@ -574,10 +577,19 @@ export function createStage(host: StageHost) {
       h('span', { class: 'menu-row-value' }, value),
       icon('chevron', 'icon icon-sm')
     );
+  // Back to the main settings, or closed when the list was opened from a chip.
+  const backOrClose = () => {
+    if (menuDirect) {
+      closeMenus();
+      return;
+    }
+    page = 'main';
+    renderMenu(true);
+  };
   const choice = (text: string, selected: boolean, onPick: () => void) =>
     h(
       'button',
-      { class: `menu-choice${selected ? ' selected' : ''}`, type: 'button', role: 'menuitemradio', 'aria-checked': String(selected), onclick: () => (onPick(), (page = 'main'), renderMenu(true)) },
+      { class: `menu-choice${selected ? ' selected' : ''}`, type: 'button', role: 'menuitemradio', 'aria-checked': String(selected), onclick: () => (onPick(), backOrClose()) },
       h('span', { class: 'menu-check' }, selected ? icon('check', 'icon icon-sm') : null),
       text
     );
@@ -585,7 +597,7 @@ export function createStage(host: StageHost) {
     [
       h(
         'button',
-        { class: 'menu-row menu-back', type: 'button', onclick: () => ((page = 'main'), renderMenu(true)) },
+        { class: 'menu-row menu-back', type: 'button', onclick: backOrClose },
         icon('back', 'icon icon-sm'),
         h('span', { class: 'menu-row-title' }, title)
       ),
