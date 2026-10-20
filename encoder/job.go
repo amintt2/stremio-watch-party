@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -42,11 +43,12 @@ var (
 
 // validSpec: what the server sends goes into file names and ffmpeg's command line.
 func validSpec(s JobSpec) bool {
-	return jobIDRe.MatchString(s.ID) && sourceRe.MatchString(s.Source) && s.Duration >= 0 && s.Segment >= 0 && s.Segment <= 60
+	return jobIDRe.MatchString(s.ID) && sourceRe.MatchString(s.Source) && s.Duration >= 0 && s.Duration <= 1e6 &&
+		(s.Segment == 0 || (s.Segment >= 1 && s.Segment <= 60))
 }
 
 func validWant(m ServerMessage) bool {
-	if m.Start < 0 || m.Until < m.Start || len(m.Video) > 8 || len(m.Audio) > 16 {
+	if m.Start < 0 || m.Until < m.Start || m.Until > 1_000_000 || len(m.Video) > 8 || len(m.Audio) > 16 {
 		return false
 	}
 	for _, v := range m.Video {
@@ -97,6 +99,16 @@ type run struct {
 	sent sync.Map
 }
 
+// finished: the run's ffmpeg is over (error, end of film): a new want starts a new one.
+func (r *run) finished() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func newJob(a *Agent, spec JobSpec) *Job {
 	if spec.Segment <= 0 {
 		spec.Segment = 4
@@ -107,7 +119,7 @@ func newJob(a *Agent, spec JobSpec) *Job {
 func (j *Job) want(ctx context.Context, start, until int, video []Rendition, audio []int) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if r := j.run; r != nil && sameSet(r, video, audio) {
+	if r := j.run; r != nil && sameSet(r, video, audio) && !r.finished() {
 		// Already on it: just go further.
 		if next := r.next(); start >= int(r.start.Load()) && start <= next+2 {
 			r.raise(until)
@@ -300,7 +312,7 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	adopt(cmd)
 	go j.readProgress(stdout)
 
-	var sentCount atomic.Int64
+	var sentCount, failures atomic.Int64
 	uploads := make(chan upload, 64)
 	var wg sync.WaitGroup
 	for range 3 {
@@ -308,7 +320,18 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 		go func() {
 			defer wg.Done()
 			for u := range uploads {
-				if j.put(ctx, u) == nil {
+				if ffCtx.Err() != nil {
+					os.Remove(u.path)
+					continue
+				}
+				if err := j.put(ctx, u); err != nil {
+					// The server no longer takes them (network, proxy, refused): encoding on
+					// would only use the GPU for nothing.
+					if failures.Add(1) >= maxUploadFailures {
+						kill()
+					}
+				} else {
+					failures.Store(0)
 					sentCount.Add(1)
 					prev, _ := r.sent.Load(u.name)
 					if p, ok := prev.(int); !ok || u.index > p {
@@ -348,7 +371,10 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 				if err != nil {
 					continue
 				}
-				uploads <- upload{name: name, index: index, path: filepath.Join(dir, name, file)}
+				select {
+				case uploads <- upload{name: name, index: index, path: filepath.Join(dir, name, file)}:
+				case <-ffCtx.Done():
+				}
 			}
 			seen[name] = len(lines)
 		}
@@ -360,11 +386,15 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	close(uploads)
 	wg.Wait()
 	sent := int(sentCount.Load())
+	if failures.Load() >= maxUploadFailures {
+		return sent, errors.New("le serveur ne reçoit plus les segments")
+	}
 	if ctx.Err() != nil || ffCtx.Err() != nil {
 		return sent, nil
 	}
 	if waitErr != nil {
-		return sent, fmt.Errorf("%v: %s", waitErr, lastLines(stderr.String(), 4))
+		// The source link's token stays out of what is shown and sent back.
+		return sent, fmt.Errorf("%v: %s", waitErr, tokenRe.ReplaceAllString(lastLines(stderr.String(), 4), "?t=…"))
 	}
 	return sent, nil
 }
@@ -395,15 +425,21 @@ func (j *Job) put(ctx context.Context, u upload) error {
 				return fmt.Errorf("refusé (%d)", resp.StatusCode)
 			}
 		}
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * time.Second):
 		}
-		time.Sleep(time.Duration(attempt+1) * time.Second)
 	}
 	return fmt.Errorf("envoi du segment %s/%d impossible", u.name, u.index)
 }
 
 var httpClient = &http.Client{Timeout: 2 * time.Minute}
+
+// maxUploadFailures: segments in a row the server didn't take before ffmpeg is stopped.
+const maxUploadFailures = 4
+
+var tokenRe = regexp.MustCompile(`\?t=[A-Za-z0-9_-]+`)
 
 func (j *Job) readProgress(stdout interface{ Read([]byte) (int, error) }) {
 	scanner := bufio.NewScanner(stdout)

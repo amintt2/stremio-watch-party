@@ -250,10 +250,9 @@ test('the room never waits for a viewer in an external player', () => {
   room.load({ ...MEDIA, sid: 's2' });
   assert.deepEqual([...room.waiting.keys()], ['a']);
 
-  // Back to the integrated player: counted again.
+  // Back to the integrated player: waited for again at the next film.
   room.setBuffering('a', false);
   assert.equal(room.setExternal('b', false), true);
-  t += 5000;
-  assert.equal(room.setBuffering('b', true), true);
-  assert.equal(room.running, false);
+  room.load({ ...MEDIA, sid: 's3' });
+  assert.deepEqual([...room.waiting.keys()].sort(), ['a', 'b']);
 });

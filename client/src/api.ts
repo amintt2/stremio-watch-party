@@ -32,6 +32,8 @@ export interface Member {
   state?: 'loading' | 'watching' | 'browsing';
   /** Watches in an external player (VLC...): the room doesn't wait for them. */
   external?: boolean;
+  /** Seconds behind the live (5 s steps), when more than a few. */
+  behind?: number;
 }
 
 /** A suggestion in the room queue (no stream URL/key: only a label). */
@@ -79,6 +81,10 @@ export interface RoomState {
   members: Member[];
   // Social layer (see room.ts).
   ended?: boolean;
+  /** The live reached the end and nobody behind it is still watching. */
+  done?: boolean;
+  /** Changes with every jump everyone follows (new film, seek). */
+  seekId?: number;
   /** "host": only the host and co-pilotes control (default); "all": everyone. */
   control?: 'all' | 'host';
   host?: string | null;

@@ -45,3 +45,20 @@ func TestSettingsRefuseClearTextServer(t *testing.T) {
 		}
 	}
 }
+
+// A pairing typed in the window wins over the one written in the program.
+func TestTypedPairingIsUsed(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := saveSettings(Settings{Server: "https://watch.example/", Key: "wpe_typed"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadSettings(Settings{}, map[string]bool{})
+	if err != nil || s.Key != "wpe_typed" || s.Server != "https://watch.example" || !s.Manual {
+		t.Fatalf("got %+v, %v", s, err)
+	}
+	// Refused by the server: no longer used.
+	if _, err := loadSettings(Settings{}, map[string]bool{"wpe_typed": true}); err == nil {
+		t.Fatal("refused key still used")
+	}
+}

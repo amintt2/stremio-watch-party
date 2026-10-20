@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, lowerQuality, sourceDetail, sourceProblem, speedLabel } from './health.ts';
+import { bufferedAhead, bufferHealth, ewma, fragmentRatio, lowerQuality, sourceDetail, sourceProblem, speedLabel } from './health.ts';
 
 test('buffer health: buffer ahead + throughput vs bitrate', () => {
   assert.equal(bufferHealth({ ahead: 40, ratio: 3, left: 3000 }), 'good');
@@ -33,15 +33,6 @@ test('buffered ahead and lower quality', () => {
   assert.equal(lowerQuality(['1080', '720', '480'], '1080'), '720');
   assert.equal(lowerQuality(['1080', '720', '480'], '480'), null);
   assert.equal(lowerQuality(['1080', '720'], null), null);
-});
-
-test('catch-up: exact inside the buffer, ahead of the room outside', () => {
-  const ranges: [number, number][] = [[0, 30]];
-  assert.deepEqual(catchUpTarget(20, ranges, 2), { position: 20, lead: 0 });
-  assert.deepEqual(catchUpTarget(40, ranges, 2), { position: 42, lead: 2 });
-  assert.deepEqual(catchUpTarget(40, ranges, 0.2), { position: 41, lead: 1 }, 'at least 1 s');
-  assert.deepEqual(catchUpTarget(40, ranges, 30), { position: 44, lead: 4 }, 'at most 4 s');
-  assert.deepEqual(catchUpTarget(29.8, ranges, 2), { position: 31.8, lead: 2 }, 'buffer ends right there');
 });
 
 test('torrent source health: details and who is to blame', () => {

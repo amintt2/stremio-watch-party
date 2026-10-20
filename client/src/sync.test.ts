@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { correction, expectedPosition, formatTime, ServerClock } from './sync.ts';
+import { expectedPosition, formatTime, ServerClock } from './sync.ts';
 import { AutoQuality } from './abr.ts';
 
 test('server clock prefers low-latency samples', () => {
@@ -17,14 +17,6 @@ test('expected position extrapolates only while running', () => {
   assert.equal(expectedPosition(t, 3000), 12);
   assert.equal(expectedPosition({ ...t, running: false }, 3000), 10);
   assert.equal(expectedPosition(t, 1_000_000), 100);
-});
-
-test('correction: seek when far, nudge when close, nothing when in sync', () => {
-  assert.deepEqual(correction(10, 15), { seekTo: 15, rate: 1 });
-  assert.ok(correction(10, 10.5).rate > 1);
-  assert.ok(correction(10.5, 10).rate < 1);
-  assert.ok(correction(10, 10.5).rate <= 1.05);
-  assert.deepEqual(correction(10, 10.05), { rate: 1 });
 });
 
 test('time formatting', () => {

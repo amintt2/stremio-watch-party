@@ -138,7 +138,19 @@ func (a *Agent) main(ctx context.Context, ui *UI, flags Settings, ffmpegFlag, en
 		}
 		setCurrentSettings(settings)
 		a.settings = settings
-		if err := a.run(ctx); errors.Is(err, errUnauthorized) {
+		// A pairing typed in the window while connected: reconnect with it right away.
+		runCtx, stopRun := context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-ui.pair:
+				logf("Nouveau jumelage : reconnexion.")
+				stopRun()
+			case <-runCtx.Done():
+			}
+		}()
+		err = a.run(runCtx)
+		stopRun()
+		if errors.Is(err, errUnauthorized) {
 			refused[settings.Key] = true
 			if flags.Key == settings.Key {
 				flags = Settings{}

@@ -17,7 +17,8 @@ export function maskAddon(base) {
     const u = new URL(base);
     const path = u.pathname.replace(/^\/+|\/+$/g, '');
     if (!path) return u.hostname;
-    return `${u.hostname}/${path.slice(0, 4)}…(${path.length})`;
+    // Nothing of the path: some addons put the debrid key first.
+    return `${u.hostname}/…(${path.length})`;
   } catch {
     return 'URL invalide';
   }

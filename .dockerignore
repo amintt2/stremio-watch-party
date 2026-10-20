@@ -3,6 +3,10 @@ node_modules
 client/dist
 encoder/dist
 data
+**/data
+**/*.db
+**/*.db-*
 .env
 **/.env*
 .git
+.claude

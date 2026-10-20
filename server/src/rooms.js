@@ -2,8 +2,11 @@
 //
 // The room stores the position at `updatedAt`. While it is running (not paused
 // and nobody is being waited for), the current position is extrapolated from the
-// clock. Viewers that stall are put in `waiting`: the room freezes until they are
-// ready again, or until WAIT_TIMEOUT_MS passes (then they catch up on their own).
+// clock: it is the "direct" (live), like a live stream. Everyone waits for everyone
+// only when a film starts (`waiting`, LOAD_TIMEOUT_MS at most). After that each viewer
+// plays at their own pace: one who stalls falls behind the live without holding anyone,
+// sees how far behind they are and may jump back to it (or not). The film stays on
+// (no next episode) until the last one still watching has finished it.
 //
 // Social layer, also server-authoritative (see "Regarder ensemble" in the README):
 // - Roles. One host, co-pilotes promoted by the host, viewers. Default control mode
@@ -19,15 +22,15 @@
 //   co-pilote lets them in (or "accept everyone automatically" is on).
 // - Moderation: the host kicks (blocked for the room's lifetime), promotes/revokes
 //   co-pilotes, hands over. Every action is rate-limited per person; spammers are
-//   muted for SPAM_COOLDOWN_MS and the moderators are told. Too many stalls from one
-//   viewer stop freezing the room.
+//   muted for SPAM_COOLDOWN_MS and the moderators are told.
 // - A queue of suggestions with votes, auto-started once a majority agrees, and
 //   auto-next at the end of a series episode.
 //
 // Room methods never do I/O. What the server must say or do is pushed to `outbox`
 // (notices, stream starts, kicks) and drained by index.js.
 
-export const WAIT_TIMEOUT_MS = 10_000;
+/** A start (sources raced, file opened) that takes longer than this is given up. */
+export const START_TIMEOUT_MS = 4 * 60_000;
 export const LOAD_TIMEOUT_MS = 20_000;
 /** Once most of a room (3+ people) is ready, the last ones get at most this long. */
 export const STRAGGLER_WAIT_MS = 8_000;
@@ -47,12 +50,10 @@ export const HOST_GRACE_MS = 15_000;
 export const REFUSE_BLOCK_MS = 2 * 60_000;
 /** Muted after exceeding a rate limit. */
 export const SPAM_COOLDOWN_MS = 30_000;
-/** At most this many waits per viewer per minute; more stalls don't freeze the room. */
-export const STALLS_PER_MINUTE = 4;
-/** After the room gave up on a viewer, a new stall report waits this long instead. */
-export const RETRY_WAIT_MS = 5_000;
-/** ...at most this many times per minute per viewer. */
-export const RETRIES_PER_MINUTE = 2;
+/** Behind the live by more than this: the viewer is offered to jump back to it. */
+export const BEHIND_S = 4;
+/** A viewer's position not reported for this long (tab closed, old page) no longer counts. */
+export const POSITION_STALE_MS = 30_000;
 export const MIN_VOTES = 2;
 export const QUEUE_MAX = 30;
 export const QUEUE_PER_USER_MAX = 5;
@@ -128,9 +129,10 @@ export class Room {
     this.startSeq = 0;
 
     this.hits = new Map(); // `${uid}:${bucket}` -> timestamps
-    this.stalls = new Map(); // uid -> timestamps
-    this.gaveUp = new Map(); // uid -> when the room last stopped waiting for them
-    this.retries = new Map(); // uid -> timestamps of second-chance waits
+    // Bumped by every jump everyone must follow (new film, seek): a viewer behind the live
+    // only moves for these, not for the other state changes.
+    this.seekId = 0;
+    this.wasDone = false;
     this.muted = new Map(); // uid -> until
 
     this.emptySince = now(); // nobody yet
@@ -156,9 +158,27 @@ export class Room {
     return !!d && this.currentPosition() >= d - 1;
   }
 
+  /** Seconds this viewer is behind the live (0 when at it, or unknown). */
+  #behind(m, t = this.now()) {
+    if (!this.media || m.external || m.pos == null || t - m.posAt > POSITION_STALE_MS) return 0;
+    // Stuck in place for a minute while the room plays (error, blocked autoplay, a frozen
+    // picture): no longer counts, so it can't hold the end of the film for everyone.
+    if (this.running && t - (m.movedAt || 0) > POSITION_STALE_MS * 2) return 0;
+    // Their position moved on since they said it, as long as the room plays.
+    const pos = this.running ? m.pos + (t - m.posAt) / 1000 : m.pos;
+    return Math.max(0, this.currentPosition(t) - pos);
+  }
+
+  /** The live reached the end and nobody is still watching the film behind it. */
+  get done() {
+    if (!this.ended) return false;
+    const t = this.now();
+    return [...this.members.values()].every((m) => this.#behind(m, t) < BEHIND_S);
+  }
+
   /** Nothing to watch right now. */
   get idle() {
-    return !this.media || this.ended;
+    return !this.media || this.done;
   }
 
   /** Pins the extrapolated position before any state change. */
@@ -505,8 +525,7 @@ export class Room {
     this.position = this.#clamp(startAt);
     this.updatedAt = this.now();
     this.waiting.clear();
-    this.gaveUp.clear();
-    this.retries.clear();
+    this.#resetPositions();
     const deadline = this.now() + LOAD_TIMEOUT_MS;
     for (const m of this.members.values()) if (!m.external) this.waiting.set(m.uid, deadline);
     this.starting = null;
@@ -535,6 +554,8 @@ export class Room {
     if (!this.media || !this.paused) return false;
     this.#settle();
     this.paused = false;
+    // Nobody moved during the pause: that is not being stuck.
+    for (const m of this.members.values()) m.movedAt = this.now();
     return this.#changed();
   }
 
@@ -549,6 +570,36 @@ export class Room {
     if (!this.media) return false;
     this.#settle();
     this.position = this.#clamp(pos);
+    // Everyone jumps there, those behind the live too.
+    this.#resetPositions();
+    return this.#changed();
+  }
+
+  #resetPositions() {
+    this.seekId++;
+    for (const m of this.members.values()) {
+      m.pos = null;
+      m.behind = 0;
+    }
+  }
+
+  /**
+   * Where this viewer really is in the film (reported every few seconds). Changes the
+   * room only when how far behind the live they are changes visibly (5 s steps).
+   */
+  setPosition(uid, pos) {
+    const m = this.members.get(uid);
+    if (!m || !this.media || m.external) return false;
+    const t = this.now();
+    if (m.posAt && t - m.posAt < 1000) return false;
+    const next = Math.min(pos, this.media.duration || pos);
+    if (m.pos == null || Math.abs(next - m.pos) >= 0.5) m.movedAt = t;
+    m.pos = next;
+    m.posAt = t;
+    const behind = this.#behind(m, t);
+    const shown = behind < BEHIND_S ? 0 : Math.max(5, Math.round(behind / 5) * 5);
+    if (shown === (m.behind || 0)) return false;
+    m.behind = shown;
     return this.#changed();
   }
 
@@ -560,39 +611,12 @@ export class Room {
     return this.#changed();
   }
 
-  /** A viewer stalled (true) or is ready/playing again (false). */
+  /**
+   * A viewer has the film ready (false) at the start. Stalls later on (true) hold nobody:
+   * that viewer falls behind the live and may jump back to it.
+   */
   setBuffering(uid, buffering) {
-    if (!this.media || !this.members.has(uid)) return false;
-    if (buffering) {
-      // Watching in an external player: their page doesn't play, it never holds the room.
-      if (this.members.get(uid).external) return false;
-      if (this.waiting.has(uid) || this.paused) return false;
-      // A viewer stalling again and again (bad link, or on purpose) stops holding the room.
-      const t = this.now();
-      const recent = (this.stalls.get(uid) || []).filter((x) => t - x < 60_000);
-      if (recent.length >= STALLS_PER_MINUTE) {
-        this.stalls.set(uid, recent);
-        return false;
-      }
-      // Second chance after the room gave up on them (still loading): a shorter wait,
-      // at most RETRIES_PER_MINUTE times, so one bad link can't keep freezing the room.
-      const gaveUp = this.gaveUp.get(uid);
-      const retry = gaveUp !== undefined && t - gaveUp < 60_000;
-      if (retry) {
-        const retries = (this.retries.get(uid) || []).filter((x) => t - x < 60_000);
-        if (retries.length >= RETRIES_PER_MINUTE) {
-          this.retries.set(uid, retries);
-          return false;
-        }
-        retries.push(t);
-        this.retries.set(uid, retries);
-      }
-      recent.push(t);
-      this.stalls.set(uid, recent);
-      this.#settle();
-      this.waiting.set(uid, t + (retry ? RETRY_WAIT_MS : WAIT_TIMEOUT_MS));
-      return this.#changed();
-    }
+    if (!this.media || !this.members.has(uid) || buffering) return false;
     if (!this.waiting.has(uid)) return false;
     this.#settle();
     this.waiting.delete(uid);
@@ -622,6 +646,9 @@ export class Room {
     const m = this.members.get(uid);
     if (!m || typeof value !== 'boolean' || m.external === value) return false;
     m.external = value;
+    // No longer told where they are (their player is elsewhere): no stale "behind".
+    m.pos = null;
+    m.behind = 0;
     if (value && this.waiting.has(uid)) {
       this.#settle();
       this.waiting.delete(uid);
@@ -868,9 +895,9 @@ export class Room {
    * Marks a start in progress (shown to everyone) and returns its token: only the
    * latest start may load (index.js checks isCurrentStart before room.load).
    */
-  beginStart({ title, subtitle, by = null, announce = null }) {
+  beginStart({ title, subtitle, by = null, announce = null, next = false }) {
     const token = ++this.startSeq;
-    this.starting = { token, title: mediaLabel({ title, subtitle }), by: by ? this.#name(by) : null };
+    this.starting = { token, title: mediaLabel({ title, subtitle }), by: by ? this.#name(by) : null, at: this.now(), next };
     this.autostart = null;
     this.autonext = null;
     if (announce) this.#notice(announce, { except: by });
@@ -891,6 +918,8 @@ export class Room {
   /** A start failed (stream error...): drop the "starting" state. */
   failStart(token) {
     if (this.starting?.token !== token) return false;
+    // The next episode couldn't start (no source…): not again every 10 s.
+    if (this.starting.next && this.media) this.autonextCancelled = this.media.sid;
     this.starting = null;
     this.#evaluate();
     return this.#changed();
@@ -944,6 +973,7 @@ export class Room {
       title: media.title,
       subtitle: next.subtitle,
       announce: `${prefix}Épisode suivant : ${mediaLabel({ title: media.title, subtitle: next.subtitle })}`,
+      next: true,
     });
     this.outbox.push({
       type: 'start',
@@ -993,6 +1023,12 @@ export class Room {
   #evaluate() {
     let changed = false;
     const total = this.members.size;
+    // The last viewer behind finished the film: everyone sees it (next episode, queue).
+    const done = this.done;
+    if (done !== this.wasDone) {
+      this.wasDone = done;
+      changed = true;
+    }
 
     for (const [kind, v] of this.actionVotes) {
       if (!majority(this.#presentVotes(v.voters), total)) continue;
@@ -1008,7 +1044,7 @@ export class Room {
 
     // Next episode once this one is over.
     const wantNext =
-      total > 0 && !!this.media?.next && this.ended && !this.starting && this.autonextCancelled !== this.media.sid;
+      total > 0 && !!this.media?.next && this.done && !this.starting && this.autonextCancelled !== this.media.sid;
     if (wantNext && !this.autonext) {
       this.autonext = { at: this.now() + AUTONEXT_MS };
       changed = true;
@@ -1037,11 +1073,15 @@ export class Room {
   tick() {
     const t = this.now();
     let changed = false;
+    // A start that never ended (lost on the way): the room's automatic starts work again.
+    if (this.starting && t - this.starting.at > START_TIMEOUT_MS) {
+      this.starting = null;
+      changed = true;
+    }
     for (const [uid, deadline] of this.waiting) {
       if (deadline <= t) {
         if (!changed) this.#settle();
         this.waiting.delete(uid);
-        this.gaveUp.set(uid, t);
         changed = true;
       }
     }
@@ -1086,14 +1126,17 @@ export class Room {
       running: this.running,
       position: this.currentPosition(t),
       ended: this.ended,
+      done: this.done,
+      seekId: this.seekId,
       waiting: [...this.waiting.keys()],
-      members: [...this.members.values()].map(({ uid, name, avatar, quality, presence, external }) => ({
+      members: [...this.members.values()].map(({ uid, name, avatar, quality, presence, external, behind }) => ({
         uid,
         name,
         avatar,
         quality,
         state: this.waiting.has(uid) ? 'loading' : this.media ? presence : 'browsing',
         ...(external ? { external: true } : {}),
+        ...(behind ? { behind } : {}),
       })),
       control: this.control,
       host: this.host,

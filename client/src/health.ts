@@ -56,22 +56,6 @@ export function lowerQuality(ladder: string[], current: string | null) {
   return i >= 0 && i < ladder.length - 1 ? ladder[i + 1] : null;
 }
 
-export const MAX_LEAD_S = 4;
-
-/**
- * Where to jump when this viewer fell behind the room. Inside the buffer: exactly
- * the room position (the jump is instant). Outside: a bit ahead of it, by about how
- * long the last unbuffered jumps took to load, then wait there for the room. Jumping
- * to the room position itself always lands behind again once the segment is loaded,
- * which used to start another jump, and another: picture and sound cut while the
- * room clock kept going.
- */
-export function catchUpTarget(expected: number, ranges: [number, number][], latencyS: number) {
-  if (bufferedAhead(ranges, expected, 0) >= 0.5) return { position: expected, lead: 0 };
-  const lead = Math.min(MAX_LEAD_S, Math.max(1, latencyS));
-  return { position: expected + lead, lead };
-}
-
 /** What the server reports about a torrent source (GET /api/media/:sid/health). */
 export interface SourceHealth {
   kind: 'torrent' | 'http';

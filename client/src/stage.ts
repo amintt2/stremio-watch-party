@@ -25,7 +25,7 @@ import {
 import { clear, h, toast } from './dom.ts';
 import { HEALTH_LABEL, lowerQuality, sourceDetail, sourceProblem, type Health, type SourceHealth } from './health.ts';
 import { roomPlayback, type Playback } from './playback.ts';
-import type { Player } from './player.ts';
+import { BEHIND_S, type Player } from './player.ts';
 import { langCode } from './format.ts';
 import { getMusts } from './musts.ts';
 import { SpeechMeter } from './speech.ts';
@@ -98,10 +98,11 @@ export function memberChips(s: RoomState | null, meUid: string, label: (id: stri
       'span',
       {
         class: `member${s!.waiting.includes(m.uid) ? ' waiting' : ''}${m.external ? ' external' : ''}${m.uid === meUid ? ' me' : ''}${memberClass?.(m) || ''}`,
-        title: `${m.name}${m.external ? ' · lecteur externe' : m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}`,
+        title: `${m.name}${m.external ? ' · lecteur externe' : m.quality ? ` · ${label(m.quality)}` : ''}${s!.waiting.includes(m.uid) ? ' · chargement…' : ''}${m.behind ? ` · ${m.behind} s derrière le direct` : ''}`,
       },
       avatar(m),
-      m.quality && s?.media && !m.external ? h('span', { class: 'member-q' }, label(m.quality).replace('p', '')) : null
+      m.quality && s?.media && !m.external ? h('span', { class: 'member-q' }, label(m.quality).replace('p', '')) : null,
+      m.behind ? h('span', { class: 'member-behind' }, `−${m.behind < 60 ? `${m.behind}s` : `${Math.round(m.behind / 60)}m`}`) : null
     )
   );
 }
@@ -1119,6 +1120,8 @@ export function createStage(host: StageHost) {
   let dismissed = '';
   let noticeKey = '';
   let health: Health | null = null;
+  let behindDismissed = false;
+  const behindText = (s: number) => `Tu es ${s < 60 ? `${Math.round(s)} s` : formatTime(s)} derrière le direct.`;
   // The server's view of a torrent source (peers, speed vs the video's bitrate).
   let source: SourceHealth | null = null;
   let sourceSince = 0;
@@ -1181,6 +1184,7 @@ export function createStage(host: StageHost) {
       loadingFor: waitingSince ? (now - waitingSince) / 1000 : null,
       error: player.error,
       fallback: player.fallback,
+      behind: player.behind(),
     });
     const key = JSON.stringify(view);
     if (key === statsKey && statsPanel.childElementCount) return;
@@ -1220,12 +1224,32 @@ export function createStage(host: StageHost) {
     let content: (Node | string | null)[] = [];
     const lower = lowerQuality(player.ladder, player.quality);
     const slowKey = `${s?.media?.sid}:${player.quality}`;
-    // Stuck: loading, catching up, or the room waiting for someone, while it should play.
-    const stuck = !!s?.media && !player.error && (s.waiting.length > 0 || player.catchingUp || (s.running && video.readyState < 3));
+    // Stuck: loading, or the room waiting for someone, while it should play.
+    const stuck = !!s?.media && !player.error && (s.waiting.length > 0 || (s.running && video.readyState < 3));
+    // Behind the live: offered to go back to it, never forced ("Plus tard" hides it until
+    // this viewer is back at the live).
+    const behind = player.behind();
+    if (behind < BEHIND_S) behindDismissed = false;
+    const showBehind = !!s?.media && !s.waiting.length && behind >= BEHIND_S && video.readyState >= 2 && !behindDismissed;
     const problem = sourceProblem(source, health, stuck);
     if (problem) sourceSince ||= now;
     else sourceSince = 0;
-    if (problem && now - sourceSince > SOURCE_NOTICE_MS && dismissed !== `src:${slowKey}`) {
+    if (showBehind) {
+      key = 'behind';
+      content = [
+        h('span', { class: 'notice-behind' }, behindText(behind)),
+        h(
+          'button',
+          { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => (player.goLive(), renderHealth()) },
+          'Revenir au direct'
+        ),
+        h(
+          'button',
+          { class: 'btn btn-ghost btn-sm on-media', type: 'button', onclick: () => ((behindDismissed = true), renderHealth()) },
+          'Plus tard'
+        ),
+      ];
+    } else if (problem && now - sourceSince > SOURCE_NOTICE_MS && dismissed !== `src:${slowKey}`) {
       // The server can't get the file fast enough: a lower quality won't help.
       key = `slow-source:${problem}`;
       content = [
@@ -1249,16 +1273,18 @@ export function createStage(host: StageHost) {
           : null,
         h('button', { class: 'btn btn-ghost btn-icon btn-icon-sm on-media', type: 'button', 'aria-label': 'Masquer', onclick: () => ((dismissed = slowKey), renderHealth()) }, icon('close', 'icon icon-sm')),
       ];
-    } else if (player.catchingUp && s?.running && !s.waiting.length) {
-      key = 'catchup';
-      content = [h('span', { class: 'spinner' }), 'Rattrapage de la salle…'];
     }
     if (key !== noticeKey) {
       noticeKey = key;
       clear(notice, content);
       notice.hidden = !key;
       notice.classList.toggle('notice-warn', key.startsWith('slow'));
+      // The gap counts every second: not read out again and again by screen readers.
+      notice.setAttribute('aria-live', key === 'behind' ? 'off' : 'polite');
     }
+    // The gap changes every second: in place (rebuilding would eat a click on the button).
+    const gap = key === 'behind' ? notice.querySelector('.notice-behind') : null;
+    if (gap && gap.textContent !== behindText(behind)) gap.textContent = behindText(behind);
   }
   healthBtn.addEventListener('click', () => toggleStats());
 

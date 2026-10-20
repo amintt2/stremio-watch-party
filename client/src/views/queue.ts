@@ -310,7 +310,7 @@ export function queuePanel(ctx: QueueContext) {
       h(
         'span',
         { class: 'room-item-text' },
-        h('span', { class: 'room-item-sub' }, s.ended ? 'Terminé' : s.paused ? 'En pause' : 'En cours'),
+        h('span', { class: 'room-item-sub' }, (s.done ?? s.ended) ? 'Terminé' : s.paused ? 'En pause' : 'En cours'),
         h('span', { class: 'room-item-title' }, s.media.title, s.media.subtitle ? h('span', { class: 'faint' }, ` · ${code(s.media)}`) : null),
         h('span', { class: 'room-item-sub' }, `Lancé par ${s.media.startedBy}${s.media.duration ? ` · ${formatTime(s.media.duration)}` : ''}`)
       )
