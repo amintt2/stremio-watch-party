@@ -2,6 +2,7 @@
 // subtitles, 1080p at least…). Kept per viewer; "Lire" only races the sources that meet
 // all of them. Pure parts are tested in musts.test.ts.
 import type { StreamOption } from './api.ts';
+import { languageName } from './format.ts';
 import { localStorageGet, localStorageSet } from './storage.ts';
 
 export type Must = 'multi' | 'vf' | 'stfr' | 'hd' | 'uhd' | 'debrid';
@@ -43,6 +44,21 @@ export function meets(s: Pick<StreamOption, 'languages' | 'quality' | 'cached'>,
 /** "VF + VO, 1080p+" for messages. */
 export function mustsLabel(musts: Must[]) {
   return MUSTS.filter((m) => musts.includes(m.id)).map((m) => m.label).join(', ');
+}
+
+/**
+ * What the next film starts with for this viewer, from their last choices in the player
+ * (audio language, subtitles, quality): "VO · sous-titres français · qualité auto".
+ */
+export function launchPrefs(get: (key: string) => string | null = localStorageGet) {
+  const audio = get('wp-audio');
+  const subs = get('wp-subs') || '';
+  const quality = get('wp-quality') || 'auto';
+  return [
+    audio === 'fr' ? 'VF' : audio === 'vo' ? 'VO' : 'audio du fichier',
+    subs ? `sous-titres ${languageName(subs).toLowerCase()}` : 'sans sous-titres',
+    quality === 'auto' ? 'qualité auto' : quality === '2160' ? '4K' : `${quality}p`,
+  ].join(' · ');
 }
 
 let current: Must[] = read();

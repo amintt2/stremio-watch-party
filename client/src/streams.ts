@@ -1,7 +1,7 @@
 import { api, type StreamOption } from './api.ts';
 import { clear, h } from './dom.ts';
 import { pickBest } from './format.ts';
-import { getMusts, meets, MUSTS, mustsLabel, onMustsChange, toggleMust } from './musts.ts';
+import { getMusts, launchPrefs, meets, MUSTS, mustsLabel, onMustsChange, toggleMust } from './musts.ts';
 import { localStorageGet, localStorageSet } from './storage.ts';
 import { icon, loadingState } from './ui.ts';
 
@@ -80,6 +80,8 @@ export class StreamPanel {
     'Lire'
   );
   private autoHint = h('p', { class: 'muted small streams-auto-hint' }, 'Teste toutes les sources en même temps et lance la plus rapide.');
+  /** Your defaults (your last choices in the player), applied when it starts. */
+  private prefs = h('p', { class: 'small streams-prefs', title: 'Tes derniers choix dans le lecteur : appliqués au prochain film. Change-les pendant la lecture.' });
   /** Picking a source by hand is the exception: the list stays folded unless opened. */
   private manual = h('details', { class: 'streams-manual' });
   private manualSummary = h('summary', {}, 'Choisir une source moi-même');
@@ -123,7 +125,8 @@ export class StreamPanel {
     this.manual.addEventListener('toggle', () => localStorageSet(MANUAL_KEY, this.manual.open ? '1' : '0'));
     // The extra toggles (start or propose a picked source, from where) are about the list.
     this.manual.append(this.manualSummary, this.extra, h('div', { class: 'streams-tools' }, filters, sortSelect), this.status, this.rows);
-    this.el.append(h('header', { class: 'streams-head' }, this.title), this.autoBtn, mustRow(), this.autoHint, this.manual);
+    this.el.append(h('header', { class: 'streams-head' }, this.title), this.autoBtn, mustRow(), this.autoHint, this.prefs, this.manual);
+    this.prefs.textContent = `Pour toi : ${launchPrefs()}`;
     const off = onMustsChange(() => {
       if (!this.el.isConnected && this.list.length) return off();
       this.refreshAuto();

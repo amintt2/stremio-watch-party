@@ -32,6 +32,7 @@ import {
   watchStremioServer,
   hlsParams,
   createSession,
+  sweepConverters,
   ensureFileHash,
   fetchHls,
   getSession,
@@ -161,6 +162,17 @@ const prewarms = new Prewarms({
   open: (stream) => createSession(stream, app.log),
 });
 
+// Converters of films no room plays anymore are stopped (a change of film, a stop, a room
+// that emptied): they would keep the server's CPU busy for nothing.
+function sweepStaleConverters(log = app.log) {
+  const active = new Set();
+  for (const room of rooms) if (room.media?.sid) active.add(room.media.sid);
+  sweepConverters(active)
+    .then((ids) => ids.length && log.info({ count: ids.length }, 'stale converters stopped'))
+    .catch((err) => log.debug({ err: err.message }, 'converter sweep failed'));
+}
+setInterval(sweepStaleConverters, 60_000).unref();
+
 // Host GPU encoders (encoder.js): the app on a member's PC transcodes instead of the server.
 const encoders = registerEncoder(app, { store, rooms, publish, getSession, requireSession });
 
@@ -217,6 +229,8 @@ async function startMedia(room, { token, stream, streams, opened = null, pick = 
   );
   publish(room);
   encoders.attach(room, session);
+  // The previous film's converters go now, not when the server pushes them out.
+  setTimeout(() => sweepStaleConverters(log), 1000).unref();
   findNextEpisode(room, session).catch((err) => log.debug({ err: err.message }, 'next episode lookup failed'));
   return true;
 }
@@ -611,6 +625,7 @@ app.register(async (api) => {
     if (!room?.media) return { ok: true };
     const stopped = room.stopBy(request.session.uid);
     publish(room);
+    if (stopped) setTimeout(() => sweepStaleConverters(request.log), 1000).unref();
     if (!stopped) return reply.code(403).send({ error: 'Seuls l’hôte et les co-pilotes peuvent arrêter la lecture' });
     return { ok: true };
   });

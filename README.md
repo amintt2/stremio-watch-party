@@ -52,6 +52,14 @@ directement sur le site, dans un navigateur.
     remplissent toutes ; s'il n'y en a aucune, il le dit et propose de décocher. Gardées
     d'une fiche à l'autre, sur cet appareil. Les sources qui ne les remplissent pas sont
     grisées dans la liste.
+  - **Tes réglages par défaut** : tes derniers choix dans le lecteur (VF ou VO, langue des
+    sous-titres, y compris une piste du fichier, qualité) s'appliquent tout seuls au film
+    suivant ; la ligne « Pour toi : VO · sous-titres français · 1080p » sous « Lire » les
+    rappelle. Une piste de sous-titres du fichier dans ta langue passe avant OpenSubtitles.
+  - **Écran qui reste noir** : le lecteur affiche « Chargement de la vidéo… N s » avec ce qui
+    se passe, « Réessayer » et « Statistiques » ; sans rien reçu au bout de 30 s il recharge,
+    puis passe à la qualité en dessous. Au changement de film, le serveur arrête les
+    conversions de l'ancien (elles prenaient le processeur du nouveau).
   - **Préparé avant le clic** : dès que la fiche (ou l'épisode sélectionné) reste affichée
     1,5 s, le serveur fait déjà la course et ouvre la source gagnante (torrent, analyse du
     fichier) ; « Lire » trouve le travail fait et démarre tout de suite. Préparation gardée

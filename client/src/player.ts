@@ -18,6 +18,8 @@ const AUDIO_KEY = 'wp-audio';
 
 /** Seconds the time may run without a single new picture before we call it a black screen. */
 const NO_PICTURE_S = 4;
+/** No video at all after this long: reload (then a lower quality). */
+const LOAD_RETRY_MS = 30_000;
 const NO_PICTURE = "La vidéo ne s'affiche pas sur cet appareil. Essaie une qualité plus basse ou une autre source.";
 
 
@@ -31,6 +33,8 @@ export interface Track {
   label: string;
   /** Short chip label ("VF", "EN"), audio tracks only. */
   short?: string;
+  /** Language code from the file ("fr", "en"), when it says. */
+  lang?: string;
 }
 
 /**
@@ -88,6 +92,8 @@ export class Player {
   loadStartedAt = 0;
   /** Set when the picture failed and we switched to H.264 (shown in the statistics). */
   fallback: string | null = null;
+  /** Automatic reloads of this media because nothing came (see watchLoading). */
+  private loadRetries = 0;
 
   constructor(video: HTMLVideoElement, conn: Connection) {
     this.video = video;
@@ -238,6 +244,7 @@ export class Player {
     this.reportedStall = false;
     this.audioTrack = 0;
     this.audioPicked = false;
+    this.loadRetries = 0;
     this.subtitleTrack = -1;
     const start = this.initialQuality();
     this.abr = this.preference === 'auto' ? new AutoQuality(this.ladder, start, Date.now()) : null;
@@ -332,7 +339,7 @@ export class Player {
           hls.audioTrack = wanted;
         }
       }
-      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}` }));
+      this.subtitleTracks = hls.subtitleTracks.map((t, i) => ({ id: i, label: t.name || t.lang || `Sous-titres ${i + 1}`, lang: t.lang || undefined }));
       this.onChange();
     };
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -419,6 +426,33 @@ export class Player {
     this.needsGesture = false;
     this.video.play().catch(() => {});
     this.onChange();
+  }
+
+  /** Seconds this stream has been loading without anything to show, or null. */
+  loadingFor(now = Date.now()) {
+    if (!this.media || this.detached || this.error || this.video.readyState >= 2) return null;
+    return (now - this.loadStartedAt) / 1000;
+  }
+
+  /** Reloads the stream now (the "Réessayer" button). */
+  reload() {
+    if (this.media && this.quality) this.startHls(this.quality, this.expected());
+  }
+
+  /**
+   * Nothing arrives at all (the room runs, the screen stays black): reload once after
+   * 30 s, then go one quality down (lighter for the server to prepare) after 30 s more.
+   */
+  private watchLoading(v: HTMLVideoElement, now: number) {
+    if (!this.state?.running || v.readyState >= 1 || !this.quality || now - this.loadStartedAt < LOAD_RETRY_MS) return;
+    this.loadRetries++;
+    const lower = this.ladder[this.ladder.indexOf(this.quality) + 1];
+    if (this.loadRetries >= 2 && lower) {
+      this.fallback = `Rien n'arrivait en ${this.quality === '2160' ? '4K' : `${this.quality}p`} : passage en ${lower === '2160' ? '4K' : `${lower}p`}`;
+      this.switchQuality(lower);
+    } else {
+      this.startHls(this.quality, this.expected());
+    }
   }
 
   /** Black screen: the time runs but no picture is decoded. */
@@ -539,6 +573,7 @@ export class Player {
     }
 
     this.watchPicture(v);
+    this.watchLoading(v, now);
 
     if (this.reportedStall && v.readyState >= 3 && !v.seeking) {
       this.reportedStall = false;

@@ -327,6 +327,23 @@ export async function fetchTorrentHealth(session) {
   return { engine: t.engine, ...torrentHealth(await res.json().catch(() => null), session.info.bitrate) };
 }
 
+/**
+ * Stops the Stremio converters (one ffmpeg each) of films no room plays anymore: after a
+ * change of film they kept running until pushed out, taking the CPU the new film needs.
+ * `activeSids`: the media sessions rooms play now. Returns the ids stopped.
+ */
+export async function sweepConverters(activeSids) {
+  const res = await stremio('/hlsv2/status', { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return [];
+  const all = Object.keys((await res.json().catch(() => null)) || {});
+  const stale = all.filter((id) => {
+    const m = /^wp-(.+)-(?:c-[a-z0-9]+|t-\d+|a\d+)$/.exec(id);
+    return m && !activeSids.has(m[1]);
+  });
+  await Promise.all(stale.map((id) => stremio(`/hlsv2/${encodeURIComponent(id)}/destroy`, { signal: AbortSignal.timeout(5000) }).catch(() => null)));
+  return stale;
+}
+
 export function getSession(sid) {
   const s = sessions.get(sid);
   if (s) s.lastUsed = Date.now();

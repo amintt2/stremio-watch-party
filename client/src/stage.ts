@@ -451,7 +451,25 @@ export function createStage(host: StageHost) {
     if (kind === 'f') {
       if (subs.selected) subs.select(null);
       player.setSubtitleTrack(Number(id));
+      // Remembered like an OpenSubtitles choice: the next film starts with this language.
+      const lang = player.subtitleTracks.find((t) => t.id === Number(id))?.lang;
+      if (lang) subs.remember(lang);
     } else subs.select(kind === 'x' ? id : null);
+  }
+
+  // The viewer's subtitle language, applied to every new film: a track of the file in that
+  // language first (made for this video), else the best OpenSubtitles one (subtitles.ts).
+  const fileTrackInPreferredLang = () => (subs.lang ? player.subtitleTracks.find((t) => t.lang && langCode(t.lang) === subs.lang) : undefined);
+  subs.preferFile = () => !!fileTrackInPreferredLang();
+  let fileSubsAppliedFor: string | null = null;
+  function applySubtitlePreference() {
+    const sid = state()?.media?.sid || null;
+    if (!sid || fileSubsAppliedFor === sid || !player.subtitleTracks.length) return;
+    fileSubsAppliedFor = sid;
+    const track = fileTrackInPreferredLang();
+    if (!track || player.subtitleTrack >= 0) return;
+    if (subs.selected) subs.select(null, false);
+    player.setSubtitleTrack(track.id);
   }
   const subtitleLabel = (value: string) => {
     if (value === 'off') return 'Désactivés';
@@ -1027,7 +1045,31 @@ export function createStage(host: StageHost) {
     } else {
       const waitingFor = s!.waiting.map((uid) => s!.members.find((m) => m.uid === uid)?.name).filter(Boolean);
       const buffering = s!.running && video.readyState < 3 && !video.paused;
-      if (waitingFor.length) {
+      const loading = player.loadingFor();
+      // Nothing loaded here: that says more than "waiting for <me>" (others wait for us).
+      const imWaited = s!.waiting.includes(me.uid);
+      if (loading !== null && loading > 3 && mode === 'full' && (s!.running || imWaited || !waitingFor.length)) {
+        // Nothing to show yet: say it (a black screen with a running clock says nothing).
+        const secs = Math.round(loading);
+        const detail = sourceDetail(source) || (player.output()?.mode === 'transcode' ? 'Le serveur (ou le GPU) prépare la vidéo.' : 'Le serveur prépare la vidéo.');
+        key = `loading:${secs}:${detail}`;
+        content = () =>
+          h(
+            'div',
+            { class: 'overlay-msg overlay-loading' },
+            h('span', { class: 'spinner' }),
+            h('strong', {}, `Chargement de la vidéo… ${secs} s`),
+            h('span', { class: 'small' }, detail),
+            secs >= 12
+              ? h(
+                  'div',
+                  { class: 'overlay-actions' },
+                  h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => player.reload() }, 'Réessayer'),
+                  h('button', { class: 'btn btn-ghost btn-sm on-media', type: 'button', onclick: () => toggleStats(true) }, 'Statistiques')
+                )
+              : null
+          );
+      } else if (waitingFor.length) {
         key = `wait:${waitingFor.join(',')}`;
         content = msg(`On attend ${waitingFor.join(', ')}…`);
       } else if (buffering && mode === 'full') {
@@ -1217,6 +1259,7 @@ export function createStage(host: StageHost) {
     renderOverlay();
     renderHealth();
     renderStats();
+    applySubtitlePreference();
   }
   setInterval(tick, 250);
   // External subtitles follow this viewer's own video time.

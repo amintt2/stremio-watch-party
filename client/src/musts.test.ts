@@ -18,3 +18,10 @@ test('obligations filter the sources, all of them together', () => {
 test('the message names them in the row order', () => {
   assert.equal(mustsLabel(['hd', 'multi']), 'VF + VO, 1080p+');
 });
+
+test('the defaults line comes from the last choices made in the player', async () => {
+  const { launchPrefs } = await import('./musts.ts');
+  const store: Record<string, string> = { 'wp-audio': 'vo', 'wp-subs': 'fr', 'wp-quality': '1080' };
+  assert.equal(launchPrefs((k) => store[k] ?? null), 'VO · sous-titres français · 1080p');
+  assert.equal(launchPrefs(() => null), 'audio du fichier · sans sous-titres · qualité auto');
+});

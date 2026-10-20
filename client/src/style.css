@@ -1245,6 +1245,12 @@ input[type='range'] {
   text-align: center;
 }
 
+.streams-prefs {
+  margin-top: -6px;
+  text-align: center;
+  color: var(--text-faint);
+}
+
 .streams-manual {
   display: grid;
   gap: 10px;
@@ -1659,6 +1665,16 @@ input[type='range'] {
   display: grid;
   gap: 4px;
   justify-items: center;
+}
+
+.overlay-loading .small {
+  opacity: 0.8;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .stage-top,
