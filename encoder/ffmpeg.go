@@ -128,7 +128,12 @@ func (p *progressWriter) Write(b []byte) (int, error) {
 	p.done += int64(len(b))
 	if time.Since(p.last) > 500*time.Millisecond && p.total > 0 {
 		p.last = time.Now()
-		fmt.Printf("\r  %d %%  (%d / %d Mo)", p.done*100/p.total, p.done>>20, p.total>>20)
+		pct := int(p.done * 100 / p.total)
+		status.set(func(s *Status) {
+			s.Download = pct
+			s.Message = fmt.Sprintf("%d / %d Mo", p.done>>20, p.total>>20)
+		})
+		fmt.Printf("\r  %d %%  (%d / %d Mo)", pct, p.done>>20, p.total>>20)
 	}
 	return len(b), nil
 }

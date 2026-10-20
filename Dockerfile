@@ -4,8 +4,7 @@ WORKDIR /src
 COPY encoder/go.mod encoder/go.sum ./
 RUN go mod download
 COPY encoder/ ./
-ARG ENCODER_VERSION=docker
-RUN ENCODER_VERSION=$ENCODER_VERSION sh build.sh /out
+RUN sh build.sh /out
 
 FROM node:22-alpine AS build
 WORKDIR /app

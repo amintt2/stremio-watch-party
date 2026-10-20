@@ -6,6 +6,9 @@ import { localStorageGet, localStorageSet } from './auth.ts';
 import { correction, expectedPosition, SEEK_THRESHOLD } from './sync.ts';
 import { pickAudioTrack, audioChipLabel } from './format.ts';
 import { bufferedAhead, bufferHealth, catchUpTarget, ewma, fragmentRatio, MAX_LEAD_S, type Health } from './health.ts';
+import { cachedCaps, markBroken, outputOf, probeCaps, type Caps, type Codec } from './codecprobe.ts';
+
+export type { Caps } from './codecprobe.ts';
 
 const TICK_MS = 250;
 const STALL_REPORT_MS = 800;
@@ -13,26 +16,10 @@ const PREF_KEY = 'wp-quality';
 /** "fr" (VF) or "vo": this viewer's audio language, applied to every new media. */
 const AUDIO_KEY = 'wp-audio';
 
-export interface Caps {
-  hevc: boolean;
-  av1: boolean;
-  vp9: boolean;
-}
+/** Seconds the time may run without a single new picture before we call it a black screen. */
+const NO_PICTURE_S = 4;
+const NO_PICTURE = "La vidéo ne s'affiche pas sur cet appareil. Essaie une qualité plus basse ou une autre source.";
 
-/**
- * What this browser decodes in fMP4 besides H.264/AAC. Sources in these codecs are
- * copied instead of transcoded (e.g. 4K HEVC 10-bit on Discord desktop with a recent GPU).
- */
-export function detectCaps(): Caps {
-  const MS: typeof MediaSource | undefined =
-    window.MediaSource || (window as unknown as { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource;
-  const ok = (type: string) => !!MS && MS.isTypeSupported(type);
-  return {
-    hevc: ok('video/mp4; codecs="hvc1.2.4.L153.B0"') || ok('video/mp4; codecs="hev1.2.4.L153.B0"'),
-    av1: ok('video/mp4; codecs="av01.0.12M.10"'),
-    vp9: ok('video/mp4; codecs="vp09.02.51.10"'),
-  };
-}
 
 /** Path segment understood by the server: quality id + capability letters. */
 export function profileSegment(quality: string, caps: Caps) {
@@ -52,7 +39,8 @@ export interface Track {
  * picks the quality automatically.
  */
 export class Player {
-  readonly caps = detectCaps();
+  /** Codecs this device really decodes (codecprobe.ts); until tested, only H.264. */
+  caps: Caps = cachedCaps();
   /** Current rendition id (e.g. "1080"). */
   quality: string | null = null;
   /** "auto" or a fixed quality id. */
@@ -93,11 +81,65 @@ export class Player {
   private seekLatency = 2;
   private video: HTMLVideoElement;
   private conn: Connection;
+  /** Black-screen watch: decoded pictures, and where the time was when the count last moved. */
+  private frames = -1;
+  private framesTime = 0;
+  /** When this load started, and why it is still loading (for the statistics). */
+  loadStartedAt = 0;
+  /** Set when the picture failed and we switched to H.264 (shown in the statistics). */
+  fallback: string | null = null;
 
   constructor(video: HTMLVideoElement, conn: Connection) {
     this.video = video;
     this.conn = conn;
     setInterval(() => this.tick(), TICK_MS);
+    probeCaps()
+      .then((caps) => this.setCaps(caps))
+      .catch(() => {});
+  }
+
+  /** New codec test result: reload the stream if it changes what this viewer receives. */
+  private setCaps(caps: Caps) {
+    const before = this.output();
+    this.caps = caps;
+    const after = this.output();
+    if (this.quality && before && after && (before.mode !== after.mode || before.codec !== after.codec)) {
+      this.startHls(this.quality, this.expected());
+    }
+    this.onChange();
+  }
+
+  /** What the server sends for the current quality: copy of the source or H.264. */
+  output() {
+    const q = this.media?.qualities.find((x) => x.id === this.quality);
+    if (!this.media || !q) return null;
+    return outputOf(this.media.source, q.maxWidth, this.caps);
+  }
+
+  /** Decoded pictures so far (null where the browser doesn't tell). */
+  decodedFrames(): number | null {
+    const q = this.video.getVideoPlaybackQuality?.();
+    return q ? q.totalVideoFrames : null;
+  }
+
+  droppedFrames(): number | null {
+    const q = this.video.getVideoPlaybackQuality?.();
+    return q ? q.droppedVideoFrames : null;
+  }
+
+  /**
+   * The picture does not come (codec announced but not really decoded here): stop copying
+   * this codec on this device and reload in H.264. Returns false when it was H.264 already.
+   */
+  private pictureFailed(reason: string) {
+    const out = this.output();
+    if (!out || out.mode !== 'copy' || out.codec === 'h264' || !this.quality) return false;
+    const codec = out.codec as Codec;
+    markBroken(codec);
+    this.caps = { ...this.caps, [codec]: false };
+    this.fallback = `${codec.toUpperCase()} non affiché ici (${reason}) : passage en H.264`;
+    this.startHls(this.quality, this.expected());
+    return true;
   }
 
   /** This viewer's own position (what is on screen), or the room's before loading. */
@@ -233,6 +275,8 @@ export class Player {
     this.hls = null;
     this.error = null;
     this.quality = quality;
+    this.frames = -1;
+    this.loadStartedAt = Date.now();
     this.conn.send({ t: 'quality', value: quality });
 
     const url = `/api/hls/${media.sid}/${profileSegment(quality, this.caps)}/master.m3u8`;
@@ -300,10 +344,17 @@ export class Player {
     hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, updateTracks);
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, updateTracks);
     hls.on(Hls.Events.ERROR, (_e, data) => {
+      // A copied HEVC/AV1/VP9 the device can't take: H.264 right away, no retry loop. Only
+      // errors of the video track (audio is AAC for everyone and says nothing about this).
+      const videoRefused =
+        data.details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR ||
+        ((data.details === Hls.ErrorDetails.BUFFER_APPEND_ERROR || data.details === Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR) &&
+          (data.sourceBufferName === 'video' || data.sourceBufferName === 'audiovideo'));
+      if (videoRefused && this.pictureFailed('vidéo refusée par le décodeur')) return;
       if (!data.fatal) return;
       this.fatalCount++;
       if (this.fatalCount > 4) {
-        this.error = 'La lecture a échoué. Essaie une qualité plus basse ou une autre source.';
+        this.error = `La lecture a échoué (${data.details}). Essaie une qualité plus basse ou une autre source.`;
         this.onChange();
         return;
       }
@@ -368,6 +419,35 @@ export class Player {
     this.needsGesture = false;
     this.video.play().catch(() => {});
     this.onChange();
+  }
+
+  /** Black screen: the time runs but no picture is decoded. */
+  private watchPicture(v: HTMLVideoElement) {
+    if (v.error?.code === MediaError.MEDIA_ERR_DECODE) {
+      if (this.pictureFailed('erreur de décodage')) return;
+    }
+    const frames = this.decodedFrames();
+    if (frames === null || v.paused || v.seeking) {
+      this.frames = -1;
+      return;
+    }
+    if (frames !== this.frames || this.frames < 0) {
+      if (this.frames >= 0 && frames > this.frames && this.error === NO_PICTURE) {
+        this.error = null;
+        this.onChange();
+      }
+      this.frames = frames;
+      this.framesTime = v.currentTime;
+      return;
+    }
+    const ran = v.currentTime - this.framesTime;
+    if (ran > NO_PICTURE_S && (frames === 0 || v.videoWidth === 0 || ran > NO_PICTURE_S * 2)) {
+      this.frames = -1;
+      if (!this.pictureFailed("pas d'image")) {
+        this.error = NO_PICTURE;
+        this.onChange();
+      }
+    }
   }
 
   private send(value: boolean) {
@@ -457,6 +537,8 @@ export class Player {
       if (v.playbackRate !== 1) v.playbackRate = 1;
       if (!v.seeking && v.readyState >= 1 && Math.abs(v.currentTime - expected) > 0.25) v.currentTime = expected;
     }
+
+    this.watchPicture(v);
 
     if (this.reportedStall && v.readyState >= 3 && !v.seeking) {
       this.reportedStall = false;

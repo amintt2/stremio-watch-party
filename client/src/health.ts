@@ -78,6 +78,24 @@ export interface SourceHealth {
   level?: 'ok' | 'slow' | 'searching' | 'stalled' | 'done' | 'unknown';
   peers?: number;
   downloadSpeed?: number;
+  /** Share of the file downloaded on the server (0–1). */
+  progress?: number | null;
+  /** Torrent engine: "huwa" or "stremio". */
+  engine?: string;
+  /** The room's GPU encoder, if a member runs the app (server/src/encoder.js state()). */
+  gpu?: GpuState | null;
+}
+
+export interface GpuState {
+  /** working: segments going out now · ready: holds the film, nothing asked yet ·
+   *  idle: online, film not handed to it · retry: taken back after an error. */
+  status: 'working' | 'ready' | 'idle' | 'retry';
+  by: string;
+  encoder: string | null;
+  device: string | null;
+  fps?: number | null;
+  error?: string | null;
+  retryIn?: number;
 }
 
 /** 3 100 000 → "3,1 Mo/s", 52 000 → "52 Ko/s". */

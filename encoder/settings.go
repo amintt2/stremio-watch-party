@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Settings: where the server is and this PC's pairing key.
@@ -23,10 +24,45 @@ func (s Settings) valid() bool {
 
 const configName = "watchparty-encoder.json"
 
+var (
+	settingsMu sync.Mutex
+	settingsV  Settings
+)
+
+// currentSettings: where this app is connected (for the updater and the window).
+func currentSettings() Settings {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
+	return settingsV
+}
+
+func setCurrentSettings(s Settings) {
+	settingsMu.Lock()
+	settingsV = s
+	settingsMu.Unlock()
+	status.set(func(st *Status) { st.Server = s.Server })
+}
+
+// saveSettings: pairing typed in the window (server address + key from the site).
+func saveSettings(s Settings) error {
+	s.Server = strings.TrimSuffix(strings.TrimSpace(s.Server), "/")
+	s.Key = strings.TrimSpace(s.Key)
+	if !s.valid() {
+		return errors.New("adresse (https://…) ou clé (wpe_…) invalide")
+	}
+	if err := os.MkdirAll(configDir(), 0o700); err != nil {
+		return err
+	}
+	data, _ := json.MarshalIndent(s, "", "  ")
+	return os.WriteFile(filepath.Join(configDir(), configName), data, 0o600)
+}
+
 // loadSettings: command line, else the settings the site wrote into this .exe, else
 // watchparty-encoder.json next to the program (macOS / Linux zip), else the copy saved
 // on the first run (so renaming or moving the .exe keeps working).
-func loadSettings(flags Settings) (Settings, error) {
+// Keys the server refused are skipped (refused), so a pairing typed in the window wins over
+// an older key still written in this .exe.
+func loadSettings(flags Settings, refused map[string]bool) (Settings, error) {
 	saved := filepath.Join(configDir(), configName)
 	exe, _ := os.Executable()
 	candidates := []func() (Settings, error){
@@ -37,7 +73,7 @@ func loadSettings(flags Settings) (Settings, error) {
 	}
 	for i, get := range candidates {
 		s, err := get()
-		if err != nil || !s.valid() {
+		if err != nil || !s.valid() || refused[s.Key] {
 			continue
 		}
 		if i < 3 {
@@ -48,7 +84,7 @@ func loadSettings(flags Settings) (Settings, error) {
 		}
 		return s, nil
 	}
-	return Settings{}, errors.New("pas de configuration : télécharge l'encodeur depuis Watch Party (Paramètres → Encodeur GPU), il est déjà jumelé à ton compte")
+	return Settings{}, errors.New("pas encore jumelé : télécharge l'encodeur depuis Watch Party (Paramètres → Encodeur GPU), ou colle l'adresse du site et une clé ci-dessous")
 }
 
 func configDir() string {

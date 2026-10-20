@@ -2151,6 +2151,98 @@ body.player-open .toasts {
 }
 
 /* "Rattrapage de la salle…" / "Connexion lente : risque de coupure." */
+.stage-stats {
+  position: absolute;
+  top: 72px;
+  left: 50%;
+  z-index: 4;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px));
+  max-height: calc(100% - 170px);
+  overflow: auto;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid var(--media-panel-border);
+  border-radius: var(--radius-lg);
+  background: var(--media-panel);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.stats-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.stats-top {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.stats-big {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stats-label {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+}
+
+.stats-big strong {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-rows {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.stats-rows dt {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.stats-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.stats-rows .tone-good {
+  color: var(--media-good);
+}
+
+.stats-rows .tone-warn {
+  color: var(--media-fair);
+}
+
+.stats-rows .tone-bad {
+  color: var(--media-poor);
+}
+
+@media (max-width: 640px) {
+  .stage-stats {
+    top: 58px;
+    font-size: 12px;
+  }
+
+  .stats-rows {
+    grid-template-columns: 1fr;
+    gap: 1px;
+  }
+
+  .stats-rows dd {
+    margin-bottom: 6px;
+  }
+}
+
 .stage-notice {
   position: absolute;
   top: 78px;

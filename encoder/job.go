@@ -84,6 +84,14 @@ func (j *Job) want(ctx context.Context, start, until int, video []Rendition, aud
 	j.stopLocked()
 	r := &run{start: start, video: video, audio: audio, done: make(chan struct{})}
 	r.until.Store(int64(until))
+	names := make([]string, 0, len(video))
+	for _, v := range video {
+		names = append(names, v.ID+"p")
+	}
+	status.job(j.spec.ID, func(js *JobStatus) {
+		js.Renditions, js.From, js.Done, js.Error = names, start, start, ""
+		js.LastAt = time.Now().Unix()
+	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
 	j.run = r
@@ -173,6 +181,7 @@ func (j *Job) execute(ctx context.Context, r *run) {
 			continue
 		}
 		logf("Erreur d'encodage : %v", err)
+		status.job(j.spec.ID, func(js *JobStatus) { js.Error = err.Error() })
 		j.agent.send(map[string]any{"type": "error", "job": j.spec.ID, "message": err.Error()})
 		return
 	}
@@ -202,7 +211,9 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 	for _, v := range r.video {
 		label = append(label, v.ID+"p")
 	}
-	logf("Encodage %s à partir de %s (%s)", strings.Join(label, " + "), clock(float64(r.start)*j.spec.Segment), map[bool]string{true: "décodage CPU", false: "tout sur le GPU"}[hybrid])
+	pipeline := map[bool]string{true: "décodage sur le processeur", false: "tout sur le GPU"}[hybrid]
+	status.job(j.spec.ID, func(js *JobStatus) { js.Pipeline = pipeline })
+	logf("Encodage %s à partir de %s (%s)", strings.Join(label, " + "), clock(float64(r.start)*j.spec.Segment), pipeline)
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -222,6 +233,12 @@ func (j *Job) encode(ctx context.Context, r *run, hybrid bool) (int, error) {
 					if p, ok := prev.(int); !ok || u.index > p {
 						r.sent.Store(u.name, u.index)
 					}
+					done := r.next()
+					status.set(func(s *Status) { s.Segments++ })
+					status.job(j.spec.ID, func(js *JobStatus) {
+						js.Done = max(js.Done, done)
+						js.LastAt = time.Now().Unix()
+					})
 				}
 				os.Remove(u.path)
 			}
@@ -317,6 +334,7 @@ func (j *Job) readProgress(stdout interface{ Read([]byte) (int, error) }) {
 		}
 		if fps, err := strconv.ParseFloat(strings.TrimPrefix(line, "fps="), 64); err == nil {
 			last = time.Now()
+			status.job(j.spec.ID, func(js *JobStatus) { js.Fps = fps })
 			j.agent.send(map[string]any{"type": "progress", "job": j.spec.ID, "fps": fps})
 		}
 	}

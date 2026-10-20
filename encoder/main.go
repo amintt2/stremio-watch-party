@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,30 +33,119 @@ func main() {
 	encoderFlag := flag.String("encoder", "", "forcer un encodeur : nvenc, qsv, amf, mf, videotoolbox, vaapi, software")
 	flag.StringVar(&flags.Server, "server", "", "adresse du site Watch Party")
 	flag.StringVar(&flags.Key, "key", "", "clé de jumelage (wpe_…)")
+	background := flag.Bool("background", false, "démarrer sans ouvrir la fenêtre (lancement avec l'ordinateur)")
+	noWindow := flag.Bool("no-window", false, "ne jamais ouvrir la fenêtre (serveur sans écran)")
 	flag.Parse()
 
 	fmt.Printf("Watch Party — Encodeur GPU %s (%s/%s)\n\n", version, runtime.GOOS, runtime.GOARCH)
-	settings, err := loadSettings(flags)
-	if err != nil {
-		fatal(err)
-	}
-	ffmpeg, err := findFFmpeg(*ffmpegFlag)
-	if err != nil {
-		fatal(err)
-	}
-	logf("ffmpeg : %s", ffmpeg)
+	status.set(func(s *Status) { s.Version, s.OS = version, runtime.GOOS })
+	loadPrefs()
+	go removeOldBuild()
 
-	enc, err := probeEncoders(ffmpeg, *encoderFlag)
-	if err != nil {
-		fatal(err)
-	}
-	device := gpuName()
-	logf("Encodeur : %s (%s)%s, jusqu'à %dp", enc.Label, enc.Codec, optional(" — "+device, device != ""), enc.MaxHeight)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	agent := &Agent{settings: settings, ffmpeg: ffmpeg, enc: enc, device: device, jobs: map[string]*Job{}}
-	agent.run(ctx)
+	ui, existing, err := startUI(stop)
+	if err != nil {
+		fatal(err)
+	}
+	if existing != "" {
+		// Already running: show its window instead of starting a second one.
+		if !*background && !*noWindow {
+			openBrowser(existing)
+		}
+		fmt.Println("L'encodeur tourne déjà :", existing)
+		return
+	}
+	beforeExit = append(beforeExit, ui.close)
+
+	// First run: start with the computer (the room gets this GPU without anyone thinking of it).
+	if p := currentPrefs(); !p.AutoStartSet && !*noWindow {
+		if err := setAutoStart(true); err != nil {
+			logf("Lancement avec l'ordinateur impossible : %v", err)
+		}
+		updatePrefs(func(p *Prefs) { p.AutoStartSet = true })
+	}
+	status.set(func(s *Status) { s.AutoStart = autoStartEnabled() })
+
+	agent := &Agent{jobs: map[string]*Job{}}
+	beforeExit = append(beforeExit, agent.stopAll)
+	go agent.main(ctx, ui, flags, *ffmpegFlag, *encoderFlag)
+	go updater(ctx, agent.idle)
+	if !*background && !*noWindow {
+		openBrowser(ui.url)
+	}
+	logf("Fenêtre de l'encodeur : %s", ui.url)
+	runTray(ctx, ui.url, stop)
+	shutdown()
+	logf("Arrêté.")
+}
+
+// main keeps the app useful whatever happens: no pairing yet (waits for one from the
+// window), no ffmpeg, a refused key, the server down. It never exits on its own.
+func (a *Agent) main(ctx context.Context, ui *UI, flags Settings, ffmpegFlag, encoderFlag string) {
+	refused := map[string]bool{}
+	wait := func(d time.Duration) {
+		select {
+		case <-ctx.Done():
+		case <-ui.retry:
+		case <-ui.pair:
+		case <-time.After(d):
+		}
+	}
+	for ctx.Err() == nil {
+		// ffmpeg and the GPU are looked up once (again after an error).
+		if a.enc == nil {
+			status.connection("ffmpeg", "")
+			ffmpeg, err := findFFmpeg(ffmpegFlag)
+			status.set(func(s *Status) { s.Download = -1 })
+			if err != nil {
+				status.connection("error", err.Error())
+				logf("%v", err)
+				wait(time.Minute)
+				continue
+			}
+			status.set(func(s *Status) { s.FFmpeg = ffmpeg })
+			logf("ffmpeg : %s", ffmpeg)
+			status.connection("probing", "")
+			enc, err := probeEncoders(ffmpeg, encoderFlag)
+			if err != nil {
+				status.connection("error", err.Error())
+				logf("%v", err)
+				wait(time.Minute)
+				continue
+			}
+			device := gpuName()
+			a.ffmpeg, a.enc, a.device = ffmpeg, enc, device
+			status.set(func(s *Status) {
+				s.Encoder, s.Codec, s.Device, s.MaxHeight = enc.Label, enc.Codec, device, enc.MaxHeight
+			})
+			logf("Encodeur : %s (%s)%s, jusqu'à %dp", enc.Label, enc.Codec, optional(" — "+device, device != ""), enc.MaxHeight)
+		}
+
+		settings, err := loadSettings(flags, refused)
+		if err != nil {
+			status.connection("setup", err.Error())
+			select {
+			case <-ctx.Done():
+			case s := <-ui.pair:
+				delete(refused, s.Key)
+			case <-ui.retry:
+			}
+			continue
+		}
+		setCurrentSettings(settings)
+		a.settings = settings
+		if err := a.run(ctx); errors.Is(err, errUnauthorized) {
+			refused[settings.Key] = true
+			if flags.Key == settings.Key {
+				flags = Settings{}
+			}
+			status.connection("refused", "Ce PC a été retiré de ton compte, ou la clé n'est plus valable. Retélécharge l'encodeur depuis Paramètres → Encodeur GPU.")
+			logf("Clé refusée par le serveur.")
+			// Wait for a new pairing (or a retry) instead of hammering the server.
+			wait(10 * time.Minute)
+		}
+	}
 }
 
 // Agent keeps the connection to the server and runs its jobs.
@@ -69,7 +160,7 @@ type Agent struct {
 	jobs map[string]*Job
 }
 
-func (a *Agent) run(ctx context.Context) {
+func (a *Agent) run(ctx context.Context) error {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		started := time.Now()
@@ -78,11 +169,13 @@ func (a *Agent) run(ctx context.Context) {
 			break
 		}
 		if errors.Is(err, errUnauthorized) {
-			fatal(errors.New("clé refusée par le serveur : ce PC a été retiré ou la clé est invalide. Retélécharge l'encodeur depuis Paramètres → Encodeur GPU"))
+			a.stopAll()
+			return err
 		}
 		if time.Since(started) > time.Minute {
 			backoff = time.Second
 		}
+		status.connection("connecting", fmt.Sprintf("Connexion perdue (%v), nouvel essai dans %v", err, backoff))
 		logf("Connexion perdue (%v), nouvel essai dans %v", err, backoff)
 		select {
 		case <-ctx.Done():
@@ -91,7 +184,7 @@ func (a *Agent) run(ctx context.Context) {
 		backoff = min(backoff*2, 30*time.Second)
 	}
 	a.stopAll()
-	logf("Arrêté.")
+	return ctx.Err()
 }
 
 var errUnauthorized = errors.New("unauthorized")
@@ -108,6 +201,7 @@ func (a *Agent) session(ctx context.Context) error {
 		u.Scheme = "ws"
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/api/encoder/ws"
+	status.connection("connecting", "")
 	dialCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	conn, resp, err := websocket.Dial(dialCtx, u.String(), &websocket.DialOptions{
@@ -136,7 +230,8 @@ func (a *Agent) session(ctx context.Context) error {
 		"type": "hello", "version": version, "os": runtime.GOOS, "encoder": a.enc.Label,
 		"device": a.device, "maxHeight": a.enc.MaxHeight,
 	})
-	logf("Connecté à %s — prêt. Laisse cette fenêtre ouverte (réduite) pendant la séance.", a.settings.Server)
+	status.connection("connected", "")
+	logf("Connecté à %s — prêt. Il tourne en arrière-plan : rien à garder ouvert.", a.settings.Server)
 
 	for {
 		_, data, err := conn.Read(ctx)
@@ -163,6 +258,9 @@ type ServerMessage struct {
 	Until int             `json:"until"`
 	Video []Rendition     `json:"video"`
 	Audio []int           `json:"audio"`
+	// stop: why the server took the film back, and when it gives it again (s).
+	Reason  string `json:"reason"`
+	RetryIn int    `json:"retryIn"`
 }
 
 func (a *Agent) handle(ctx context.Context, msg ServerMessage) {
@@ -177,6 +275,14 @@ func (a *Agent) handle(ctx context.Context, msg ServerMessage) {
 			a.jobs[spec.ID] = newJob(a, spec)
 		}
 		a.mu.Unlock()
+		segment := spec.Segment
+		if segment <= 0 {
+			segment = 4
+		}
+		status.set(func(s *Status) {
+			s.Jobs[spec.ID] = &JobStatus{ID: spec.ID, Duration: spec.Duration, Total: int(math.Ceil(spec.Duration / segment)), Renditions: []string{}}
+			s.Stopped, s.RetryIn = "", 0
+		})
 		logf("Nouveau film à préparer (%s)", formatDuration(spec.Duration))
 	default:
 		var id string
@@ -199,7 +305,19 @@ func (a *Agent) handle(ctx context.Context, msg ServerMessage) {
 			job.extend(msg.Until)
 		case "stop":
 			job.stop()
-			logf("Film terminé ou repris par le serveur.")
+			reason := msg.Reason
+			if reason == "" {
+				reason = "film terminé"
+			}
+			status.set(func(s *Status) {
+				delete(s.Jobs, id)
+				s.Stopped, s.StoppedAt, s.RetryIn = reason, time.Now().Unix(), msg.RetryIn
+			})
+			if msg.RetryIn > 0 {
+				logf("Le serveur reprend le film (%s) ; il revient dans %d s.", reason, msg.RetryIn)
+			} else {
+				logf("Film terminé ou repris par le serveur (%s).", reason)
+			}
 		}
 	}
 }
@@ -225,20 +343,19 @@ func (a *Agent) stopAll() {
 	for _, j := range jobs {
 		j.stop()
 	}
+	status.set(func(s *Status) { s.Jobs = map[string]*JobStatus{} })
 }
 
-func logf(format string, args ...any) {
-	fmt.Printf("%s  %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
-}
-
-// fatal explains the problem and waits for Entrée on Windows (the window would close).
-func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "\nErreur : %v\n", err)
-	if runtime.GOOS == "windows" {
-		fmt.Fprintln(os.Stderr, "\nAppuie sur Entrée pour fermer.")
-		_, _ = fmt.Scanln()
+// idle: no film encoded lately (an update can restart the app).
+func (a *Agent) idle() bool {
+	snap := status.snapshot()
+	jobs, _ := snap["jobs"].([]JobStatus)
+	for _, j := range jobs {
+		if time.Since(time.Unix(j.LastAt, 0)) < 2*time.Minute {
+			return false
+		}
 	}
-	os.Exit(1)
+	return true
 }
 
 func optional(s string, ok bool) string {

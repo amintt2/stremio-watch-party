@@ -28,6 +28,7 @@ import { roomPlayback, type Playback } from './playback.ts';
 import type { Player } from './player.ts';
 import { langCode } from './format.ts';
 import { SpeechMeter } from './speech.ts';
+import { statsView } from './stats.ts';
 import { subtitleStyleControls } from './subcontrols.ts';
 import { applyStyleVars, onSubtitleStyle, pictureHeight, styleVars, subtitleStyle } from './substyle.ts';
 import { cleanVttText, ExternalSubtitles, formatOffset, lineTime } from './subtitles.ts';
@@ -176,6 +177,7 @@ export function createStage(host: StageHost) {
   const subs = new ExternalSubtitles(subsLayer);
   const overlay = h('div', { class: 'overlay' });
   const notice = h('div', { class: 'stage-notice', role: 'status', 'aria-live': 'polite', hidden: true });
+  const statsPanel = h('div', { class: 'stage-stats', role: 'dialog', 'aria-label': 'Statistiques', hidden: true });
   const rippleL = h('div', { class: 'ripple ripple-left', 'aria-hidden': 'true' });
   const rippleR = h('div', { class: 'ripple ripple-right', 'aria-hidden': 'true' });
   const flash = h('div', { class: 'stage-flash', 'aria-hidden': 'true' });
@@ -203,6 +205,7 @@ export function createStage(host: StageHost) {
     flash,
     stageTop,
     notice,
+    statsPanel,
     controls,
     stageInfo,
     menu,
@@ -760,6 +763,7 @@ export function createStage(host: StageHost) {
       hasSubs || subs.loading ? row('Sous-titres', subs.loading ? 'Chargement…' : subtitleLabel(subtitleValue()), 'subs') : h('div', { class: 'menu-item menu-muted' }, 'Pas de sous-titres pour cette vidéo'),
       subs.selected ? row('Synchronisation', subs.syncing ? 'Recherche…' : formatOffset(subs.timing.offset), 'sync') : null,
       hasSubs ? row('Style des sous-titres', '', 'style') : null,
+      h('button', { class: 'menu-row', type: 'button', onclick: () => (closeMenus(), toggleStats()) }, icon('info', 'icon icon-sm'), h('span', { class: 'menu-row-title' }, 'Statistiques'), h('kbd', {}, 'I')),
       host.menuExtra?.(closeMenus) || null,
       // Phones: the bar keeps only the essentials, picture-in-picture moves here.
       pipBtn.hidden
@@ -964,6 +968,9 @@ export function createStage(host: StageHost) {
         subs.shift(action === 'subs-earlier' ? -0.1 : 0.1);
         showFlash(h('span', { class: 'flash-text' }, `Sous-titres : ${formatOffset(subs.timing.offset)}`));
         break;
+      case 'stats':
+        toggleStats();
+        break;
       case 'help':
         if (help.hidden) openHelp();
         else closeMenus();
@@ -1035,11 +1042,17 @@ export function createStage(host: StageHost) {
   let sourceSince = 0;
   const SOURCE_NOTICE_MS = 4000;
   let sourceSid: string | null = null;
+  let lastPoll = 0;
   async function pollSource() {
     const sid = state()?.media?.sid || null;
     if (sid !== sourceSid) source = null;
     sourceSid = sid;
-    if (!sid || source?.kind === 'http' || source?.level === 'done') return;
+    if (!sid) return;
+    // A finished download or a direct link changes little: every 30 s (the GPU line), unless
+    // the statistics are open.
+    const settled = source?.kind === 'http' || source?.level === 'done';
+    if (statsPanel.hidden && settled && Date.now() - lastPoll < 30_000) return;
+    lastPoll = Date.now();
     try {
       const next = await api<SourceHealth>(`/api/media/${encodeURIComponent(sid)}/health`);
       if (state()?.media?.sid === sid) source = next;
@@ -1047,7 +1060,52 @@ export function createStage(host: StageHost) {
       /* the next poll will tell */
     }
   }
-  setInterval(pollSource, 10_000);
+  setInterval(() => {
+    if (statsPanel.hidden) void pollSource();
+  }, 10_000);
+  setInterval(() => {
+    if (!statsPanel.hidden) void pollSource();
+  }, 3000);
+
+  // ------------------------------------------------------------ statistics (like Stremio's)
+  let waitingSince = 0;
+  function toggleStats(open = statsPanel.hidden) {
+    statsPanel.hidden = !open;
+    if (open) void pollSource().then(renderStats);
+    renderStats();
+  }
+  function renderStats() {
+    const s = state();
+    const now = Date.now();
+    const playing = video.readyState >= 3 && !video.seeking;
+    if (playing || !s?.media) waitingSince = 0;
+    else waitingSince ||= Math.max(player.loadStartedAt || now, now - 1);
+    if (statsPanel.hidden) return;
+    const names: Record<string, string> = {};
+    for (const m of s?.members || []) names[m.uid] = m.name;
+    const view = statsView({
+      source,
+      media: s?.media?.source || null,
+      quality: player.quality,
+      output: player.output(),
+      caps: player.caps,
+      names,
+      me: me.uid,
+      buffer: player.bufferAhead(),
+      ratio: player.downloadRatio,
+      frames: player.decodedFrames(),
+      dropped: player.droppedFrames(),
+      loadingFor: waitingSince ? (now - waitingSince) / 1000 : null,
+      error: player.error,
+      fallback: player.fallback,
+    });
+    clear(
+      statsPanel,
+      view.top.length ? h('div', { class: 'stats-top' }, ...view.top.map((t) => h('div', { class: 'stats-big' }, h('span', { class: 'stats-label' }, t.label), h('strong', {}, t.value)))) : null,
+      h('dl', { class: 'stats-rows' }, ...view.rows.flatMap((r) => [h('dt', {}, r.label), h('dd', { class: r.tone ? `tone-${r.tone}` : '' }, r.value)])),
+      h('button', { class: 'btn btn-ghost btn-icon btn-icon-sm on-media stats-close', type: 'button', 'aria-label': 'Fermer les statistiques', onclick: () => toggleStats(false) }, icon('close', 'icon icon-sm'))
+    );
+  }
 
   function renderHealth() {
     const s = state();
@@ -1066,7 +1124,8 @@ export function createStage(host: StageHost) {
       .join(' · ');
     healthBtn.title = health ? `${HEALTH_LABEL[health]} · ${detail}` : 'Connexion : mesure en cours';
     healthBtn.setAttribute('aria-label', healthBtn.title);
-    healthBtn.hidden = !active;
+    // Also while nothing plays yet: the statistics say why.
+    healthBtn.hidden = !s?.media;
 
     if (health === 'poor' && s?.running) poorSince ||= now;
     else if (health !== 'poor') poorSince = 0;
@@ -1115,7 +1174,7 @@ export function createStage(host: StageHost) {
       notice.classList.toggle('notice-warn', key.startsWith('slow'));
     }
   }
-  healthBtn.addEventListener('click', () => toast(healthBtn.title));
+  healthBtn.addEventListener('click', () => toggleStats());
 
   // ------------------------------------------------------------ periodic: clock, seek bar, buffer
   const DRIFT_SHOWN_S = 1;
@@ -1145,6 +1204,7 @@ export function createStage(host: StageHost) {
     seek.classList.toggle('drifting', drift);
     renderOverlay();
     renderHealth();
+    renderStats();
   }
   setInterval(tick, 250);
   // External subtitles follow this viewer's own video time.
