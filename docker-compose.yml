@@ -74,8 +74,9 @@ services:
   # le fichier chez lui. Privé, comme stremio : aucun domaine, aucun port publié.
   huwa:
     # Pas de :latest tant que amintt2/huwa n'a pas d'étiquette de version v* : on épingle
-    # une image sha-… publiée (celle-ci est testée avec Watch Party). HUWA_IMAGE_TAG pour changer.
-    image: ghcr.io/amintt2/huwa:${HUWA_IMAGE_TAG:-sha-0968fdf}
+    # une image sha-… publiée (celle-ci est testée avec Watch Party : plusieurs conversions
+    # lisent le même torrent sans se couper). HUWA_IMAGE_TAG pour changer.
+    image: ghcr.io/amintt2/huwa:${HUWA_IMAGE_TAG:-sha-0a817a2}
     environment:
       HUWA_STREMIO_COMPAT: "1"
       # Watch Party : une source par salle en même temps, avec de la marge.
